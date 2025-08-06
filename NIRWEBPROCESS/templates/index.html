@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>NIR CONNECT</title>
+
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=Inter:wght@400;600&display=swap"
+        rel="stylesheet"/>
+
+  <!-- CSS customizado -->
+  <link rel="stylesheet" href="/static/style.css"/>
+
+  <!-- Tailwind + config -->
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            emerald: {50:'#effcf6',100:'#d1fae5',200:'#a7f3d0',700:'#047857',800:'#065f46'},
+            sky:     {50:'#f0f9ff',100:'#e0f2fe',200:'#bae6fd'}
+          }
+        }
+      }
+    }
+  </script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="font-montserrat text-gray-900 overflow-y-scroll snap-y snap-mandatory">
+
+  <!-- HEADER -->
+  <header class="fixed inset-x-0 top-0 z-50 bg-white shadow-md">
+    <div class="max-w-7xl mx-auto flex items-center justify-between px-6 py-4">
+      <a href="/" class="flex items-center space-x-3">
+        <img src="/static/images/Logo.jpg" alt="NIR CONNECT" class="h-14 md:h-16"/>
+        <span class="text-emerald-800 font-bold text-2xl md:text-3xl">NIR CONNECT</span>
+      </a>
+      <nav class="hidden md:flex space-x-8 text-lg">
+        <a href="#sobre"    class="hover:text-emerald-700">Sobre</a>
+        <a href="#servicos" class="hover:text-emerald-700">Serviços</a>
+        <a href="#contato"  class="hover:text-emerald-700">Contato</a>
+      </nav>
+      <button id="btn-menu" class="md:hidden" aria-label="Toggle menu">
+        <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 6h16M4 12h16M4 18h16"/>
+        </svg>
+      </button>
+    </div>
+    <div id="mobile-menu" class="hidden bg-white shadow-inner">
+      <nav class="flex flex-col p-4 space-y-2">
+        <a href="#sobre"    class="hover:text-emerald-700">Sobre</a>
+        <a href="#servicos" class="hover:text-emerald-700">Serviços</a>
+        <a href="#contato"  class="hover:text-emerald-700">Contato</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- HERO -->
+  <section id="hero"
+           class="hero snap-start relative flex items-center justify-center text-center px-6 min-h-screen overflow-hidden">
+    <div class="absolute inset-0 bg-black opacity-60"></div>
+    <div class="relative max-w-3xl space-y-6">
+      <h1 class="reveal-from-left text-7xl font-extrabold text-white" data-delay="0.1">
+        NIR Web<br/>Inovadora & Eficiente
+      </h1>
+      <p class="reveal-from-left text-3xl text-gray-200" data-delay="0.3">
+        Descubra como processar dados NIR de forma simples e moderna.
+      </p>
+      <a href="/dashboard"
+         class="reveal-from-left inline-block bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-4 px-8 rounded-md shadow-lg"
+         data-delay="0.5">
+        Acessar Plataforma
+      </a>
+    </div>
+  </section>
+
+  <!-- SOBRE -->
+  <section id="sobre"
+           class="snap-start bg-gradient-to-r from-emerald-50 to-emerald-100 flex flex-col md:flex-row md:space-x-24 items-center min-h-screen py-32 px-6 detail-section">
+    <!-- Texto deslocado à direita -->
+    <div class="md:w-5/12 max-w-4xl space-y-8 reveal-from-left md:pl-16" data-delay="0.2">
+      <h2 class="text-5xl font-bold text-emerald-800">Sobre</h2>
+      <p class="text-xl leading-relaxed">
+        Nossa plataforma NIR CONNECT entrega tecnologia web de ponta para análise NIR rápida e precisa.
+      </p>
+      <p class="text-xl leading-relaxed">
+        Realize espectroscopia NIR diretamente no navegador com resultados em tempo real e relatórios completos que
+        auxiliam sua tomada de decisão.
+      </p>
+    </div>
+    <!-- Imagem expandida à direita -->
+    <div class="md:w-7/12 mt-12 md:mt-0 flex justify-end reveal-from-left" data-delay="0.4">
+      <img src="/static/images/sobre.png"
+           alt="Ilustração Sobre"
+           class="w-full rounded-lg shadow-lg"/>
+    </div>
+  </section>
+
+  <!-- SERVIÇOS -->
+  <section id="servicos"
+           class="snap-start bg-gradient-to-r from-emerald-100 to-emerald-200 flex items-center min-h-screen py-32 px-6 detail-section">
+    <div class="mx-auto max-w-screen-xl space-y-12 reveal-from-left" data-delay="0.2">
+      <h2 class="text-5xl font-bold text-emerald-800 text-center">Serviços</h2>
+      <ul class="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <li class="bg-white p-8 rounded-lg shadow-lg hover:shadow-2xl transition-transform transition-shadow">
+          <a href="#analise" class="block space-y-4">
+            <img src="/static/images/service_nir.png" alt="" class="w-full rounded"/>
+            <h3 class="text-3xl font-semibold">Análise & Processamento NIR</h3>
+            <p class="text-lg text-gray-600">Transforme espectros NIR em insights acionáveis.</p>
+          </a>
+        </li>
+        <li class="bg-white p-8 rounded-lg shadow-lg hover:shadow-2xl transition-transform transition-shadow">
+          <a href="#consultoria" class="block space-y-4">
+            <img src="/static/images/consultoria_personalizada.png" alt="" class="w-full rounded"/>
+            <h3 class="text-3xl font-semibold">Consultoria Personalizada</h3>
+            <p class="text-lg text-gray-600">Soluções sob medida para integração e interpretação NIR.</p>
+          </a>
+        </li>
+        <li class="bg-white p-8 rounded-lg shadow-lg hover:shadow-2xl transition-transform transition-shadow">
+          <a href="#treinamento" class="block space-y-4">
+            <img src="/static/images/treinamentos_especializados.png" alt="" class="w-full rounded"/>
+            <h3 class="text-3xl font-semibold">Treinamentos Especializados</h3>
+            <p class="text-lg text-gray-600">Capacitação prática do básico ao avançado em NIR.</p>
+          </a>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- DETALHE: ANÁLISE -->
+  <section id="analise"
+           class="snap-start bg-gradient-to-r from-sky-50 to-sky-100 flex items-center min-h-screen py-32 px-6 detail-section">
+    <div class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+      <img src="/static/images/service_nir.png"
+           alt=""
+           class="rounded-lg shadow-md reveal-from-left"
+           data-delay="0.2"/>
+      <div class="space-y-6 reveal-from-left" data-delay="0.4">
+        <h2 class="text-5xl font-semibold text-emerald-800">Análise & Processamento NIR</h2>
+        <p class="text-xl leading-relaxed">
+          Oferecemos análise avançada de espectros NIR com precisão e rapidez, otimizando controle de qualidade,
+          pesquisa e processos industriais.
+        </p>
+        <a href="#contato" class="text-emerald-700 underline">Agende uma demonstração</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- DETALHE: CONSULTORIA -->
+  <section id="consultoria"
+           class="snap-start bg-gradient-to-r from-sky-100 to-sky-200 flex items-center min-h-screen py-32 px-6 detail-section">
+    <div class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+      <img src="/static/images/consultoria_personalizada.png"
+           alt=""
+           class="rounded-lg shadow-md reveal-from-left"
+           data-delay="0.2"/>
+      <div class="space-y-6 reveal-from-left" data-delay="0.4">
+        <h2 class="text-5xl font-semibold text-emerald-800">Consultoria Personalizada</h2>
+        <p class="text-xl leading-relaxed">
+          Integramos tecnologia NIR à sua operação: escolha de equipamentos, interpretação de dados e metodologias
+          customizadas.
+        </p>
+        <a href="#contato" class="text-emerald-700 underline">Solicitar consultoria</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- DETALHE: TREINAMENTO -->
+  <section id="treinamento"
+           class="snap-start bg-gradient-to-r from-sky-50 to-sky-100 flex items-center min-h-screen py-32 px-6 detail-section">
+    <div class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+      <img src="/static/images/treinamentos_especializados.png"
+           alt=""
+           class="rounded-lg shadow-md reveal-from-left"
+           data-delay="0.2"/>
+      <div class="space-y-6 reveal-from-left" data-delay="0.4">
+        <h2 class="text-5xl font-semibold text-emerald-800">Treinamentos Especializados</h2>
+        <p class="text-xl leading-relaxed">
+          Cursos completos de espectroscopia NIR, do fundamental ao avançado, para elevar a expertise da sua equipe.
+        </p>
+        <a href="#contato" class="text-emerald-700 underline">Inscrever equipe</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- CONTATO -->
+  <section id="contato"
+           class="snap-start bg-gradient-to-r from-emerald-700 to-emerald-800 flex items-start min-h-screen py-32 px-6 detail-section">
+    <div class="max-w-4xl w-full mx-auto">
+      <h2 class="reveal-from-left text-5xl font-bold text-white mb-8" data-delay="0.2">Fale Conosco</h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-12">
+        <!-- Formulário -->
+        <form id="contactForm" class="space-y-6 reveal-from-left" data-delay="0.4">
+          <div>
+            <label for="name" class="block mb-1 font-medium text-white">Nome *</label>
+            <input type="text" id="name" name="name" required
+                   class="w-full border border-white rounded-md p-3 bg-transparent text-white focus:ring-2 focus:ring-white outline-none"/>
+          </div>
+          <div>
+            <label for="email" class="block mb-1 font-medium text-white">E-mail *</label>
+            <input type="email" id="email" name="email" required
+                   placeholder="tdiasflorestal@gmail.com"
+                   class="w-full border border-white rounded-md p-3 bg-transparent text-white focus:ring-2 focus:ring-white outline-none"/>
+          </div>
+          <div>
+            <label for="phone" class="block mb-1 font-medium text-white">Telefone *</label>
+            <input type="tel" id="phone" name="phone" required
+                   class="w-full border border-white rounded-md p-3 bg-transparent text-white focus:ring-2 focus:ring-white outline-none"/>
+          </div>
+          <div>
+            <label for="message" class="block mb-1 font-medium text-white">Mensagem</label>
+            <textarea id="message" name="message" rows="4"
+                      class="w-full border border-white rounded-md p-3 bg-transparent text-white focus:ring-2 focus:ring-white outline-none"></textarea>
+          </div>
+          <div class="flex items-center space-x-2">
+            <input type="checkbox" id="consent" name="consent" required class="h-5 w-5 text-white"/>
+            <label for="consent" class="text-base text-white">Autorizo salvar meu contato *</label>
+          </div>
+          <button type="submit"
+                  class="w-full bg-white text-emerald-800 font-semibold py-4 rounded-md transition">
+            ENVIAR
+          </button>
+        </form>
+        <!-- Info de Contato -->
+        <div class="bg-white bg-opacity-10 rounded-lg p-8 reveal-from-left" data-delay="0.6">
+          <h3 class="text-3xl font-semibold text-white mb-6">Informações</h3>
+          <p class="flex items-center text-white mb-4">
+            <span class="text-2xl mr-2">📧</span>
+            <a href="mailto:tdiasflorestal@gmail.com" class="underline">tdiasflorestal@gmail.com</a>
+          </p>
+          <p class="flex items-center text-white mb-4">
+            <span class="text-2xl mr-2">📍</span>
+            Perdões, MG – Brasil
+          </p>
+          <h4 class="text-xl font-semibold text-white mb-3">Horário de Atendimento</h4>
+          <ul class="text-white space-y-1">
+            <li>Seg – Sex: 9h – 22h</li>
+            <li>Sáb: 9h – 18h</li>
+            <li>Dom: 9h – 12h</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SCRIPTS -->
+  <script>
+    // Toggle menu mobile
+    document.getElementById('btn-menu').addEventListener('click', () => {
+      const m = document.getElementById('mobile-menu');
+      const hidden = m.classList.toggle('hidden');
+      document.getElementById('btn-menu').setAttribute('aria-expanded', (!hidden).toString());
+    });
+
+    // Smooth scroll offset
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', e => {
+        e.preventDefault();
+        const tgt = document.querySelector(a.getAttribute('href'));
+        const top = tgt.getBoundingClientRect().top + window.pageYOffset - 80;
+        window.scrollTo({ top, behavior: 'smooth' });
+      });
+    });
+
+    // Slide-in reveals
+    document.querySelectorAll('.reveal-from-left').forEach(el => {
+      new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            el.style.animationDelay = el.dataset.delay + 's';
+            el.classList.add('animate-from-left');
+          } else {
+            el.classList.remove('animate-from-left');
+          }
+        });
+      }, { threshold: 0.2 }).observe(el);
+    });
+
+    // Fade-in-up for detail sections
+    document.querySelectorAll('.detail-section').forEach(sec => {
+      new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          entry.target.classList.toggle('visible', entry.isIntersecting);
+        });
+      }, { threshold: 0.2 }).observe(sec);
+    });
+
+    // Form submit placeholder
+    document.getElementById('contactForm').addEventListener('submit', e => {
+      e.preventDefault();
+      alert('Obrigado! Sua mensagem foi enviada.');
+      e.target.reset();
+    });
+  </script>
+</body>
+</html>

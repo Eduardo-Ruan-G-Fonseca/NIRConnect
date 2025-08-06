@@ -1,0 +1,11 @@
+
+__pycache__/
+*.pyc
+venv/
+# Editors
+.vscode/
+.idea/
+*~
+*.swp
+
+.pytest_cache/
