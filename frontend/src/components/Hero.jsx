@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom';
+
 export default function Hero() {
   return (
     <section id="hero" className="hero snap-start relative flex items-center justify-center text-center px-6 min-h-screen overflow-hidden">
@@ -9,13 +11,13 @@ export default function Hero() {
         <p className="reveal-from-left text-3xl text-gray-200" data-delay="0.3">
           Descubra como processar dados NIR de forma simples e moderna.
         </p>
-        <button
-          onClick={() => (window.location.href = '/nir')}
+        <Link
+          to="/nir"
           className="reveal-from-left inline-block bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-4 px-8 rounded-md shadow-lg"
           data-delay="0.5"
         >
-          Acessar Plataforma
-        </button>
+          Acessar a Plataforma
+        </Link>
       </div>
     </section>
   );
