@@ -1,7 +1,6 @@
-from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, Body
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.encoders import jsonable_encoder
-from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import os
@@ -26,9 +25,7 @@ from core.pls import is_categorical
 
 app = FastAPI(title="NIR API v4.6")
 
-# Monta templates e arquivos estáticos
-templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
-app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Aumenta limites de upload para 100 MB
 MultiPartParser.spool_max_size = 100 * 1024 * 1024
@@ -896,22 +893,10 @@ async def history_data() -> list[dict]:
             return json.load(fh)
     return []
 
-# Rotas de interface web
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+
+@app.get("/")
+def root():
+    return FileResponse("nir_interface.html")
 
 
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard_page(request: Request):
-    return templates.TemplateResponse("dashboard.html", {"request": request})
 
-
-@app.get("/history", response_class=HTMLResponse)
-async def history_page(request: Request):
-    return templates.TemplateResponse("history.html", {"request": request})
-
-
-@app.get("/nir", response_class=HTMLResponse)
-async def nir_interface(request: Request):
-    return templates.TemplateResponse("nir_interface.html", {"request": request})
