@@ -1,3 +1,7 @@
+import serviceNir from '/images/service_nir.png';
+import consultoria from '/images/consultoria_personalizada.png';
+import treinamento from '/images/treinamentos_especializados.png';
+
 export default function Servicos() {
   return (
     <section
@@ -10,7 +14,7 @@ export default function Servicos() {
           <li className="bg-white p-8 rounded-lg shadow-lg hover:shadow-2xl transition-transform transition-shadow">
             <a href="#analise" className="block space-y-4">
               <img
-                src="/static/images/service_nir.png"
+                src={serviceNir}
                 alt="Análise & Processamento NIR"
                 className="w-full rounded"
               />
@@ -23,7 +27,7 @@ export default function Servicos() {
           <li className="bg-white p-8 rounded-lg shadow-lg hover:shadow-2xl transition-transform transition-shadow">
             <a href="#consultoria" className="block space-y-4">
               <img
-                src="/static/images/consultoria_personalizada.png"
+                src={consultoria}
                 alt="Consultoria Personalizada NIR"
                 className="w-full rounded"
               />
@@ -36,7 +40,7 @@ export default function Servicos() {
           <li className="bg-white p-8 rounded-lg shadow-lg hover:shadow-2xl transition-transform transition-shadow">
             <a href="#treinamento" className="block space-y-4">
               <img
-                src="/static/images/treinamentos_especializados.png"
+                src={treinamento}
                 alt="Treinamentos Especializados em NIR"
                 className="w-full rounded"
               />
