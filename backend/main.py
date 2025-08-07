@@ -893,10 +893,7 @@ async def history_data() -> list[dict]:
             return json.load(fh)
     return []
 
-
-@app.get("/")
-def root():
-    return FileResponse("nir_interface.html")
-
-
+@app.get("/", summary="Health check")
+async def root():
+    return {"status": "ok"}
 
