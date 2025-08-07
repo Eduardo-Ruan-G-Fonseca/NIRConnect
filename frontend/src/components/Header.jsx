@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import logo from '/images/Logo.jpg';
 
 export default function Header() {
   const [open, setOpen] = useState(false);
@@ -7,7 +8,7 @@ export default function Header() {
       <div className="max-w-7xl mx-auto flex items-center justify-between px-6 py-4">
         <a href="/" className="flex items-center space-x-3">
           <img
-            src="/static/images/Logo.jpg"
+            src={logo}
             alt="NIR CONNECT"
             className="h-14 md:h-16"
           />

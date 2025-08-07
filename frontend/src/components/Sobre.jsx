@@ -1,3 +1,5 @@
+import sobre from '/images/sobre.png';
+
 export default function Sobre() {
   return (
     <section
@@ -15,7 +17,7 @@ export default function Sobre() {
       </div>
       <div className="md:w-7/12 mt-12 md:mt-0 flex justify-end reveal-from-left" data-delay="0.4">
         <img
-          src="/static/images/sobre.png"
+          src={sobre}
           alt="Ilustração Sobre"
           className="w-full rounded-lg shadow-lg"
         />

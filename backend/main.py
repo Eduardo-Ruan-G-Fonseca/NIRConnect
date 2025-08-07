@@ -898,8 +898,9 @@ async def history_data() -> list[dict]:
 
 # Rotas de interface web
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+async def nir_interface(request: Request):
+    """Renderiza a interface principal NIR."""
+    return templates.TemplateResponse("nir_interface.html", {"request": request})
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -912,6 +913,3 @@ async def history_page(request: Request):
     return templates.TemplateResponse("history.html", {"request": request})
 
 
-@app.get("/nir", response_class=HTMLResponse)
-async def nir_interface(request: Request):
-    return templates.TemplateResponse("nir_interface.html", {"request": request})
