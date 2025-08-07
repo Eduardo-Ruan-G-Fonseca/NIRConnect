@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.encploders import jsonable_encoder
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 import os
 import json
@@ -11,25 +11,30 @@ import pandas as pd
 import io
 import numpy as np
 from starlette.formparsers import MultiPartParser
+from datetime import datetime
 
+from core.config import METRICS_FILE, settings
+from core.metrics import regression_metrics, classification_metrics
+from core.report_pdf import PDFReport
+from core.logger import log_info
 from core.validation import build_cv
 from core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
 from core.preprocessing import apply_methods
 from core.optimization import optimize_model_grid
 from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from core.pls import is_categorical
-from core.config import METRICS_FILE, settings
-from core.metrics import regression_metrics, classification_metrics
-from core.report_pdf import PDFReport
-from core.logger import log_info
 
-from datetime import datetime
+app = FastAPI(title="NIR API v4.6")
 
-# Increase upload limits to 100MB
+# Monta templates e arquivos estáticos
+templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
+app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+
+# Aumenta limites de upload para 100 MB
 MultiPartParser.spool_max_size = 100 * 1024 * 1024
 MultiPartParser.max_part_size = 100 * 1024 * 1024
 
-# Preprocessing labels and options
+# Labels de métodos de pré-processamento
 METHOD_LABELS = {
     "snv": "SNV",
     "msc": "MSC",
@@ -41,12 +46,23 @@ METHOD_LABELS = {
     "vn": "Vector Norm",
 }
 ALL_PREPROCESS_METHODS = ["none"] + list(METHOD_LABELS.keys())
-OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
+
+# Intervalos aproximados de bandas NIR para grupos químicos
 CHEMICAL_RANGES = [
     (1200, 1300, "celulose"),
     (1300, 1500, "água"),
     (1500, 1700, "lignina"),
 ]
+
+LOG_DIR = settings.logging_dir
+HISTORY_FILE = os.path.join(settings.models_dir, "history.json")
+
+
+class Metrics(BaseModel):
+    R2: float
+    RMSE: float
+    Accuracy: float
+
 LOG_DIR = settings.logging_dir
 HISTORY_FILE = os.path.join(settings.models_dir, "history.json")
 
@@ -320,15 +336,14 @@ async def health() -> dict:
 async def upload_metrics(metrics: Metrics) -> dict:
     try:
         os.makedirs(os.path.dirname(METRICS_FILE), exist_ok=True)
-        with open(METRICS_FILE, "w") as f:
+        with open(METRICS_FILE, "w", encoding="utf-8") as f:
             json.dump(metrics.dict(), f)
-    except Exception as exc:  # pragma: no cover - sanity
+    except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "success", "message": "Métricas atualizadas"}
 
 
 @app.post("/process")
-
 async def process_file(
     file: UploadFile = File(...),
     target: str = Form(...),
@@ -881,23 +896,22 @@ async def history_data() -> list[dict]:
             return json.load(fh)
     return []
 
-# Rotas adicionais da branch main
+# Rotas de interface web
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    """Página principal exibindo a interface NIR."""
     return templates.TemplateResponse("nir_interface.html", {"request": request})
+
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page(request: Request):
-    """Interface de dashboard de logs e métricas."""
     return templates.TemplateResponse("dashboard.html", {"request": request})
+
 
 @app.get("/history", response_class=HTMLResponse)
 async def history_page(request: Request):
-    """Página mostrando histórico de análises."""
     return templates.TemplateResponse("history.html", {"request": request})
+
 
 @app.get("/nir", response_class=HTMLResponse)
 async def nir_interface(request: Request):
-    """Interface web para análise NIR."""
     return templates.TemplateResponse("nir_interface.html", {"request": request})
