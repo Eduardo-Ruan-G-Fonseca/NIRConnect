@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import json
@@ -24,6 +25,13 @@ from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from core.pls import is_categorical
 
 app = FastAPI(title="NIR API v4.6")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -892,6 +900,10 @@ async def history_data() -> list[dict]:
         with open(HISTORY_FILE, 'r') as fh:
             return json.load(fh)
     return []
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 @app.get("/", summary="Health check")
 async def root():
