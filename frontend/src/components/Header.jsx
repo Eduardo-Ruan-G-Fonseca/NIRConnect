@@ -14,7 +14,12 @@ export default function Header() {
           <a href="#servicos" className="hover:text-emerald-700">Serviços</a>
           <a href="#contato" className="hover:text-emerald-700">Contato</a>
         </nav>
-        <button id="btn-menu" className="md:hidden" aria-label="Toggle menu" onClick={() => setOpen(!open)}>
+        <button
+          id="btn-menu"
+          className="md:hidden"
+          aria-label="Toggle menu"
+          onClick={() => setOpen(!open)}
+        >
           <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" />
           </svg>

@@ -1,23 +1,18 @@
-# NIRConnect
-
+NIRConnect
 Este repositório está organizado em duas partes:
 
-## Backend
-Código FastAPI localizado em `backend/`.
+Backend
+Código FastAPI localizado em backend/.
 
-Inicie em ambiente Python (exemplo no PyCharm):
-```bash
+Para executar (via PyCharm ou terminal):
 cd backend
 pip install -r requirements.txt
 uvicorn main:app --reload
-```
 
-## Frontend
-Aplicação React localizada em `frontend/`.
+Frontend
+Aplicação React localizada em frontend/.
 
-Para executar no VS Code:
-```bash
+Para executar (via VS Code ou terminal):
 cd frontend
-npm install   # primeira execução
-npm start
-```
+npm install # na primeira execução
+npm run dev

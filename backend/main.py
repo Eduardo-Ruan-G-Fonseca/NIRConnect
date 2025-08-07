@@ -2,27 +2,34 @@ from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, Bod
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 import os
 import json
-from fastapi.encoders import jsonable_encoder
 import pickle
 import pandas as pd
 import io
 import numpy as np
-from core.validation import build_cv
 from starlette.formparsers import MultiPartParser
+
+from core.validation import build_cv
 from core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
 from core.preprocessing import apply_methods
 from core.optimization import optimize_model_grid
 from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from core.pls import is_categorical
+from core.config import METRICS_FILE, settings
+from core.metrics import regression_metrics, classification_metrics
+from core.report_pdf import PDFReport
 from core.logger import log_info
+
+from datetime import datetime
 
 # Increase upload limits to 100MB
 MultiPartParser.spool_max_size = 100 * 1024 * 1024
 MultiPartParser.max_part_size = 100 * 1024 * 1024
 
+# Preprocessing labels and options
 METHOD_LABELS = {
     "snv": "SNV",
     "msc": "MSC",
@@ -33,57 +40,13 @@ METHOD_LABELS = {
     "ncl": "NCL",
     "vn": "Vector Norm",
 }
-
-# Default preprocessing methods available for optimization
 ALL_PREPROCESS_METHODS = ["none"] + list(METHOD_LABELS.keys())
-
-# Track progress of the optimization routine
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
-
-def _parse_preprocess(value: str) -> list:
-    """Parse preprocessing parameter from form data."""
-    if not value:
-        return []
-    try:
-        data = json.loads(value)
-        if isinstance(data, dict):
-            return [data]
-        if isinstance(data, list):
-            return data
-    except Exception:
-        pass
-    return [v for v in value.split(',') if v]
-
-
-def _format_preprocess_label(step: object) -> str:
-    """Return human readable label for a preprocessing step."""
-    if isinstance(step, str):
-        return METHOD_LABELS.get(step, step)
-    method = step.get("method")
-    label = METHOD_LABELS.get(method, method)
-    if method in {"sg1", "sg2"}:
-        params = step.get("params", {}) or {}
-        wl = params.get("window_length", 11)
-        po = params.get("polyorder", 2)
-        return f"{label} (w={wl}, p={po})"
-    return label
-from core.config import METRICS_FILE, settings
-from core.metrics import regression_metrics, classification_metrics
-from core.report_pdf import PDFReport
-from datetime import datetime
-
-app = FastAPI(title="NIR API v4.6")
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-templates = Jinja2Templates(directory="templates")
-
-# Intervalos aproximados de bandas NIR associados a grupos químicos
 CHEMICAL_RANGES = [
     (1200, 1300, "celulose"),
     (1300, 1500, "água"),
     (1500, 1700, "lignina"),
 ]
-
 LOG_DIR = settings.logging_dir
 HISTORY_FILE = os.path.join(settings.models_dir, "history.json")
 
@@ -911,24 +874,6 @@ async def dashboard_data(log_type: str = "", date: str = "") -> dict:
     }
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    """Página principal exibindo a interface NIR."""
-    return templates.TemplateResponse("nir_interface.html", {"request": request})
-
-
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard_page(request: Request):
-    """Interface de dashboard de logs e métricas."""
-    return templates.TemplateResponse("dashboard.html", {"request": request})
-
-
-@app.get("/history", response_class=HTMLResponse)
-async def history_page(request: Request):
-    """Página mostrando histórico de análises."""
-    return templates.TemplateResponse("history.html", {"request": request})
-
-
 @app.get("/history/data")
 async def history_data() -> list[dict]:
     if os.path.exists(HISTORY_FILE):
@@ -936,9 +881,23 @@ async def history_data() -> list[dict]:
             return json.load(fh)
     return []
 
+# Rotas adicionais da branch main
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    """Página principal exibindo a interface NIR."""
+    return templates.TemplateResponse("nir_interface.html", {"request": request})
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_page(request: Request):
+    """Interface de dashboard de logs e métricas."""
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
+@app.get("/history", response_class=HTMLResponse)
+async def history_page(request: Request):
+    """Página mostrando histórico de análises."""
+    return templates.TemplateResponse("history.html", {"request": request})
 
 @app.get("/nir", response_class=HTMLResponse)
 async def nir_interface(request: Request):
     """Interface web para análise NIR."""
     return templates.TemplateResponse("nir_interface.html", {"request": request})
-
