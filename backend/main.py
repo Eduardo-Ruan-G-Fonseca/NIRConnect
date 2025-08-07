@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.encploders import jsonable_encoder
+from fastapi.encoders import jsonable_encoder
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
