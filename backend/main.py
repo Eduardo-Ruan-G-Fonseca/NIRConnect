@@ -899,7 +899,7 @@ async def history_data() -> list[dict]:
 # Rotas de interface web
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("nir_interface.html", {"request": request})
+    return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
