@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+<title>{{ title }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h1 { color: #444; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+    th { background-color: #f2f2f2; }
+    footer { position: fixed; bottom: 10px; width: 100%; text-align: center; font-size: 10px; }
+  </style>
+</head>
+<body>
+  <div style="text-align:center;">
+    <img src="{{ logo }}" width="120" />
+    <h1>{{ title }}</h1>
+  </div>
+  <h2>Parâmetros do Modelo</h2>
+  <ul>
+    <li>Algoritmo: {{ params.algorithm }}</li>
+    <li>Tipo de Análise: {{ params.analysis_type }}</li>
+    <li>Nº componentes: {{ params.n_components }}</li>
+    <li>Pré-processamentos: {{ params.preprocess }}</li>
+    <li>Faixa Espectral Utilizada: {{ range_used or params.ranges }}</li>
+    <li>Estratégia de Validação: {{ params.validation_display }}</li>
+  </ul>
+  {% if preprocess_list %}
+  <h2>Pré-processamentos aplicados</h2>
+  <ul>
+    {% for p in preprocess_list %}
+    <li>{{ p }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <h2>Resultados</h2>
+  {% if params.analysis_type == 'PLS-DA' %}
+  <table>
+    <tr><th>Métrica</th><th>Valor</th></tr>
+    <tr><td>Acurácia</td><td>{{ '%.3f' % metrics.Accuracy }}</td></tr>
+    <tr><td>F1 Macro</td><td>{{ '%.3f' % metrics.F1_macro }}</td></tr>
+    <tr><td>F1 Micro</td><td>{{ '%.3f' % metrics.F1_micro }}</td></tr>
+  <tr><td>Kappa</td><td>{{ '%.3f' % metrics.Kappa }}</td></tr>
+  {% if metrics.Sensitivity is defined %}
+  <tr><td>Sensibilidade</td><td>{{ '%.3f' % metrics.Sensitivity }}</td></tr>
+  {% endif %}
+  {% if metrics.Sensitivity_per_class %}
+  {% for label, val in metrics.Sensitivity_per_class.items() %}
+  <tr><td>Sensibilidade {{ label }}</td><td>{{ '%.3f' % val }}</td></tr>
+  {% endfor %}
+  <tr><td colspan="2"><small>{{ metrics.SensitivityDescription }}</small></td></tr>
+  {% endif %}
+  {% if metrics.Specificity is defined %}
+  <tr><td>Especificidade</td><td>{{ '%.3f' % metrics.Specificity }}</td></tr>
+  {% endif %}
+  </table>
+  <p>Regra de decisão: {{ params.decision_mode }}</p>
+  {% if params.class_mapping %}
+  <p>Mapeamento de classes: {{ params.class_mapping }}</p>
+  {% endif %}
+  {% else %}
+  {% if metrics.R2_cal is defined %}
+  <table>
+    <tr><th>Métrica</th><th>Conjunto de Treino</th><th>Conjunto de Teste</th></tr>
+    <tr><td>R²</td><td>{{ '%.3f' % metrics.R2_cal }}</td><td>{{ '%.3f' % metrics.R2_val }}</td></tr>
+    <tr><td>RMSE</td><td>{{ '%.3f' % metrics.RMSEC }}</td><td>{{ '%.3f' % metrics.RMSEP }}</td></tr>
+  </table>
+  {% else %}
+  <p>R²: {{ metrics.R2 }}</p>
+  <p>RMSECV: {{ metrics.RMSECV }}</p>
+  <p>RMSEP: {{ metrics.RMSEP }}</p>
+  {% endif %}
+  {% endif %}
+  {% if scatter_path %}
+  <div style="text-align:center;">
+    <h3>Scores PLS</h3>
+    <img src="{{ scatter_path }}" width="250"/>
+  </div>
+  {% else %}
+  <p>Imagem não gerada.</p>
+  {% endif %}
+  {% if vip_path %}
+  <div style="text-align:center;">
+    <h3>VIP Scores</h3>
+    <img src="{{ vip_path }}" width="250"/>
+  </div>
+  {% else %}
+  <p>Imagem não gerada.</p>
+  {% endif %}
+  {% if conf_path %}
+  <div style="text-align:center;">
+    <h3>Matriz de Confusão</h3>
+    <img src="{{ conf_path }}" width="250"/>
+  </div>
+  {% else %}
+  <p>Imagem não gerada.</p>
+  {% endif %}
+  {% if class_report_path %}
+  <div style="text-align:center;">
+    <h3>Tabela de Classificação</h3>
+    <img src="{{ class_report_path }}" width="250"/>
+  </div>
+  {% else %}
+  <p>Imagem não gerada.</p>
+  {% endif %}
+  {% if opt_results %}
+  <h2>Desempenho por n_components</h2>
+  <table>
+    <tr><th>Pré-processamento</th><th>n_components</th><th>RMSECV</th></tr>
+    {% for r in opt_results %}
+    <tr><td>{{ r.preprocess }}</td><td>{{ r.n_components }}</td><td>{{ '%.3f' % r.RMSECV if r.RMSECV is not none else '-' }}</td></tr>
+    {% endfor %}
+  </table>
+  {% if opt_plot %}
+  <div style="text-align:center;">
+    <img src="{{ opt_plot }}" width="250"/>
+  </div>
+  {% endif %}
+  {% endif %}
+  {% if top_vips %}
+  <h2>Interpretação do Modelo</h2>
+  {% if range_used %}<p>Faixa utilizada: {{ range_used }} nm</p>{% endif %}
+  <table>
+    <tr><th>\u03bb (nm)</th><th>VIP</th><th>Associa\u00e7\u00e3o</th></tr>
+    {% for item in top_vips %}
+    <tr><td>{{ item.wavelength }}</td><td>{{ '%.2f' % item.vip }}</td><td>{{ item.label }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% if interpretacao_vips %}
+  <h2>Interpretação automática das regiões espectrais mais relevantes</h2>
+  <table>
+    <tr>
+      <th>\u03bb (nm)</th><th>VIP</th><th>Grupo funcional</th><th>Vibra\u00e7\u00e3o</th><th>Coment\u00e1rio</th>
+    </tr>
+    {% for it in interpretacao_vips %}
+    <tr>
+      <td>{{ it.comprimento_onda_nm }}</td>
+      <td>{{ '%.3f' % it.vip }}</td>
+      <td>{{ it.grupo }}</td>
+      <td>{{ it.vibracao }}</td>
+      <td>{{ it.comentario }}</td>
+    </tr>
+  {% endfor %}
+  </table>
+  {% endif %}
+  {% if resumo_interpretativo %}
+  <h2>Resumo automático do modelo</h2>
+  <p style="text-align: justify;">{{ resumo_interpretativo }}</p>
+  {% endif %}
+  <footer>{{ user }} - {{ date }}</footer>
+</body>
+</html>

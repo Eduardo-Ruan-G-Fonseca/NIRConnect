@@ -9,21 +9,21 @@ export default function Servicos() {
         <ul className="grid grid-cols-1 md:grid-cols-3 gap-8">
           <li className="bg-white p-8 rounded-lg shadow-lg hover:shadow-2xl transition-transform transition-shadow">
             <a href="#analise" className="block space-y-4">
-              <img src="/images/service_nir.png" alt="" className="w-full rounded" />
+              <img src="/static/images/service_nir.png" alt="" className="w-full rounded" />
               <h3 className="text-3xl font-semibold">Análise & Processamento NIR</h3>
               <p className="text-lg text-gray-600">Transforme espectros NIR em insights acionáveis.</p>
             </a>
           </li>
           <li className="bg-white p-8 rounded-lg shadow-lg hover:shadow-2xl transition-transform transition-shadow">
             <a href="#consultoria" className="block space-y-4">
-              <img src="/images/consultoria_personalizada.png" alt="" className="w-full rounded" />
+              <img src="/static/images/consultoria_personalizada.png" alt="" className="w-full rounded" />
               <h3 className="text-3xl font-semibold">Consultoria Personalizada</h3>
               <p className="text-lg text-gray-600">Soluções sob medida para integração e interpretação NIR.</p>
             </a>
           </li>
           <li className="bg-white p-8 rounded-lg shadow-lg hover:shadow-2xl transition-transform transition-shadow">
             <a href="#treinamento" className="block space-y-4">
-              <img src="/images/treinamentos_especializados.png" alt="" className="w-full rounded" />
+              <img src="/static/images/treinamentos_especializados.png" alt="" className="w-full rounded" />
               <h3 className="text-3xl font-semibold">Treinamentos Especializados</h3>
               <p className="text-lg text-gray-600">Capacitação prática do básico ao avançado em NIR.</p>
             </a>

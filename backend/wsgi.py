@@ -1,1 +1,1 @@
-from main import app as application
+from public_html.api.main import app as application

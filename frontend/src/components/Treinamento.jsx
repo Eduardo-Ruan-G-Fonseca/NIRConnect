@@ -6,7 +6,7 @@ export default function Treinamento() {
     >
       <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
         <img
-          src="/images/treinamentos_especializados.png"
+          src="/static/images/treinamentos_especializados.png"
           alt=""
           className="rounded-lg shadow-md reveal-from-left"
           data-delay="0.2"

@@ -14,7 +14,7 @@ export default function Sobre() {
         </p>
       </div>
       <div className="md:w-7/12 mt-12 md:mt-0 flex justify-end reveal-from-left" data-delay="0.4">
-        <img src="/images/sobre.png" alt="Ilustração Sobre" className="w-full rounded-lg shadow-lg" />
+        <img src="/static/images/sobre.png" alt="Ilustração Sobre" className="w-full rounded-lg shadow-lg" />
       </div>
     </section>
   );
