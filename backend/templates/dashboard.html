@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dashboard Avançado</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="bg-gray-100 font-inter text-gray-800">
+    <header class="bg-green-700 text-white p-4 mb-6">
+        <h1 class="text-center text-2xl font-semibold">Dashboard da Aplicação</h1>
+    </header>
+    <main class="container mx-auto space-y-8 px-4">
+
+    <section class="bg-white rounded shadow p-6 overflow-hidden">
+        <h2 class="text-xl font-semibold mb-4">Filtros de Logs</h2>
+        <div class="flex flex-wrap items-center gap-2 mb-4">
+            <label for="logType" class="font-medium">Tipo:</label>
+            <select id="logType" class="border rounded p-1">
+                <option value="">Todos</option>
+                <option value="INFO">INFO</option>
+                <option value="ERROR">ERROR</option>
+                <option value="WARNING">WARNING</option>
+                <option value="DEBUG">DEBUG</option>
+            </select>
+
+            <label for="dateFilter" class="font-medium ml-4">Data (AAAA-MM-DD):</label>
+            <input type="date" id="dateFilter" class="border rounded p-1">
+            <button onclick="fetchData()" class="ml-auto bg-green-700 text-white px-3 py-1 rounded">Aplicar</button>
+        </div>
+        <pre id="logs" class="bg-gray-50 p-2 border rounded h-48 overflow-auto"></pre>
+        <h3 class="text-lg font-semibold mt-6">Eventos de Log por Tipo</h3>
+        <canvas id="logChart" class="w-full h-80"></canvas>
+    </section>
+
+    <section class="bg-white rounded shadow p-6 overflow-hidden">
+        <h2 class="text-xl font-semibold mb-4">Estatísticas dos Modelos</h2>
+        <canvas id="modelChart" class="w-full h-80"></canvas>
+    </section>
+
+    <section class="bg-white rounded shadow p-6 overflow-hidden">
+        <h2 class="text-xl font-semibold mb-4">Histórico de Métricas</h2>
+        <canvas id="historyChart" class="w-full h-80"></canvas>
+    </section>
+
+    </main>
+
+    <script>
+        let logChart, modelChart, historyChart;
+
+        async function fetchData() {
+            const type = document.getElementById('logType').value;
+            const date = document.getElementById('dateFilter').value;
+
+            const logResp = await fetch(`/api/dashboard/data?type=${type}&date=${date}`);
+            const data = await logResp.json();
+
+            document.getElementById('logs').innerText = data.logs;
+
+            if (logChart) logChart.destroy();
+            if (modelChart) modelChart.destroy();
+            if (historyChart) historyChart.destroy();
+
+            const ctxLogs = document.getElementById('logChart').getContext('2d');
+            logChart = new Chart(ctxLogs, {
+                type: 'bar',
+                data: {
+                    labels: Object.keys(data.log_counts),
+                    datasets: [{
+                        label: 'Quantidade de Logs',
+                        data: Object.values(data.log_counts),
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: { responsive:true, maintainAspectRatio:false, scales: { y: { beginAtZero: true } } }
+            });
+
+            const ctxModels = document.getElementById('modelChart').getContext('2d');
+            modelChart = new Chart(ctxModels, {
+                type: 'radar',
+                data: {
+                    labels: Object.keys(data.model_metrics),
+                    datasets: [{
+                        label: 'Métricas do Modelo',
+                        data: Object.values(data.model_metrics),
+                        backgroundColor: 'rgba(153, 102, 255, 0.2)',
+                        borderColor: 'rgba(153, 102, 255, 1)',
+                        borderWidth: 2
+                    }]
+                },
+                options: { responsive:true, maintainAspectRatio:false, scales: { r: { beginAtZero: true } } }
+            });
+
+            const ctxHistory = document.getElementById('historyChart').getContext('2d');
+            historyChart = new Chart(ctxHistory, {
+                type: 'line',
+                data: {
+                    labels: data.metric_history.dates,
+                    datasets: [{
+                        label: 'R2',
+                        data: data.metric_history.r2,
+                        borderColor: 'blue',
+                        fill: false
+                    }, {
+                        label: 'RMSE',
+                        data: data.metric_history.rmse,
+                        borderColor: 'red',
+                        fill: false
+                    }, {
+                        label: 'Accuracy',
+                        data: data.metric_history.accuracy,
+                        borderColor: 'green',
+                        fill: false
+                    }]
+                },
+                options: { responsive:true, maintainAspectRatio:false, scales: { y: { beginAtZero: true } } }
+            });
+        }
+
+        fetchData();
+        setInterval(fetchData, 5000);
+    </script>
+</body>
+</html>

@@ -6,18 +6,22 @@ export default function Consultoria() {
     >
       <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
         <img
-          src="https://placehold.co/600x400"
-          alt=""
+          src="/static/images/consultoria_personalizada.png"
+          alt="Consultoria Personalizada NIR"
           className="rounded-lg shadow-md reveal-from-left"
           data-delay="0.2"
         />
         <div className="space-y-6 reveal-from-left" data-delay="0.4">
-          <h2 className="text-5xl font-semibold text-emerald-800">Consultoria Personalizada</h2>
+          <h2 className="text-5xl font-semibold text-emerald-800">
+            Consultoria Personalizada
+          </h2>
           <p className="text-xl leading-relaxed">
-            Integramos tecnologia NIR à sua operação: escolha de equipamentos, interpretação de dados e metodologias
-            customizadas.
+            Integramos tecnologia NIR à sua operação: escolha de equipamentos,
+            interpretação de dados e metodologias customizadas.
           </p>
-          <a href="#contato" className="text-emerald-700 underline">Solicitar consultoria</a>
+          <a href="#contato" className="text-emerald-700 underline">
+            Solicitar consultoria
+          </a>
         </div>
       </div>
     </section>

@@ -15,7 +15,7 @@ export default function Sobre() {
       </div>
       <div className="md:w-7/12 mt-12 md:mt-0 flex justify-end reveal-from-left" data-delay="0.4">
         <img
-          src="https://placehold.co/600x400"
+          src="/static/images/sobre.png"
           alt="Ilustração Sobre"
           className="w-full rounded-lg shadow-lg"
         />
