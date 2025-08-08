@@ -12,7 +12,6 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha512-pDEDr8vFRNbfS/laxzZMObhXyc6s+v1SRFUozLgWrp20y+9QVE9PXQimH1wN4MD6aqDHFqUxu+1PIo4wF7X1Yg==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <!-- Plotly JS -->
     <script src="https://cdn.plot.ly/plotly-latest.min.js" defer></script>
-    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="bg-[#f8f9fa] text-gray-800">
 <div class="max-w-2xl mx-auto p-4 space-y-6">
@@ -228,6 +227,7 @@
 </div>
 
 <script>
+const API_BASE = 'http://localhost:8000';
 let currentMetrics = null;
 let meanSpectra = null;
 let allSpectra = null;
@@ -375,7 +375,7 @@ document.getElementById('formEtapa1').addEventListener('submit', (e)=>{
     const fd = new FormData();
     fd.append('file', file);
     const xhr = new XMLHttpRequest();
-    xhr.open('POST','/columns');
+    xhr.open('POST', `${API_BASE}/columns`);
     xhr.upload.addEventListener('progress', (ev)=>{
         if(ev.lengthComputable){
             const pct = Math.round((ev.loaded/ev.total)*100);
@@ -434,7 +434,7 @@ fileInput.addEventListener('change', async () => {
     if(!fileInput.files.length) return;
     const fd = new FormData();
     fd.append('file', fileInput.files[0]);
-    const res = await fetch('/columns', {method:'POST', body:fd});
+    const res = await fetch(`${API_BASE}/columns`, {method:'POST', body:fd});
     if(res.ok){
         const meta = await res.json();
         if(meta && meta.targets && meta.targets.length){
@@ -631,7 +631,7 @@ document.getElementById('uploadForm').addEventListener('submit', async (e)=>{
         return {method: step.method};
     });
     if(methods.length) fd.append('preprocess', JSON.stringify(methods));
-    const res = await fetch('/analisar', {method:'POST', body:fd});
+    const res = await fetch(`${API_BASE}/analisar`, {method:'POST', body:fd});
     if(!res.ok){
         let msg = 'Erro desconhecido';
         try{ const err = await res.json(); msg = err.detail || msg; }catch(e){}
@@ -815,7 +815,7 @@ optBtn.addEventListener('click', async ()=>{
     optProgressBar.style.width = '0%';
     optProgress.textContent = 'Iniciando otimização...';
     optTimer = setInterval(async ()=>{
-        const stRes = await fetch('/optimize/status');
+        const stRes = await fetch(`${API_BASE}/optimize/status`);
         if(stRes.ok){
             const st = await stRes.json();
             const pct = st.total ? Math.round((st.current/st.total)*100) : 0;
@@ -823,7 +823,7 @@ optBtn.addEventListener('click', async ()=>{
             optProgress.textContent = `Executando otimização: ${pct}%`;
         }
     }, 1000);
-    const res = await fetch('/optimize', {method:'POST', body: fd});
+    const res = await fetch(`${API_BASE}/optimize`, {method:'POST', body: fd});
     clearInterval(optTimer);
     optProgressBar.style.width = '100%';
     if(res.ok){
@@ -926,7 +926,7 @@ document.getElementById('continueModel').addEventListener('click', async ()=>{
         return {method: step.method};
     });
     if(methods.length) fd.append('preprocess', JSON.stringify(methods));
-    const res = await fetch('/analisar', {method:'POST', body: fd});
+    const res = await fetch(`${API_BASE}/analisar`, {method:'POST', body: fd});
     btn.disabled = false;
     btn.textContent = 'Continuar';
     if(!res.ok){
@@ -989,7 +989,7 @@ document.getElementById('continueModel').addEventListener('click', async ()=>{
 document.getElementById('downloadPdf').addEventListener('click', async ()=>{
     if(!currentMetrics) return;
     const payload = {metrics: currentMetrics, params: lastParams, y_real: lastYReal, y_pred: lastYPred, vip: lastVip, top_vips: lastTopVips, scores: lastScores, interpretacao_vips: lastInterpretacao, resumo_interpretativo: lastResumo};
-    const res = await fetch('/report', {
+    const res = await fetch(`${API_BASE}/report`, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify(payload)

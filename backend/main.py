@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse
 from fastapi.encoders import jsonable_encoder
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
@@ -10,6 +9,7 @@ import pickle
 import pandas as pd
 import io
 import numpy as np
+import csv
 from starlette.formparsers import MultiPartParser
 from datetime import datetime
 
@@ -32,8 +32,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Aumenta limites de upload para 100 MB
 MultiPartParser.spool_max_size = 100 * 1024 * 1024
@@ -97,17 +95,30 @@ def _read_dataframe(filename: str, content: bytes) -> pd.DataFrame:
     ``Unnamed`` columns, the first row is treated as data and the next row is
     used as header.
     """
-    if filename.endswith(".csv"):
-        df = pd.read_csv(io.BytesIO(content), header=0, skip_blank_lines=True)
+    if filename.lower().endswith(".csv"):
+        text = content.decode("utf-8", errors="ignore")
+        try:
+            delimiter = csv.Sniffer().sniff(text[:1024]).delimiter
+        except Exception:
+            delimiter = ","
+        data = io.StringIO(text)
+        df = pd.read_csv(data, delimiter=delimiter, header=0, skip_blank_lines=True)
         if all(str(c).startswith("Unnamed") or str(c).strip() == "" for c in df.columns):
-            df = pd.read_csv(io.BytesIO(content), header=None, skip_blank_lines=True)
+            data.seek(0)
+            df = pd.read_csv(data, delimiter=delimiter, header=None, skip_blank_lines=True)
             header = df.iloc[0].tolist()
             df = df.iloc[1:].reset_index(drop=True)
             df.columns = [str(h).strip() for h in header]
     else:
-        df = pd.read_excel(io.BytesIO(content), sheet_name=0, header=0)
+        bio = io.BytesIO(content)
+        try:
+            df = pd.read_excel(bio, sheet_name=0, header=0)
+        except Exception:
+            bio.seek(0)
+            df = pd.read_excel(bio, sheet_name=0, engine="openpyxl", header=0)
         if all((str(c).startswith("Unnamed") or str(c).strip() == "" or pd.isna(c)) for c in df.columns):
-            df = pd.read_excel(io.BytesIO(content), sheet_name=0, header=None)
+            bio.seek(0)
+            df = pd.read_excel(bio, sheet_name=0, header=None)
             header = df.iloc[0].tolist()
             df = df.iloc[1:].reset_index(drop=True)
             df.columns = [str(h).strip() for h in header]
@@ -198,6 +209,21 @@ def _is_number(val: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _parse_preprocess(preprocess: str | list | None) -> list[dict]:
+    """Normalize preprocess parameter into a list of steps."""
+    if not preprocess:
+        return []
+    if isinstance(preprocess, list):
+        return preprocess
+    try:
+        data = json.loads(preprocess)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return [{"method": p.strip()} for p in str(preprocess).split(",") if p.strip()]
 
 
 def _chemical_label(wl: float) -> str:
@@ -360,10 +386,7 @@ async def process_file(
     """Processa arquivo Excel/CSV para treinar um modelo PLS."""
     try:
         content = await file.read()
-        if file.filename.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(content))
-        else:
-            df = pd.read_excel(io.BytesIO(content))
+        df = _read_dataframe(file.filename, content)
         X = df.drop(columns=[target]).values
         methods = _parse_preprocess(preprocess)
         if methods:
