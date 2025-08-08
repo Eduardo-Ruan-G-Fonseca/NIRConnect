@@ -1,13 +1,27 @@
 /* RESET & BASE */
 * { margin:0; padding:0; box-sizing:border-box; }
-html { scroll-behavior:smooth; }
+html { 
+  scroll-behavior:smooth;
+  scroll-padding-top: 80px;
+}
 body {
   font-family:'Montserrat',sans-serif;
   color:#333;
   overflow-y:scroll;
   scroll-snap-type:y mandatory;
+  scroll-padding-top: 80px;
 }
-section { scroll-snap-align:start; scroll-margin-top:80px; }
+/* FULL-SCREEN & PADDING */
+section {
+  display: flex;
+  scroll-snap-align: start;
+  align-items: center;
+  min-height: calc(100vh - 80px);
+  height: auto;
+  overflow: hidden;
+  padding: 1rem 1.5rem;
+  padding-top: 4rem;
+}
 
 /* HERO */
 .hero {
@@ -35,12 +49,6 @@ section { scroll-snap-align:start; scroll-margin-top:80px; }
 #treinamento{ background:linear-gradient(to right, #f0f9ff, #e0f2fe); }
 #contato    { background:linear-gradient(to right, #047857, #065f46); }
 
-/* FULL-SCREEN & PADDING */
-section {
-  display:flex; align-items:center;
-  min-height:100vh;
-  padding-top:4rem; padding-bottom:2rem;
-}
 .py-32 { padding-top:8rem; padding-bottom:8rem; }
 .px-6  { padding-left:1.5rem; padding-right:1.5rem; }
 
@@ -51,9 +59,6 @@ section {
 }
 .detail-section.visible {
   opacity:1; transform:translateY(0);
-}
-.detail-section:hover {
-  transform:scale(1.02);
 }
 .detail-section h2,
 .detail-section p,
@@ -195,3 +200,28 @@ header nav a.active {
 header nav a {
   transition: color 0.1s ease, transform 0.1s ease;
 }
+
+/* logo-glow: brilho pulsante só enquanto hover */
+.logo-glow {
+  filter: drop-shadow(0 0 5px rgba(255,255,255,0.8));
+  transition: filter 0.8s ease-in-out;
+}
+
+.logo-glow:hover {
+  animation: glow 1.3s infinite alternate;
+}
+
+/* ao sair do hover, para a animação e deixa o filtro voltar via transition */
+.logo-glow:not(:hover) {
+  animation: none;
+}
+
+@keyframes glow {
+  from {
+    filter: drop-shadow(0 0 5px rgba(255,255,255,0.8));
+  }
+  to {
+    filter: drop-shadow(0 0 20px rgba(255,255,255,0.8));
+  }
+}
+

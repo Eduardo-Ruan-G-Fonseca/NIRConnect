@@ -4,8 +4,8 @@ export default function Sobre() {
   return (
     <section
       id="sobre"
-      className="snap-start bg-gradient-to-r from-emerald-50 to-emerald-100 flex flex-col md:flex-row md:space-x-24 items-center min-h-screen py-32 px-6 detail-section"
-    >
+      style={{ minHeight: 'calc(100vh - 80px)' }}
+      className="snap-start bg-gradient-to-r from-emerald-50 to-emerald-100 flex flex-col md:flex-row md:space-x-12 items-center py-16 px-6 detail-section"   >
       <div className="md:w-5/12 max-w-4xl space-y-8 reveal-from-left md:pl-16" data-delay="0.2">
         <h2 className="text-5xl font-bold text-emerald-800">Sobre</h2>
         <p className="text-xl leading-relaxed">

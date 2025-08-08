@@ -8,18 +8,36 @@ export default function Hero() {
       className="hero relative flex items-center justify-center text-center px-6 min-h-screen overflow-hidden bg-cover bg-center"
       style={{ backgroundImage: `url(${HeroImage})` }}
     >
-      <div className="absolute inset-0 bg-black opacity-60"></div>
-      <div className="relative max-w-3xl space-y-6">
-        <h1 className="reveal-from-left text-7xl font-extrabold text-white" data-delay="0.1">
+      {/* Overlay degradê suave e mais pronunciado */}
+      <div className="absolute inset-0 bg-gradient-to-b from-black/90 via-black/60 to-black/10"></div>
+
+      <div className="relative max-w-3xl space-y-6 px-4">
+        <h1
+          className="reveal-from-left text-6xl md:text-7xl font-extrabold text-white drop-shadow-lg"
+          data-delay="0.1"
+        >
           NIR Web<br />Inovadora & Eficiente
         </h1>
-        <p className="reveal-from-left text-3xl text-gray-200" data-delay="0.3">
+        <p
+          className="reveal-from-left text-xl md:text-3xl text-gray-200 drop-shadow-md"
+          data-delay="0.3"
+        >
           Descubra como processar dados NIR de forma simples e moderna.
         </p>
+
+        {/* Botão de CTA centralizado */}
+        <a
+          href="#sobre"
+          className="reveal-from-left inline-block bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-7 rounded-full shadow-xl transition-transform transform hover:scale-105"
+          data-delay="0.5"
+        >
+          Saiba Mais
+        </a>
       </div>
 
+      {/* Seta pulsante para baixo */}
       <a href="#sobre" className="down-arrow-container" aria-label="Scroll down">
-        <div className="down-arrow"></div>
+        <div className="down-arrow animate-bounce"></div>
       </a>
     </section>
   );
