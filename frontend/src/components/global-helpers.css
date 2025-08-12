@@ -1,0 +1,6 @@
+/* Helpers globais opcionais */
+html, body { overflow-x: hidden; }
+img { max-width: 100%; height: auto; }
+/* Se quiser garantir offset de header fixo via classe utilitária extra:
+.section-anchor { scroll-margin-top: 6rem; } 
+*/

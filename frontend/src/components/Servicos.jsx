@@ -6,14 +6,11 @@ export default function Servicos() {
   return (
     <section
       id="servicos"
-      /* full-screen abaixo do header fixo */
-      style={{ minHeight: 'calc(100vh - 80px)' }}
-      className="snap-start bg-gradient-to-r from-emerald-100 to-emerald-200 flex items-center py-12 px-4 detail-section"
+      className="snap-start bg-gradient-to-r from-emerald-100 to-emerald-200 py-12 px-4"
     >
-      <div className="mx-auto max-w-screen-lg space-y-6 reveal-from-left" data-delay="0.2">
+      <div className="mx-auto max-w-7xl space-y-6 reveal-from-left" data-delay="0.2">
         <h2 className="text-3xl md:text-4xl font-bold text-emerald-800 text-center">Serviços</h2>
-        <ul className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Card 1 */}
+        <ul className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
           <li className="bg-white p-4 rounded-lg shadow-md hover:shadow-lg transition-shadow">
             <a href="#analise" className="block space-y-3">
               <img src={serviceNir} alt="Análise & Processamento NIR" className="w-full rounded" />
@@ -21,7 +18,6 @@ export default function Servicos() {
               <p className="text-sm text-gray-600">Transforme espectros NIR em insights acionáveis.</p>
             </a>
           </li>
-          {/* Card 2 */}
           <li className="bg-white p-4 rounded-lg shadow-md hover:shadow-lg transition-shadow">
             <a href="#consultoria" className="block space-y-3">
               <img src={consultoria} alt="Consultoria Personalizada NIR" className="w-full rounded" />
@@ -29,7 +25,6 @@ export default function Servicos() {
               <p className="text-sm text-gray-600">Soluções sob medida para integração e interpretação NIR.</p>
             </a>
           </li>
-          {/* Card 3 */}
           <li className="bg-white p-4 rounded-lg shadow-md hover:shadow-lg transition-shadow">
             <a href="#treinamento" className="block space-y-3">
               <img src={treinamento} alt="Treinamentos Especializados em NIR" className="w-full rounded" />

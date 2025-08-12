@@ -17,9 +17,9 @@ export default function Contato() {
   return (
     <section
       id="contato"
-      className="snap-start bg-gradient-to-r from-emerald-700 to-emerald-800 flex items-start min-h-screen py-32 px-6 detail-section"
+      className="snap-start bg-gradient-to-r from-emerald-700 to-emerald-800 py-24 px-6 detail-section"
     >
-      <div className="max-w-4xl w-full mx-auto">
+      <div className="max-w-7xl w-full mx-auto">
         <h2 className="reveal-from-left text-5xl font-bold text-white mb-8" data-delay="0.2">Fale Conosco</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
           <form id="contactForm" className="space-y-6 reveal-from-left" data-delay="0.4" onSubmit={handleSubmit}>

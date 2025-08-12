@@ -7,9 +7,9 @@ export default function Header() {
 
   return (
     <header className="bg-emerald-800 py-2 fixed top-0 w-full z-50 shadow-md">
-      <nav className="max-w-7xl mx-auto flex items-center justify-between h-16 px-12">
+      <nav className="max-w-7xl mx-auto flex items-center justify-between h-16 px-4 md:px-12">
         {/* Logo */}
-        <Link to="/" className="flex items-center ml-4">
+        <Link to="/" className="flex items-center ml-0 md:ml-4">
           <img
             src={logo}
             alt="NIR CONNECT"
@@ -29,7 +29,7 @@ export default function Header() {
         <Link
           to="/nir_interface.html"
           reloadDocument
-          className="hidden md:inline-block bg-emerald-700 hover:bg-emerald-800 text-white font-semibold px-6 py-2 rounded-md transition mr-4"
+          className="hidden md:inline-block bg-emerald-700 hover:bg-emerald-800 text-white font-semibold px-6 py-2 rounded-md transition mr-0 md:mr-4"
         >
           Acessar Plataforma
         </Link>
@@ -49,7 +49,7 @@ export default function Header() {
 
       {/* Menu mobile */}
       {open && (
-        <div id="mobile-menu" className="md:hidden bg-emerald-800 px-12 py-4">
+        <div id="mobile-menu" className="md:hidden bg-emerald-800 px-6 py-4">
           <nav className="flex flex-col space-y-2 text-white">
             <a href="#sobre"    className="hover:text-emerald-200" onClick={() => setOpen(false)}>Sobre</a>
             <a href="#servicos" className="hover:text-emerald-200" onClick={() => setOpen(false)}>Serviços</a>

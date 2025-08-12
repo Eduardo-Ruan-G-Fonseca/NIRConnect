@@ -4,13 +4,13 @@ export default function Treinamento() {
   return (
     <section
       id="treinamento"
-      className="snap-start bg-gradient-to-r from-sky-50 to-sky-100 flex items-center min-h-screen py-32 px-6 detail-section"
+      className="snap-start bg-gradient-to-r from-sky-50 to-sky-100 py-24 px-6 detail-section"
     >
-      <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+      <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
         <img
           src={treinamento}
           alt="Treinamentos Especializados em NIR"
-          className="rounded-lg shadow-md reveal-from-left"
+          className="rounded-lg shadow-md reveal-from-left w-full h-auto object-cover"
           data-delay="0.2"
         />
         <div className="space-y-6 reveal-from-left" data-delay="0.4">
