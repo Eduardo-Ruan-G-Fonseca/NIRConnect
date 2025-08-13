@@ -1,3 +1,9 @@
+
+const DEFAULT_API_BASE =
+  typeof location !== 'undefined'
+    ? `${location.protocol}//${location.hostname}:8000`
+    : 'http://localhost:8000';
+
 export const API_BASE =
   (window.API_BASE) || (location.protocol + '//' + location.hostname + ':8000');
 
@@ -6,6 +12,13 @@ export async function postColumns(file) {
   const fd = new FormData();
   fd.append('file', file);
   const res = await fetch(`${API_BASE}/columns`, { method: 'POST', body: fd });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+
+export async function postAnalisar(fd) {
+  const res = await fetch(`${API_BASE}/analisar`, { method: 'POST', body: fd });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -60,6 +73,22 @@ export async function preprocess(X, y = null) {
   return res.json();
 }
 
+
+export async function train(X, y, nComponents = 10) {
+  const res = await fetch(`${API_BASE}/train`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      X: normalizeMatrix(X),
+      y,
+      n_components: nComponents,
+    }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+
 export async function predict(X) {
   const res = await fetch(`${API_BASE}/predict`, {
     method: 'POST',
@@ -81,6 +110,18 @@ export async function postPreprocess(payload) {
   return res.json();
 }
 
+
+export async function postTrain(payload) {
+  const res = await fetch(`${API_BASE}/train`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+
 export async function postPredict(payload) {
   const res = await fetch(`${API_BASE}/predict`, {
     method: 'POST',
@@ -93,6 +134,7 @@ export async function postPredict(payload) {
 
 // -------------------- FormData variant for /train --------------------
 export async function postTrainForm(fd) {
+
   const urls = [
     `${API_BASE}/train-form`,
     `${API_BASE}/train`,
@@ -109,6 +151,11 @@ export async function postTrainForm(fd) {
     } catch (e) { last = e; }
   }
   throw last || new Error('Nenhuma rota de treino encontrada.');
+
+  const res = await fetch(`${API_BASE}/train`, { method: 'POST', body: fd });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+
 }
 
 const api = {
@@ -117,6 +164,7 @@ const api = {
   getOptimizeStatus,
   postReport,
   preprocess,
+  train,
   predict,
   postPreprocess,
   postPredict,
