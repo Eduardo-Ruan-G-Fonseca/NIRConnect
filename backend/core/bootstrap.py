@@ -5,7 +5,7 @@ from sklearn.model_selection import KFold
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, mean_squared_error, r2_score
 from .metrics import vip_scores, classification_metrics
 
-from .pls import train_pls
+from .pls import train_pls, fit_plsda_multiclass
 
 
 def bootstrap_metrics(X, y, n_components=5, classification=False, n_bootstrap=500, random_state=42):
@@ -62,43 +62,22 @@ def train_plsr(X: np.ndarray, y: np.ndarray, n_components: int = 5):
 
 
 def train_plsda(
-    X: np.ndarray, y: np.ndarray, n_components: int = 5, threshold: float = 0.5
+    X: np.ndarray, y: np.ndarray, n_components: int = 5
 ):
-    """Train a PLS-DA (classification) model and compute metrics.
+    """Train a multi-class PLS-DA model using One-vs-Rest strategy."""
 
-    Parameters
-    ----------
-    X : np.ndarray
-        Matrix of predictors.
-    y : np.ndarray
-        Target labels.
-    n_components : int, optional
-        Number of latent variables to retain, by default 5.
-    threshold : float, optional
-        Threshold for binary classification. Only used when the problem is
-        binary. Defaults to 0.5.
-    """
     y_series = pd.Series(y).astype(str)
     classes = sorted(y_series.unique())
     if len(classes) < 2:
         raise ValueError("A coluna alvo precisa ter pelo menos duas classes distintas.")
-    class_to_idx = {c: i for i, c in enumerate(classes)}
-    y_enc = np.array([class_to_idx[val] for val in y_series])
-    if len(classes) > 2:
-        Ybin = np.eye(len(classes))[y_enc]
-    else:
-        Ybin = y_enc.reshape(-1, 1)
 
-    pls = PLSRegression(n_components=n_components)
-    pls.fit(X, Ybin)
-    Y_pred = pls.predict(X)
-    if Y_pred.ndim > 1 and Y_pred.shape[1] > 1:
-        idx_pred = np.argmax(Y_pred, axis=1)
-    else:
-        idx_pred = (Y_pred.ravel() > threshold).astype(int)
-    y_pred = np.array([classes[i] for i in idx_pred])
+    model = fit_plsda_multiclass(X, y_series.values, n_components=n_components)
+    y_pred = model.predict(X)
+    metrics = classification_metrics(y_series.values, y_pred, labels=model.label_encoder.classes_)
 
-    metrics = classification_metrics(y_series.values, y_pred, labels=classes)
-    vip = vip_scores(pls, X, Ybin if Ybin.ndim > 1 else Ybin.reshape(-1, 1)).tolist()
-    scores = pls.x_scores_.tolist()
-    return pls, metrics, {"vip": vip, "scores": scores, "classes": classes}
+    Y = model.one_hot.transform(model.label_encoder.transform(y_series.values).reshape(-1, 1))
+    vips = [vip_scores(pls, X, Y[:, c].reshape(-1, 1)) for c, pls in enumerate(model.pls_list)]
+    vip = np.mean(vips, axis=0).tolist()
+    scores = model.pls_list[0].x_scores_.tolist()
+
+    return model, metrics, {"vip": vip, "scores": scores, "classes": model.label_encoder.classes_.tolist()}

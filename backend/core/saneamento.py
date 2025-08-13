@@ -4,6 +4,42 @@ from fastapi import HTTPException
 from typing import Iterable, Sequence, Tuple, Optional
 
 
+def sanitize_X(X: Iterable, features: Optional[Sequence[str]] = None) -> Tuple[np.ndarray, Optional[Sequence[str]]]:
+    """Basic sanitization for feature matrix ``X``.
+
+    - Cast to float and convert ``±inf`` to ``NaN``
+    - Drop columns that are entirely ``NaN`` (also filter ``features``)
+    - Impute remaining ``NaN`` values with the column median
+
+    Parameters
+    ----------
+    X: iterable
+        2D data array (samples x features)
+    features: sequence of str, optional
+        Names of the features. If provided, will be filtered to match the
+        remaining columns after sanitization.
+
+    Returns
+    -------
+    X_saneado: ndarray
+        Sanitized numeric matrix with no ``NaN`` values.
+    features_filtradas: sequence or None
+        Filtered feature names corresponding to the remaining columns.
+    """
+
+    X = np.asarray(X, dtype=float)
+    X[~np.isfinite(X)] = np.nan
+    col_ok = ~np.isnan(X).all(axis=0)
+    if not col_ok.any():
+        raise ValueError("Todas as variáveis ficaram NaN/Inf após pré-processamento.")
+    X = X[:, col_ok]
+    if features is not None:
+        features = [f for i, f in enumerate(features) if col_ok[i]]
+    imp = SimpleImputer(strategy="median")
+    X = imp.fit_transform(X)
+    return X, features
+
+
 def saneamento_global(X: Iterable, y: Optional[Iterable] = None,
                       features: Optional[Sequence[str]] = None
                       ) -> Tuple[np.ndarray, Optional[np.ndarray], list[str]]:

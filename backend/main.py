@@ -311,15 +311,9 @@ def _cross_val_metrics(
             # y como string (classes)
             y_tr = pd.Series(y[train_idx]).astype(str).iloc[tr_row_ok].values
             model, _, extra = train_plsda(
-                X_tr, y_tr, n_components=n_components, threshold=threshold
+                X_tr, y_tr, n_components=n_components
             )
-            Yp = model.predict(X_te)
-            if Yp.ndim > 1 and Yp.shape[1] > 1:
-                idx = np.argmax(Yp, axis=1)
-            else:
-                idx = (Yp.ravel() > threshold).astype(int)
-            classes = extra.get("classes", [])
-            preds[test_idx] = np.array([classes[i] for i in idx])
+            preds[test_idx] = model.predict(X_te)
         else:
             # y numérico no treino com o mesmo filtro de linhas
             y_tr_full = np.asarray(y[train_idx], dtype=float)
@@ -566,7 +560,7 @@ async def process_file(
         # 4) treina
         if classification:
             y = df[target].values  # classes como string/obj funcionam
-            _, metrics, extra = train_plsda(X, y, n_components=n_components, threshold=threshold)
+            _, metrics, extra = train_plsda(X, y, n_components=n_components)
         else:
             # garante numérico na regressão
             try:
@@ -751,24 +745,16 @@ async def analisar_file(
 
         y_raw = df[target].tolist()
         if classification:
-            y_arr, class_mapping, n_classes = encode_labels_if_needed(y_raw)
-            if n_classes > 2:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"PLS-DA atual suporta apenas 2 classes. "
-                        f"Encontradas: {n_classes}. Classes: {sorted(set(map(str, y_raw)))}"
-                    ),
-                )
+            y_arr, class_mapping, _ = encode_labels_if_needed(y_raw)
+            X, y_arr, features = saneamento_global(X, y_arr, features)
+            if class_mapping:
+                y_series = pd.Series([class_mapping[int(i)] for i in y_arr.astype(int)])
+            else:
+                y_series = pd.Series(y_arr).astype(str)
         else:
             y_arr = pd.to_numeric(pd.Series(y_raw), errors="coerce").to_numpy(dtype=float)
-            class_mapping, n_classes = {}, 0
-
-        X, y_arr, features = saneamento_global(X, y_arr, features)
-
-        if class_mapping:
-            y_series = pd.Series([class_mapping[int(i)] for i in y_arr.astype(int)])
-        else:
+            class_mapping = {}
+            X, y_arr, features = saneamento_global(X, y_arr, features)
             y_series = pd.Series(y_arr)
 
         scores = None
@@ -793,15 +779,10 @@ async def analisar_file(
 
             if classification:
                 model, train_metrics, extra = train_plsda(
-                    X_train, y_train.values, n_components=n_components, threshold=threshold
+                    X_train, y_train.values, n_components=n_components
                 )
-                Yp_test = model.predict(X_test)
-                if Yp_test.ndim > 1 and Yp_test.shape[1] > 1:
-                    idx_test = np.argmax(Yp_test, axis=1)
-                else:
-                    idx_test = (Yp_test.ravel() > threshold).astype(int)
+                y_test_pred = model.predict(X_test)
                 classes = extra.get("classes", [])
-                y_test_pred = np.array([classes[i] for i in idx_test])
                 test_metrics = classification_metrics(y_test.astype(str).values, y_test_pred, labels=classes)
 
                 metrics = {"train": train_metrics, "test": test_metrics}
@@ -851,21 +832,15 @@ async def analisar_file(
             if classification:
                 model, metrics, extra = await run_in_threadpool(
                     train_plsda, X, y_series.values,
-                    n_components=n_components, threshold=threshold
+                    n_components=n_components
                 )
-                Y_pred = model.predict(X)
-                if Y_pred.ndim > 1 and Y_pred.shape[1] > 1:
-                    idx = np.argmax(Y_pred, axis=1)
-                else:
-                    idx = (Y_pred.ravel() > threshold).astype(int)
-                classes = extra.get("classes", [])
-                y_pred = [classes[i] for i in idx]
+                y_pred = model.predict(X).tolist()
                 y_series = y_series.astype(str)
 
                 if validation_method in {"KFold", "LOO"}:
                     cvm = _cross_val_metrics(
                         X, y_series.values, n_components, classification=True,
-                        validation_method=validation_method, validation_params=val_params, threshold=threshold
+                        validation_method=validation_method, validation_params=val_params
                     )
                     metrics = {"train": metrics, "cv": cvm}
             else:

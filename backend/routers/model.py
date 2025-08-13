@@ -7,8 +7,8 @@ import joblib
 import os
 from sklearn.model_selection import KFold, cross_validate
 
-from core.io_utils import to_float_matrix, encode_labels_if_needed
-from core.saneamento import saneamento_global
+from core.io_utils import to_float_matrix
+from core.saneamento import saneamento_global, sanitize_X
 from core.bootstrap import train_plsda
 try:
     from ml.pipeline import build_pls_pipeline
@@ -72,26 +72,23 @@ class TrainRequest(BaseModel):
 def train(req: TrainRequest):
     X = to_float_matrix(req.X)
     if req.classification:
-        y_arr, class_mapping, n_classes = encode_labels_if_needed(req.y)
-        if n_classes > 2:
-            raise HTTPException(
-                status_code=400,
-                detail=f"PLS-DA atual suporta 2 classes (encontradas {n_classes}).",
-            )
-    else:
-        y_arr = pd.to_numeric(pd.Series(req.y), errors="coerce").to_numpy(dtype=float)
-        class_mapping = {}
-    X_clean, y_clean, features = saneamento_global(X, y_arr, req.features)
-    if (not np.isfinite(X_clean).all()) or np.isnan(X_clean).sum():
-        raise HTTPException(status_code=400, detail="Dados inválidos mesmo após saneamento")
-    if X_clean.shape[1] == 0:
-        raise HTTPException(status_code=400, detail="Nenhuma coluna válida para treino")
-
-    if req.classification:
-        model, metrics, extra = train_plsda(X_clean, y_clean, n_components=req.n_components)
+        y_arr = np.asarray(req.y)
+        if len(np.unique(y_arr)) < 2:
+            raise HTTPException(status_code=400, detail="variável-alvo precisa de ≥2 classes")
+        X_clean, features = sanitize_X(X, req.features)
+        model, metrics, extra = train_plsda(X_clean, y_arr, n_components=req.n_components)
+        class_mapping = {str(i): cls for i, cls in enumerate(extra.get("classes", []))}
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
         joblib.dump({"pipeline": model, "features": features, "class_mapping": class_mapping}, MODEL_PATH)
         return {"metrics": metrics, "vip": extra.get("vip"), "features": features, "class_mapping": class_mapping}
+    else:
+        y_arr = pd.to_numeric(pd.Series(req.y), errors="coerce").to_numpy(dtype=float)
+        class_mapping = {}
+        X_clean, y_clean, features = saneamento_global(X, y_arr, req.features)
+        if (not np.isfinite(X_clean).all()) or np.isnan(X_clean).sum():
+            raise HTTPException(status_code=400, detail="Dados inválidos mesmo após saneamento")
+        if X_clean.shape[1] == 0:
+            raise HTTPException(status_code=400, detail="Nenhuma coluna válida para treino")
 
     pipeline = build_pls_pipeline(req.n_components)
     cv = KFold(n_splits=req.n_splits, shuffle=True, random_state=42)
@@ -132,11 +129,16 @@ def predict(req: PredictRequest, threshold: float = 0.5):
     pipeline = blob["pipeline"]
     class_mapping = blob.get("class_mapping", {})
     X = to_float_matrix(req.X)
-    scores = pipeline.predict(X).ravel()
-    out: Dict[str, Any] = {"predictions": scores.tolist()}
-    if class_mapping:
-        idx = (scores >= threshold).astype(int).tolist()
-        labels = [class_mapping.get(i, str(i)) for i in idx]
-        out["labels_pred"] = labels
-        out["class_mapping"] = class_mapping
+    if hasattr(pipeline, "predict_proba"):
+        probs = pipeline.predict_proba(X)
+        preds = pipeline.predict(X)
+        out: Dict[str, Any] = {"predictions": preds.tolist(), "probabilities": probs.tolist(), "class_mapping": class_mapping}
+    else:
+        scores = pipeline.predict(X).ravel()
+        out = {"predictions": scores.tolist()}
+        if class_mapping:
+            idx = (scores >= threshold).astype(int).tolist()
+            labels = [class_mapping.get(i, str(i)) for i in idx]
+            out["labels_pred"] = labels
+            out["class_mapping"] = class_mapping
     return out

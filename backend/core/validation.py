@@ -6,6 +6,9 @@ from sklearn.model_selection import (
     LeaveOneOut,
     train_test_split,
 )
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+from typing import Callable, Dict, Any, List, Optional
+
 
 
 def build_cv(method: str, y: np.ndarray, classification: bool, params: dict):
@@ -56,3 +59,67 @@ def build_cv(method: str, y: np.ndarray, classification: bool, params: dict):
         return _gen()
 
     raise ValueError(f"Unknown validation method: {method}")
+
+
+def evaluate_plsda_multiclass(model_factory: Callable[[], Any], X: np.ndarray, y: np.ndarray, method: str = "LOO", params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Perform cross-validation for multi-class PLS-DA models.
+
+    Parameters
+    ----------
+    model_factory: callable
+        Function returning an object with ``fit`` and ``predict`` methods.
+    X: ndarray
+        Feature matrix.
+    y: ndarray
+        Target labels (strings or numbers).
+    method: str
+        Validation method: ``LOO``, ``KFold`` or ``Holdout``.
+    params: dict, optional
+        Additional parameters for the validation splitter.
+    """
+
+    y = np.asarray(y)
+    preds: List[str] = []
+    trues: List[str] = []
+
+    if method == "LOO":
+        cv = LeaveOneOut()
+        for tr, te in cv.split(X):
+            m = model_factory()
+            m.fit(X[tr], y[tr])
+            p = m.predict(X[te])
+            preds.extend(p.tolist())
+            trues.extend(y[te].tolist())
+    elif method == "KFold":
+        n_splits = int((params or {}).get("n_splits", 5))
+        cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+        for tr, te in cv.split(X):
+            m = model_factory()
+            m.fit(X[tr], y[tr])
+            p = m.predict(X[te])
+            preds.extend(p.tolist())
+            trues.extend(y[te].tolist())
+    elif method == "Holdout":
+        test_size = float((params or {}).get("test_size", 0.3))
+        tr, te = train_test_split(np.arange(len(X)), test_size=test_size, random_state=42, stratify=y)
+        m = model_factory()
+        m.fit(X[tr], y[tr])
+        p = m.predict(X[te])
+        preds = p.tolist()
+        trues = y[te].tolist()
+    else:
+        raise ValueError("validation_method inválido")
+
+    acc = accuracy_score(trues, preds)
+    prec = precision_score(trues, preds, average="macro", zero_division=0)
+    rec = recall_score(trues, preds, average="macro", zero_division=0)
+    f1 = f1_score(trues, preds, average="macro", zero_division=0)
+    cm = confusion_matrix(trues, preds).tolist()
+
+    return {
+        "Accuracy": float(acc),
+        "MacroPrecision": float(prec),
+        "MacroRecall": float(rec),
+        "MacroF1": float(f1),
+        "ConfusionMatrix": cm,
+    }

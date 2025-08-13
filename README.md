@@ -33,3 +33,7 @@ curl -X POST http://localhost:8000/model/preprocess \
      -d '{"X": [[1,2],[3,4]]}'
 ```
 
+
+### Multiclass PLS-DA
+
+O backend agora suporta classificação PLS-DA multiclasse via estratégia One-Vs-Rest, retornando probabilidades por classe e métricas macro.
