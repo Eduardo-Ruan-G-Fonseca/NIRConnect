@@ -1,17 +1,20 @@
 import numpy as np
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from scipy.signal import savgol_filter
 
 
+EPS = 1e-12
+
+
 def snv(X: np.ndarray) -> np.ndarray:
-    """Standard Normal Variate."""
+    """Standard Normal Variate with epsilon to avoid div-by-zero."""
     mean = np.mean(X, axis=1, keepdims=True)
     std = np.std(X, axis=1, keepdims=True)
-    return (X - mean) / np.where(std == 0, 1, std)
+    std = np.where(std < EPS, 1.0, std)
+    return (X - mean) / std
 
 
 def msc(X: np.ndarray, reference: np.ndarray | None = None) -> np.ndarray:
-    """Multiplicative Scatter Correction."""
+    """Multiplicative Scatter Correction with safe slope."""
     if reference is None:
         reference = np.mean(X, axis=0)
     corrected = np.zeros_like(X)
@@ -19,23 +22,36 @@ def msc(X: np.ndarray, reference: np.ndarray | None = None) -> np.ndarray:
         fit = np.polyfit(reference, X[i], 1, full=True)
         slope = fit[0][0]
         intercept = fit[0][1]
+        slope = slope if abs(slope) > EPS else 1.0
         corrected[i] = (X[i] - intercept) / slope
     return corrected
 
 
 def savgol_derivative(X: np.ndarray, order: int = 1, window: int = 11, poly: int = 2) -> np.ndarray:
-    """Savitzky-Golay derivative."""
+    """Savitzky-Golay derivative ensuring valid window."""
+    if window <= poly:
+        window = poly + 2
     if window % 2 == 0:
         window += 1
     return savgol_filter(X, window_length=window, polyorder=poly, deriv=order, axis=1)
 
 
 def minmax_norm(X: np.ndarray) -> np.ndarray:
-    return MinMaxScaler().fit_transform(X)
+    """Min-Max normalization with zero-range protection."""
+    X = np.asarray(X, dtype=float)
+    min_ = np.min(X, axis=0, keepdims=True)
+    max_ = np.max(X, axis=0, keepdims=True)
+    range_ = np.where((max_ - min_) < EPS, 1.0, max_ - min_)
+    return (X - min_) / range_
 
 
 def zscore(X: np.ndarray) -> np.ndarray:
-    return StandardScaler().fit_transform(X)
+    """Z-score normalization with safe std."""
+    X = np.asarray(X, dtype=float)
+    mean = np.mean(X, axis=0, keepdims=True)
+    std = np.std(X, axis=0, keepdims=True)
+    std = np.where(std < EPS, 1.0, std)
+    return (X - mean) / std
 
 
 def ncl(X: np.ndarray) -> np.ndarray:

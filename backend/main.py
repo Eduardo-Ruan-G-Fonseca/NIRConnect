@@ -11,7 +11,7 @@ import numpy as np
 import csv
 from starlette.formparsers import MultiPartParser
 from datetime import datetime
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, validator, Field
 
 from core.config import METRICS_FILE, settings
 from core.metrics import regression_metrics, classification_metrics
@@ -23,8 +23,11 @@ from core.preprocessing import apply_methods
 from core.optimization import optimize_model_grid
 from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from typing import Optional, Tuple, List, Literal
+from utils.saneamento import saneamento_global
+from ml.pipeline import build_pls_pipeline
 
 from core.pls import is_categorical  # (se não for usar, podemos remover depois)
+import joblib
 
 # Progresso global para /optimize/status
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
@@ -74,6 +77,98 @@ class Metrics(BaseModel):
     R2: float
     RMSE: float
     Accuracy: float
+
+
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "pls_pipeline.joblib")
+
+
+class PreprocessRequest(BaseModel):
+    X: List[List[float]]
+    y: Optional[List[float]] = None
+    features: Optional[List[str]] = None
+    methods: Optional[List] = None
+
+
+@app.post("/preprocess", tags=["Model"])
+def preprocess(req: PreprocessRequest):
+    X = np.asarray(req.X, dtype=float)
+    nan_before = int(np.isnan(X).sum())
+    if req.methods:
+        from core.preprocessing import apply_methods
+        X = apply_methods(X, req.methods)
+    X_clean, y_clean, features = saneamento_global(X, req.y, req.features)
+    nan_after = int(np.isnan(X_clean).sum())
+    preview = X_clean[:5].tolist()
+    return {
+        "shape_before": list(np.asarray(req.X).shape),
+        "shape_after": list(X_clean.shape),
+        "nans_before": nan_before,
+        "nans_after": nan_after,
+        "preview": preview,
+        "features": features,
+        "y": y_clean.tolist() if y_clean is not None else None,
+    }
+
+
+class TrainRequest(BaseModel):
+    X: List[List[float]]
+    y: List[float]
+    features: Optional[List[str]] = None
+    n_components: int = Field(10, ge=1)
+    n_splits: int = Field(5, ge=2)
+
+
+@app.post("/train", tags=["Model"])
+def train(req: TrainRequest):
+    X_clean, y_clean, features = saneamento_global(req.X, req.y, req.features)
+    if not np.isfinite(X_clean).all():
+        raise HTTPException(status_code=400, detail="Dados contêm valores não finitos após saneamento")
+    if np.isnan(X_clean).sum() != 0:
+        raise HTTPException(status_code=400, detail="Dados contêm NaN após saneamento")
+    if X_clean.shape[1] == 0:
+        raise HTTPException(status_code=400, detail="Nenhuma coluna válida para treino")
+
+    pipeline = build_pls_pipeline(req.n_components)
+    from sklearn.model_selection import KFold, cross_validate
+
+    cv = KFold(n_splits=req.n_splits, shuffle=True, random_state=42)
+    cv_results = cross_validate(
+        pipeline,
+        X_clean,
+        y_clean,
+        cv=cv,
+        scoring={"r2": "r2", "rmse": "neg_root_mean_squared_error"},
+        return_train_score=False,
+    )
+    r2_scores = cv_results["test_r2"].tolist()
+    rmse_scores = (-cv_results["test_rmse"]).tolist()
+
+    pipeline.fit(X_clean, y_clean)
+    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+    joblib.dump({"pipeline": pipeline, "features": features}, MODEL_PATH)
+
+    return {
+        "r2": r2_scores,
+        "rmse": rmse_scores,
+        "r2_mean": float(np.mean(r2_scores)),
+        "rmse_mean": float(np.mean(rmse_scores)),
+        "features": features,
+    }
+
+
+class PredictRequest(BaseModel):
+    X: List[List[float]]
+
+
+@app.post("/predict", tags=["Model"])
+def predict(req: PredictRequest):
+    if not os.path.exists(MODEL_PATH):
+        raise HTTPException(status_code=400, detail="Modelo não treinado")
+    model_data = joblib.load(MODEL_PATH)
+    pipeline = model_data["pipeline"]
+    X = np.asarray(req.X, dtype=float)
+    preds = pipeline.predict(X).ravel().tolist()
+    return {"predictions": preds}
 
 
 def _latest_log() -> str:
