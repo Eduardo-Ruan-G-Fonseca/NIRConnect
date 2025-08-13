@@ -1,6 +1,6 @@
 import os
 import json
-from .core.config import settings, METRICS_FILE
+from core.config import settings, METRICS_FILE
 
 def parse_log_levels(log_content):
     levels = ["INFO", "ERROR", "WARNING", "DEBUG"]

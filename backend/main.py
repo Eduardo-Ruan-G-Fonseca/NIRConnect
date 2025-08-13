@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import StreamingResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-import os
+import os, sys
 import json
 import pickle
 import pandas as pd
@@ -13,25 +13,28 @@ from starlette.formparsers import MultiPartParser
 from datetime import datetime
 from pydantic import BaseModel, validator, Field
 
-from .core.config import METRICS_FILE, settings
-from .core.metrics import regression_metrics, classification_metrics
-from .core.report_pdf import PDFReport
-from .core.logger import log_info
-from .core.validation import build_cv
-from .core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
-from .core.preprocessing import apply_methods
-from .core.optimization import optimize_model_grid
-from .core.interpreter import interpretar_vips, gerar_resumo_interpretativo
+if os.path.dirname(__file__) not in sys.path:
+    sys.path.append(os.path.dirname(__file__))
+
+from core.config import METRICS_FILE, settings
+from core.metrics import regression_metrics, classification_metrics
+from core.report_pdf import PDFReport
+from core.logger import log_info
+from core.validation import build_cv
+from core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
+from core.preprocessing import apply_methods
+from core.optimization import optimize_model_grid
+from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from typing import Optional, Tuple, List, Literal, Any, Dict
-from .core.saneamento import saneamento_global
-from .core.io_utils import to_float_matrix, encode_labels_if_needed
+from core.saneamento import saneamento_global
+from core.io_utils import to_float_matrix, encode_labels_if_needed
 try:
-    from .ml.pipeline import build_pls_pipeline
+    from ml.pipeline import build_pls_pipeline
 except Exception:
-    from .core.ml.pipeline import build_pls_pipeline  # fallback se mover
+    from core.ml.pipeline import build_pls_pipeline  # fallback se mover
 
 
-from .core.pls import is_categorical  # (se não for usar, podemos remover depois)
+from core.pls import is_categorical  # (se não for usar, podemos remover depois)
 import joblib
 
 # Progresso global para /optimize/status
@@ -107,7 +110,7 @@ def preprocess(req: PreprocessRequest):
     X = np.asarray(req.X, dtype=float)
     nan_before = int(np.isnan(X).sum())
     if req.methods:
-        from .core.preprocessing import apply_methods
+        from core.preprocessing import apply_methods
         X = apply_methods(X, req.methods)
     X_clean, y_clean, features = saneamento_global(X, req.y, req.features)
     nan_after = int(np.isnan(X_clean).sum())
@@ -820,7 +823,7 @@ async def analisar_file(
                     r2_val = None
                 rmsep = float(np.sqrt(mean_squared_error(y_test_num, y_test_pred)))
 
-                from .core.metrics import vip_scores
+                from core.metrics import vip_scores
                 vip_list = vip_scores(pls, X_train, y_train_num.values.reshape(-1, 1)).tolist()
                 extra = {"vip": vip_list, "scores": pls.x_scores_.tolist()}
                 metrics = {"R2_cal": r2_cal, "RMSEC": rmsec, "R2_val": r2_val, "RMSEP": rmsep}
