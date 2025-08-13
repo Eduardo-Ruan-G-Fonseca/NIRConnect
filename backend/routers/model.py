@@ -13,12 +13,16 @@ from ml.pipeline import build_pls_pipeline
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "pls_pipeline.joblib")
 MODEL_PATH = os.path.normpath(MODEL_PATH)
 
+
 # Expose PLS endpoints under a dedicated tag so they appear clearly in /docs
 # and group them under the /model prefix
 router = APIRouter(prefix="/model", tags=["Model"])
 
 # Make router importable via ``from routers.model import router``
 __all__ = ["router"]
+
+
+
 
 
 class PreprocessRequest(BaseModel):
