@@ -24,7 +24,6 @@ from core.optimization import optimize_model_grid
 from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from typing import Optional, Tuple, List, Literal
 
-from core.pls import is_categorical  # (se não for usar, podemos remover depois)
 from routers import model as model_router
 
 # Progresso global para /optimize/status
@@ -32,6 +31,7 @@ OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
 
 app = FastAPI(title="NIR API v4.6")
 
+# ✅ inclua o router SEM prefixo (assim as rotas ficam /preprocess, /train, /predict)
 app.include_router(model_router.router)
 
 app.add_middleware(
