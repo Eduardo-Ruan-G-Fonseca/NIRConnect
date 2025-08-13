@@ -1,6 +1,14 @@
-// === BASE atual (mantive como está) ===
+
+const DEFAULT_API_BASE =
+  typeof location !== 'undefined'
+    ? location.protocol + '//' + location.hostname + ':8000'
+    : 'http://localhost:8000';
+
 export const API_BASE =
-  (window as any).API_BASE || (location.protocol + '//' + location.hostname + ':8000');
+  typeof window !== 'undefined' && window.API_BASE
+    ? window.API_BASE
+    : DEFAULT_API_BASE;
+
 
 // ====== Legado (mantidos) ======
 export async function postColumns(file: File) {
@@ -44,76 +52,12 @@ export async function postReport(payload: unknown) {
   return res.blob();
 }
 
-
-
 // ---- New PLS pipeline endpoints ----
 export async function postPreprocess(payload) {
-  const res = await fetch(`${API_BASE}/model/preprocess`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-
-
-// ====== NOVO – endpoints JSON do backend ======
-// Helpers para garantir que números inválidos virem null (e não NaN/Infinity)
-function toNumberOrNull(v: unknown): number | null {
-  if (v === null || v === undefined) return null;
-  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-  const s = String(v).trim().replace(',', '.');
-  if (s === '') return null;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
-}
-
-export function normalizeMatrix(rows: Array<Array<number | string | null | undefined>>) {
-  return rows.map((r) => r.map(toNumberOrNull));
-}
-
-/**
- * /preprocess  -> { X, y? }  -> diag/preview
- * Uso “amigável”: normaliza X automaticamente.
- */
-export async function preprocess(
-  X: Array<Array<number | string | null | undefined>>,
-  y: Array<number | string | null | undefined> | null = null
-) {
   const res = await fetch(`${API_BASE}/preprocess`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ X: normalizeMatrix(X), y }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-/**
- * /train -> { X, y, n_components }
- * Uso “amigável”: normaliza X automaticamente.
- */
-export async function train(
-  X: Array<Array<number | string | null | undefined>>,
-  y: Array<number | string | null | undefined>,
-  nComponents = 10
-) {
-  const res = await fetch(`${API_BASE}/train`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ X: normalizeMatrix(X), y, n_components: nComponents }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-/**
- * /predict -> { X }
- * Uso “amigável”: normaliza X automaticamente.
- */
-export async function predict(X: Array<Array<number | string | null | undefined>>) {
-  const res = await fetch(`${API_BASE}/predict`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ X: normalizeMatrix(X) }),>>>>>>> main
-
+    body: JSON.stringify(payload)
 
   });
   if (!res.ok) throw new Error(await res.text());
@@ -121,40 +65,32 @@ export async function predict(X: Array<Array<number | string | null | undefined>
 }
 
 export async function postTrain(payload) {
-
-  const res = await fetch(`${API_BASE}/model/train`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-
-
-// === Wrappers compatíveis com a outra branch ===
-// Aceitam um payload já pronto (sem normalização automática).
-
-export async function postPreprocess(payload: unknown) {
-  const res = await fetch(`${API_BASE}/preprocess`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  if (payload instanceof FormData) {
+    let res = await fetch(`${API_BASE}/train`, { method: 'POST', body: payload });
+    if (!res.ok) {
+      res = await fetch(`${API_BASE}/analisar`, { method: 'POST', body: payload });
+      if (!res.ok) {
+        res = await fetch(`${API_BASE}/analyze`, { method: 'POST', body: payload });
+      }
+    }
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  } else {
+    const res = await fetch(`${API_BASE}/train`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
 }
 
-
 export async function postPredict(payload) {
-  const res = await fetch(`${API_BASE}/model/predict`, {
+  const res = await fetch(`${API_BASE}/predict`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
-
-
-export async function postTrain(payload: unknown) {
-  const res = await fetch(`${API_BASE}/train`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
 
   });
   if (!res.ok) throw new Error(await res.text());
@@ -173,23 +109,3 @@ const api = {
 };
 
 export default api;
-
-
-
-export async function postPredict(payload: unknown) {
-  const res = await fetch(`${API_BASE}/predict`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-// NOVO: treino via FormData no endpoint /train (substitui /analisar)
-export async function postTrainForm(fd: FormData) {
-  const res = await fetch(`${API_BASE}/train`, { method: 'POST', body: fd });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-

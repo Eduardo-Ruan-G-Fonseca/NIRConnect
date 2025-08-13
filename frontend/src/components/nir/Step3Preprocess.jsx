@@ -2,9 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-dist-min";
 
-
-import { postTrainForm } from "../../services/api";
-
+import { postTrain } from "../../services/api";
 
 
 export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed }) {
@@ -173,9 +171,7 @@ export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed 
       }
 
 
-
-      const data = await postTrainForm(fd);
-
+      const data = await postTrain(fd);
 
 
       const fullParams = {

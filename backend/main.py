@@ -30,20 +30,11 @@ from ml.pipeline import build_pls_pipeline
 from core.pls import is_categorical  # (se não for usar, podemos remover depois)
 import joblib
 
-
-from routers import model as model_router
-
-
 # Progresso global para /optimize/status
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
 
 app = FastAPI(title="NIR API v4.6")
 model_router = APIRouter(tags=["Model"])
-
-
-app.include_router(model_router)
-
-app.include_router(model_router.router)
 
 
 app.add_middleware(
@@ -101,7 +92,8 @@ class PreprocessRequest(BaseModel):
     methods: Optional[List] = None
 
 
-@app.post("/preprocess", tags=["Model"])
+
+@model_router.post("/preprocess")
 
 def preprocess(req: PreprocessRequest):
     X = np.asarray(req.X, dtype=float)
@@ -131,7 +123,8 @@ class TrainRequest(BaseModel):
     n_splits: int = Field(5, ge=2)
 
 
-@app.post("/train", tags=["Model"])
+
+@model_router.post("/train")
 
 def train(req: TrainRequest):
     X_clean, y_clean, features = saneamento_global(req.X, req.y, req.features)
@@ -174,8 +167,7 @@ class PredictRequest(BaseModel):
     X: List[List[float]]
 
 
-
-@app.post("/predict", tags=["Model"])
+@model_router.post("/predict")
 
 def predict(req: PredictRequest):
     if not os.path.exists(MODEL_PATH):
@@ -186,6 +178,9 @@ def predict(req: PredictRequest):
     preds = pipeline.predict(X).ravel().tolist()
     return {"predictions": preds}
 
+
+
+app.include_router(model_router)
 
 
 def _latest_log() -> str:
