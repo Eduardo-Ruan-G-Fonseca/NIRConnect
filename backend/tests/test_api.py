@@ -273,10 +273,8 @@ def test_analisar_multiclass(tmp_path):
                 "decision_mode": "argmax",
             },
         )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["analysis_type"] == "PLS-DA"
-    assert set(data["class_mapping"].values()) == {"x", "y", "z"}
+    assert resp.status_code == 400
+    assert "suporta apenas 2 classes" in resp.json()["detail"]
 
 
 def test_analisar_with_custom_cv(tmp_path):
