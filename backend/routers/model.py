@@ -1,11 +1,12 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Union
 import numpy as np
 import joblib
 import os
 from sklearn.model_selection import KFold, cross_validate
 
+from ..core.io_utils import to_float_matrix, encode_labels_if_needed
 from ..core.saneamento import saneamento_global
 try:
     from ..ml.pipeline import build_pls_pipeline
@@ -57,8 +58,8 @@ def preprocess(req: PreprocessRequest):
 
 
 class TrainRequest(BaseModel):
-    X: List[List[float]]
-    y: List[float]
+    X: List[List[Any]]                           # aceita strings
+    y: List[Union[float, int, str]]              # aceita rótulos
     features: Optional[List[str]] = None
     n_components: int = Field(10, ge=1)
     n_splits: int = Field(5, ge=2)
@@ -66,11 +67,11 @@ class TrainRequest(BaseModel):
 
 @router.post("/train")
 def train(req: TrainRequest):
-    X_clean, y_clean, features = saneamento_global(req.X, req.y, req.features)
-    if not np.isfinite(X_clean).all():
-        raise HTTPException(status_code=400, detail="Dados contêm valores não finitos após saneamento")
-    if np.isnan(X_clean).sum() != 0:
-        raise HTTPException(status_code=400, detail="Dados contêm NaN após saneamento")
+    X = to_float_matrix(req.X)
+    y_arr, class_mapping = encode_labels_if_needed(req.y)
+    X_clean, y_clean, features = saneamento_global(X, y_arr, req.features)
+    if (not np.isfinite(X_clean).all()) or np.isnan(X_clean).sum():
+        raise HTTPException(status_code=400, detail="Dados inválidos mesmo após saneamento")
     if X_clean.shape[1] == 0:
         raise HTTPException(status_code=400, detail="Nenhuma coluna válida para treino")
 
@@ -89,7 +90,7 @@ def train(req: TrainRequest):
 
     pipeline.fit(X_clean, y_clean)
     os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-    joblib.dump({"pipeline": pipeline, "features": features}, MODEL_PATH)
+    joblib.dump({"pipeline": pipeline, "features": features, "class_mapping": class_mapping}, MODEL_PATH)
 
     return {
         "r2": r2_scores,
@@ -97,19 +98,27 @@ def train(req: TrainRequest):
         "r2_mean": float(np.mean(r2_scores)),
         "rmse_mean": float(np.mean(rmse_scores)),
         "features": features,
+        "class_mapping": class_mapping,
     }
 
 
 class PredictRequest(BaseModel):
-    X: List[List[float]]
+    X: List[List[Any]]
 
 
 @router.post("/predict")
-def predict(req: PredictRequest):
+def predict(req: PredictRequest, threshold: float = 0.5):
     if not os.path.exists(MODEL_PATH):
         raise HTTPException(status_code=400, detail="Modelo não treinado")
-    model_data = joblib.load(MODEL_PATH)
-    pipeline = model_data["pipeline"]
-    X = np.asarray(req.X, dtype=float)
-    preds = pipeline.predict(X).ravel().tolist()
-    return {"predictions": preds}
+    blob: Dict[str, Any] = joblib.load(MODEL_PATH)
+    pipeline = blob["pipeline"]
+    class_mapping = blob.get("class_mapping", {})
+    X = to_float_matrix(req.X)
+    scores = pipeline.predict(X).ravel()
+    out: Dict[str, Any] = {"predictions": scores.tolist()}
+    if class_mapping:
+        idx = (scores >= threshold).astype(int).tolist()
+        labels = [class_mapping.get(i, str(i)) for i in idx]
+        out["labels_pred"] = labels
+        out["class_mapping"] = class_mapping
+    return out

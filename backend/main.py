@@ -22,8 +22,9 @@ from .core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
 from .core.preprocessing import apply_methods
 from .core.optimization import optimize_model_grid
 from .core.interpreter import interpretar_vips, gerar_resumo_interpretativo
-from typing import Optional, Tuple, List, Literal
+from typing import Optional, Tuple, List, Literal, Any, Dict
 from .core.saneamento import saneamento_global
+from .core.io_utils import to_float_matrix, encode_labels_if_needed
 try:
     from .ml.pipeline import build_pls_pipeline
 except Exception:
@@ -124,20 +125,25 @@ def preprocess(req: PreprocessRequest):
 
 
 class PredictRequest(BaseModel):
-    X: List[List[float]]
-
+    X: List[List[Any]]
 
 
 @app.post("/predict", tags=["Model"])
-
-def predict(req: PredictRequest):
+def predict(req: PredictRequest, threshold: float = 0.5):
     if not os.path.exists(MODEL_PATH):
         raise HTTPException(status_code=400, detail="Modelo não treinado")
-    model_data = joblib.load(MODEL_PATH)
-    pipeline = model_data["pipeline"]
-    X = np.asarray(req.X, dtype=float)
-    preds = pipeline.predict(X).ravel().tolist()
-    return {"predictions": preds}
+    blob: Dict[str, Any] = joblib.load(MODEL_PATH)
+    pipeline = blob["pipeline"]
+    class_mapping = blob.get("class_mapping", {})
+    X = to_float_matrix(req.X)
+    scores = pipeline.predict(X).ravel()
+    out: Dict[str, Any] = {"predictions": scores.tolist()}
+    if class_mapping:
+        idx = (scores >= threshold).astype(int).tolist()
+        labels = [class_mapping.get(i, str(i)) for i in idx]
+        out["labels_pred"] = labels
+        out["class_mapping"] = class_mapping
+    return out
 
 
 
@@ -727,71 +733,28 @@ async def analisar_file(
                 detail=f"A coluna '{target}' não foi encontrada no arquivo."
             )
 
-        # =========================
         # X / features (+ faixas)
         # =========================
         X_df = df.drop(columns=[target])
         if spectral_ranges:
             cols = _parse_ranges(spectral_ranges, X_df.columns.tolist())
             X_df = X_df[cols]
-
-        # força numérico nas features (qualquer sujeira vira NaN)
-        X_df = X_df.apply(pd.to_numeric, errors="coerce")
         features = X_df.columns.tolist()
-        X = X_df.values
+        X = to_float_matrix(X_df)
 
-        # pré-processamento (pode introduzir NaN dependendo do método)
         methods = _parse_preprocess(preprocess)
         if methods:
             X = apply_methods(X, methods)
 
-        # =========================
-        # Saneamento pós-preprocess (resolve NaN/Inf em X)
-        #  - remove COLUNAS 100% NaN
-        #  - remove LINHAS 100% NaN
-        #  - imputa NaNs restantes por MEDIANA
-        #  - alinha y às linhas mantidas
-        # =========================
-        import numpy as np
-        from sklearn.impute import SimpleImputer
+        y_raw = df[target].tolist()
+        y_arr, class_mapping = encode_labels_if_needed(y_raw)
 
-        # garante array float e troca ±inf por NaN
-        X = np.asarray(X, dtype=float)
-        X[~np.isfinite(X)] = np.nan
+        X, y_arr, features = saneamento_global(X, y_arr, features)
 
-        # 1) drop de colunas 100% NaN (não têm mediana)
-        col_ok = ~np.isnan(X).all(axis=0)
-        if not col_ok.any():
-            raise HTTPException(
-                status_code=400,
-                detail="Todas as variáveis espectrais ficaram inválidas após o pré-processamento."
-            )
-        if not col_ok.all():
-            X = X[:, col_ok]
-            features = [f for i, f in enumerate(features) if col_ok[i]]
-
-        # 2) drop de linhas 100% NaN
-        row_ok = ~np.isnan(X).all(axis=1)
-        if not row_ok.any():
-            raise HTTPException(
-                status_code=400,
-                detail="Todas as amostras ficaram inválidas após o pré-processamento."
-            )
-        if not row_ok.all():
-            X = X[row_ok]
-            row_mask_for_y = row_ok
+        if class_mapping:
+            y_series = pd.Series([class_mapping[int(i)] for i in y_arr.astype(int)])
         else:
-            row_mask_for_y = None
-
-        # 3) imputação de NaNs restantes com mediana da coluna
-        imputer = SimpleImputer(strategy="median")
-        X = imputer.fit_transform(X)  # agora X está 100% finito (sem NaN/Inf)
-
-        # 4) alinhar y às linhas mantidas
-        if row_mask_for_y is not None:
-            y_series = df[target].iloc[row_mask_for_y].reset_index(drop=True)
-        else:
-            y_series = df[target].reset_index(drop=True)
+            y_series = pd.Series(y_arr)
 
         scores = None
         model = None
@@ -945,7 +908,7 @@ async def analisar_file(
         os.makedirs(save_dir, exist_ok=True)
         model_name = f"modelo_{suffix}_{ts}.pkl"
         with open(os.path.join(save_dir, model_name), "wb") as fh:
-            pickle.dump(model, fh)
+            pickle.dump({"model": model, "class_mapping": class_mapping}, fh)
 
         vip = extra["vip"]
         features_for_vip = features  # já sincronizado quando removemos colunas
@@ -973,7 +936,7 @@ async def analisar_file(
             "preprocessing": [METHOD_LABELS.get(m, m) for m in method_names],
             "preprocess_steps": methods,
             "classes": np.unique(y_series).tolist() if classification else None,
-            "class_mapping": {int(i): cls for i, cls in enumerate(extra.get("classes", []))} if classification else None,
+            "class_mapping": class_mapping,
             "datetime": datetime.now().isoformat(timespec="seconds"),
             "top_vips": top_vips,
             "range_used": spectral_ranges if spectral_ranges else "",
@@ -993,7 +956,7 @@ async def analisar_file(
             "model_name": model_name,
             "interpretacao_vips": interpretacao,
             "resumo_interpretativo": resumo,
-            "class_mapping": {int(i): cls for i, cls in enumerate(extra.get("classes", []))} if classification else None,
+            "class_mapping": class_mapping,
             "decision_mode": decision_mode,
         })
 
