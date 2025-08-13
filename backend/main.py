@@ -554,7 +554,7 @@ async def process_file(
             raise HTTPException(status_code=400, detail=f"A coluna '{target}' não foi encontrada no arquivo.")
 
         # 2) prepara X/feature names uma vez só
-        X_df = df.drop(columns=[target])
+        X_df = df.drop(columns=[target], errors="ignore")
         features = X_df.columns.tolist()
         X = X_df.values
 
@@ -738,12 +738,12 @@ async def analisar_file(
 
         # X / features (+ faixas)
         # =========================
-        X_df = df.drop(columns=[target])
+        X_df = df.drop(columns=[target], errors="ignore")
         if spectral_ranges:
             cols = _parse_ranges(spectral_ranges, X_df.columns.tolist())
             X_df = X_df[cols]
         features = X_df.columns.tolist()
-        X = to_float_matrix(X_df)
+        X = to_float_matrix(X_df.values)
 
         methods = _parse_preprocess(preprocess)
         if methods:
@@ -762,7 +762,7 @@ async def analisar_file(
                 )
         else:
             y_arr = pd.to_numeric(pd.Series(y_raw), errors="coerce").to_numpy(dtype=float)
-            class_mapping = {}
+            class_mapping, n_classes = {}, 0
 
         X, y_arr, features = saneamento_global(X, y_arr, features)
 
