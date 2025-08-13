@@ -1,4 +1,12 @@
-export const API_BASE = (window.API_BASE) || (location.protocol + '//' + location.hostname + ':8000');
+const DEFAULT_API_BASE =
+  typeof location !== 'undefined'
+    ? location.protocol + '//' + location.hostname + ':8000'
+    : 'http://localhost:8000';
+
+export const API_BASE =
+  typeof window !== 'undefined' && window.API_BASE
+    ? window.API_BASE
+    : DEFAULT_API_BASE;
 
 export async function postColumns(file) {
   const fd = new FormData();
@@ -38,3 +46,59 @@ export async function postReport(payload) {
   if (!res.ok) throw new Error(await res.text());
   return res.blob();
 }
+
+// ---- New PLS pipeline endpoints ----
+export async function postPreprocess(payload) {
+  const res = await fetch(`${API_BASE}/preprocess`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function postTrain(payload) {
+  if (payload instanceof FormData) {
+    let res = await fetch(`${API_BASE}/train`, { method: 'POST', body: payload });
+    if (!res.ok) {
+      res = await fetch(`${API_BASE}/analisar`, { method: 'POST', body: payload });
+      if (!res.ok) {
+        res = await fetch(`${API_BASE}/analyze`, { method: 'POST', body: payload });
+      }
+    }
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  } else {
+    const res = await fetch(`${API_BASE}/train`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+}
+
+export async function postPredict(payload) {
+  const res = await fetch(`${API_BASE}/predict`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+const api = {
+  postColumns,
+  postAnalisar,
+  postOptimize,
+  getOptimizeStatus,
+  postReport,
+  postPreprocess,
+  postTrain,
+  postPredict,
+};
+
+export default api;
