@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import StreamingResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 import os
 import json
 import pickle
@@ -12,6 +11,7 @@ import numpy as np
 import csv
 from starlette.formparsers import MultiPartParser
 from datetime import datetime
+from pydantic import BaseModel, validator
 
 from core.config import METRICS_FILE, settings
 from core.metrics import regression_metrics, classification_metrics
@@ -22,13 +22,23 @@ from core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
 from core.preprocessing import apply_methods
 from core.optimization import optimize_model_grid
 from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
-from core.pls import is_categorical
+from typing import Optional, Tuple, List, Literal
+
+from core.pls import is_categorical  # (se não for usar, podemos remover depois)
+
+# Progresso global para /optimize/status
+OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
 
 app = FastAPI(title="NIR API v4.6")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173", "http://127.0.0.1:5173",   # Vite dev
+        "http://localhost:4173", "http://127.0.0.1:4173",   # Vite preview
+        "http://localhost:3000", "http://127.0.0.1:3000",   # React dev
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -60,16 +70,6 @@ CHEMICAL_RANGES = [
 LOG_DIR = settings.logging_dir
 HISTORY_FILE = os.path.join(settings.models_dir, "history.json")
 
-
-class Metrics(BaseModel):
-    R2: float
-    RMSE: float
-    Accuracy: float
-
-LOG_DIR = settings.logging_dir
-HISTORY_FILE = os.path.join(settings.models_dir, "history.json")
-
-
 class Metrics(BaseModel):
     R2: float
     RMSE: float
@@ -86,6 +86,47 @@ def _latest_log() -> str:
     with open(os.path.join(LOG_DIR, logs[0]), "r") as f:
         return f.read()
 
+import numpy as np
+from sklearn.impute import SimpleImputer
+
+def _fit_clean_X(X: np.ndarray):
+    """
+    Limpa X para treino:
+      - força float
+      - ±inf -> NaN
+      - remove colunas 100% NaN e guarda o mask
+      - imputa NaN por mediana (fit)
+    Retorna: X_clean, col_mask, imputer
+    """
+    X = np.asarray(X, dtype=float)
+    X[~np.isfinite(X)] = np.nan
+
+    col_ok = ~np.isnan(X).all(axis=0)
+    if not col_ok.any():
+        raise HTTPException(status_code=400, detail="Todas as variáveis espectrais ficaram inválidas após o pré-processamento.")
+    if not col_ok.all():
+        X = X[:, col_ok]
+
+    # linhas 100% NaN
+    row_ok = ~np.isnan(X).all(axis=1)
+    if not row_ok.any():
+        raise HTTPException(status_code=400, detail="Todas as amostras ficaram inválidas após o pré-processamento.")
+    if not row_ok.all():
+        X = X[row_ok]
+
+    imp = SimpleImputer(strategy="median")
+    X = imp.fit_transform(X)
+    return X, col_ok, imp, row_ok
+
+def _transform_clean_X(X: np.ndarray, col_ok: np.ndarray, imp: SimpleImputer):
+    """
+    Limpa X de validação/teste usando a MESMA seleção de colunas e o MESMO imputador.
+    """
+    X = np.asarray(X, dtype=float)
+    X[~np.isfinite(X)] = np.nan
+    X = X[:, col_ok]
+    # se alguma linha ficar toda NaN, o imputer ainda resolve (todas colunas NaN -> vira medianas)
+    return imp.transform(X)
 
 def _read_dataframe(filename: str, content: bytes) -> pd.DataFrame:
     """Read uploaded CSV or Excel into a DataFrame.
@@ -125,6 +166,14 @@ def _read_dataframe(filename: str, content: bytes) -> pd.DataFrame:
     df.columns = [str(c).strip() for c in df.columns]
     return df
 
+def _to_numeric_series(s: pd.Series) -> pd.Series:
+    s = s.astype(str)
+    s = s.str.replace(r"\s+", "", regex=True)                 # remove espaços
+    s = s.str.replace(r"[^0-9eE\+\-\,\.]", "", regex=True)    # mantém dígitos, sinais, . e ,
+    s = s.str.replace(r"\.(?=\d{3}(?:\D|$))", "", regex=True) # remove ponto de milhar
+    s = s.str.replace(",", ".", regex=False)                  # vírgula -> ponto
+    return pd.to_numeric(s, errors="coerce")
+
 
 def _cross_val_metrics(
     X: np.ndarray,
@@ -136,6 +185,9 @@ def _cross_val_metrics(
     validation_params: dict | None = None,
     threshold: float = 0.5,
 ):
+    from sklearn.impute import SimpleImputer
+
+    # default de validação
     if validation_method is None:
         validation_method = "StratifiedKFold" if classification else "KFold"
         validation_params = {
@@ -144,19 +196,50 @@ def _cross_val_metrics(
             "random_state": 42,
         }
     validation_params = validation_params or {}
+
     cv = build_cv(validation_method, y, classification, validation_params)
+
+    # preds como objeto; converto no final
     preds = np.empty(len(y), dtype=object)
     y_series = pd.Series(y).astype(str)
     y_true = y_series.values
+
     for train_idx, test_idx in cv:
+        # -----------------------
+        # separa e saneia X do fold
+        # -----------------------
+        X_tr_raw = np.asarray(X[train_idx], dtype=float)
+        X_te_raw = np.asarray(X[test_idx], dtype=float)
+
+        # inf -> NaN
+        X_tr_raw[~np.isfinite(X_tr_raw)] = np.nan
+        X_te_raw[~np.isfinite(X_te_raw)] = np.nan
+
+        # mantém só colunas que têm pelo menos um valor no TREINO
+        col_ok = ~np.isnan(X_tr_raw).all(axis=0)
+        if not col_ok.any():
+            raise ValueError("Fold sem variáveis válidas após pré-processamento.")
+        X_tr = X_tr_raw[:, col_ok]
+        X_te = X_te_raw[:, col_ok]
+
+        # remove linhas 100% NaN no TREINO (alinha y do treino)
+        tr_row_ok = ~np.isnan(X_tr).all(axis=1)
+        if not tr_row_ok.any():
+            raise ValueError("Fold sem amostras válidas após pré-processamento.")
+        X_tr = X_tr[tr_row_ok]
+
+        # imputação por MEDIANA (fit no treino, aplica no teste)
+        imp = SimpleImputer(strategy="median")
+        X_tr = imp.fit_transform(X_tr)
+        X_te = imp.transform(X_te)
+
         if classification:
+            # y como string (classes)
+            y_tr = pd.Series(y[train_idx]).astype(str).iloc[tr_row_ok].values
             model, _, extra = train_plsda(
-                X[train_idx],
-                y[train_idx],
-                n_components=n_components,
-                threshold=threshold,
+                X_tr, y_tr, n_components=n_components, threshold=threshold
             )
-            Yp = model.predict(X[test_idx])
+            Yp = model.predict(X_te)
             if Yp.ndim > 1 and Yp.shape[1] > 1:
                 idx = np.argmax(Yp, axis=1)
             else:
@@ -164,15 +247,20 @@ def _cross_val_metrics(
             classes = extra.get("classes", [])
             preds[test_idx] = np.array([classes[i] for i in idx])
         else:
-            model, _, _ = train_plsr(
-                X[train_idx], y[train_idx], n_components=n_components
-            )
-            preds[test_idx] = model.predict(X[test_idx]).ravel()
+            # y numérico no treino com o mesmo filtro de linhas
+            y_tr_full = np.asarray(y[train_idx], dtype=float)
+            y_tr = y_tr_full[tr_row_ok]
+            model, _, _ = train_plsr(X_tr, y_tr, n_components=n_components)
+            preds[test_idx] = model.predict(X_te).ravel()
+
     if classification:
         labels = sorted(pd.Series(y_true).unique())
         return classification_metrics(y_true, preds.astype(str), labels=labels)
+
     preds = preds.astype(float)
-    return regression_metrics(y, preds.astype(float))
+    y_float = np.asarray(y, dtype=float)
+    return regression_metrics(y_float, preds)
+
 
 
 def _parse_ranges(ranges: str, columns: list[str]) -> list[str]:
@@ -357,7 +445,6 @@ def _vip_plot(vip: list[float]) -> str:
     plt.close()
     return path
 
-
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
@@ -387,20 +474,41 @@ async def process_file(
     try:
         content = await file.read()
         df = _read_dataframe(file.filename, content)
-        X = df.drop(columns=[target]).values
+
+        # 1) valida se a coluna alvo existe
+        if target not in df.columns:
+            raise HTTPException(status_code=400, detail=f"A coluna '{target}' não foi encontrada no arquivo.")
+
+        # 2) prepara X/feature names uma vez só
+        X_df = df.drop(columns=[target])
+        features = X_df.columns.tolist()
+        X = X_df.values
+
+        # 3) aplica pré-processamento, se houver
         methods = _parse_preprocess(preprocess)
         if methods:
             X = apply_methods(X, methods)
-        y = df[target].values
+
+        # 4) treina
         if classification:
-            _, metrics, extra = train_plsda(
-                X, y, n_components=n_components, threshold=threshold
-            )
+            y = df[target].values  # classes como string/obj funcionam
+            _, metrics, extra = train_plsda(X, y, n_components=n_components, threshold=threshold)
         else:
+            # garante numérico na regressão
+            try:
+                y = df[target].astype(float).values
+            except Exception:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Erro: coluna alvo não numérica. Selecione uma coluna numérica para regressão."
+                )
             _, metrics, extra = train_plsr(X, y, n_components=n_components)
-        vip = extra["vip"]
-        features = df.drop(columns=[target]).columns.tolist()
-        idx = np.argsort(vip)[::-1][:10]
+
+        # 5) VIP + top Vips serializáveis
+        vip = extra.get("vip", [])
+        vip_list = vip.tolist() if hasattr(vip, "tolist") else list(vip)
+
+        idx = np.argsort(vip_list)[::-1][:10]
         top_vips = []
         for i in idx:
             try:
@@ -409,21 +517,26 @@ async def process_file(
                 wl_float = float("nan")
             wl_value = wl_float if not np.isnan(wl_float) else features[i]
             label = _chemical_label(wl_float) if not np.isnan(wl_float) else ""
-            top_vips.append({"wavelength": wl_value, "vip": float(vip[i]), "label": label})
+            top_vips.append({"wavelength": wl_value, "vip": float(vip_list[i]), "label": label})
+
         interpretacao = interpretar_vips(
-            vip,
+            vip_list,
             [float(f) if str(f).replace('.', '', 1).isdigit() else None for f in features],
         )
-        return {"metrics": metrics, "vip": vip, "top_vips": top_vips, "range_used": "", "interpretacao_vips": interpretacao}
-    except HTTPException:
-        raise
-    except HTTPException:
-        raise
+
+        # resposta segura para JSON
+        return jsonable_encoder({
+            "metrics": metrics,
+            "vip": vip_list,
+            "top_vips": top_vips,
+            "range_used": "",
+            "interpretacao_vips": interpretacao
+        })
+
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - sanity
         raise HTTPException(status_code=400, detail=str(exc))
-
 
 @app.post("/columns")
 async def get_columns(file: UploadFile = File(...)) -> dict:
@@ -434,15 +547,20 @@ async def get_columns(file: UploadFile = File(...)) -> dict:
     except Exception:
         raise HTTPException(
             status_code=400,
-            detail="Erro ao ler as colunas da planilha. Verifique se o arquivo contém um cabeçalho válido na primeira linha.",
+            detail=("Erro ao ler as colunas da planilha. "
+                    "Verifique se o arquivo contém um cabeçalho válido na primeira linha."),
         )
-    if len(df.columns) == 0:
+
+    if df.shape[1] == 0:
         raise HTTPException(
             status_code=400,
-            detail="Erro ao ler as colunas da planilha. Verifique se o arquivo contém um cabeçalho válido na primeira linha.",
+            detail=("Erro ao ler as colunas da planilha. "
+                    "Verifique se o arquivo contém um cabeçalho válido na primeira linha."),
         )
+
     columns = [{"name": c, "dtype": str(df[c].dtype)} for c in df.columns]
 
+    # Detecta colunas espectrais (cabeçalho numérico)
     spectra: list[str] = []
     wls: list[float] = []
     warnings: list[str] = []
@@ -451,35 +569,52 @@ async def get_columns(file: UploadFile = File(...)) -> dict:
         try:
             wl = float(s.replace(",", "."))
         except Exception:
+            # tem dígito mas não é número puro -> avisar
             if any(ch.isdigit() for ch in s):
-                warnings.append(
-                    f"Coluna '{s}' ignorada como espectro devido a formato inválido"
-                )
+                warnings.append(f"Coluna '{s}' ignorada como espectro devido a formato inválido")
             continue
         spectra.append(s)
         wls.append(wl)
 
+    # Alvo(s) possíveis: tudo que não é espectro
     targets = [c for c in df.columns if c not in spectra]
 
     mean_spec = {"wavelengths": [], "values": []}
     spectra_matrix = {"wavelengths": [], "values": []}
-    if spectra:
-        numeric_df = df[spectra].apply(pd.to_numeric, errors="coerce")
-        means = numeric_df.mean().to_dict()
-        for col, wl in zip(spectra, wls):
-            mean_spec["wavelengths"].append(wl)
-            mean_spec["values"].append(float(means.get(col, 0.0)))
-        spectra_matrix["wavelengths"] = wls
-        spectra_matrix["values"] = numeric_df.values.tolist()
-    return {
-        "columns": columns,
-        "targets": targets,
-        "spectra": spectra,
-        "mean_spectra": mean_spec,
-        "spectra_matrix": spectra_matrix,
-        "warnings": warnings,
-    }
 
+    if spectra:
+        # DataFrame numérico com coerção
+        numeric_df = df[spectra].apply(pd.to_numeric, errors="coerce")
+
+        # 1) Ordena por comprimento de onda crescente e reordena colunas
+        order = np.argsort(wls)
+        wls_sorted = [float(wls[i]) for i in order]
+        spectra_sorted = [spectra[i] for i in order]
+        numeric_df = numeric_df[spectra_sorted]
+
+        # 2) Média espectral
+        means = numeric_df.mean().to_numpy()
+
+        # 3) Substitui NaN por None (JSON-safe)
+        numeric_df = numeric_df.where(pd.notnull(numeric_df), None)
+        means = [None if (m is None or (isinstance(m, float) and np.isnan(m))) else float(m) for m in means]
+
+        # 4) Preenche estruturas esperadas pelo front
+        mean_spec["wavelengths"] = wls_sorted
+        mean_spec["values"] = means
+        spectra_matrix["wavelengths"] = wls_sorted
+        spectra_matrix["values"] = numeric_df.values.tolist()
+
+    # Retorno compatível com o front (usa targets / mean_spectra / spectra_matrix)
+    return {
+        "columns": columns,            # extra, útil para debug
+        "targets": targets,            # usado no front
+        "spectra": spectra,            # extra
+        "mean_spectra": mean_spec,     # usado no front
+        "spectra_matrix": spectra_matrix,  # usado no front
+        "warnings": warnings,          # extra
+    }
+from starlette.concurrency import run_in_threadpool
 
 @app.post("/analisar")
 async def analisar_file(
@@ -495,7 +630,7 @@ async def analisar_file(
     validation_method: str | None = Form(None),
     validation_params: str = Form(""),
 ) -> dict:
-    """Executa análise PLS básica retornando métricas e VIPs."""
+    """Executa análise PLS básica retornando métricas e VIPs (robusto a vírgula decimal e NaN em X)."""
     try:
         payload = {
             "target": target,
@@ -509,24 +644,16 @@ async def analisar_file(
             "validation_method": validation_method,
             "validation_params": validation_params,
         }
-        print("Payload recebido:", payload)
+        log_info(f"Payload recebido: {payload}")
+
         try:
             val_params = json.loads(validation_params) if validation_params else {}
         except Exception:
             val_params = {}
-        required = [
-            "target",
-            "n_components",
-            "spectral_ranges",
-            "n_bootstrap",
-            "classification",
-            "decision_mode",
-        ]
-        for key in required:
-            val = payload.get(key)
-            if val is None or (isinstance(val, (str, list)) and not val):
-                raise HTTPException(status_code=422, detail=f"Campo '{key}' ausente ou inválido")
 
+        # =========================
+        # Carrega dados
+        # =========================
         content = await file.read()
         df = _read_dataframe(file.filename, content)
         if target not in df.columns:
@@ -534,22 +661,88 @@ async def analisar_file(
                 status_code=400,
                 detail=f"A coluna '{target}' não foi encontrada no arquivo."
             )
+
+        # =========================
+        # X / features (+ faixas)
+        # =========================
         X_df = df.drop(columns=[target])
         if spectral_ranges:
             cols = _parse_ranges(spectral_ranges, X_df.columns.tolist())
             X_df = X_df[cols]
+
+        # força numérico nas features (qualquer sujeira vira NaN)
+        X_df = X_df.apply(pd.to_numeric, errors="coerce")
+        features = X_df.columns.tolist()
         X = X_df.values
+
+        # pré-processamento (pode introduzir NaN dependendo do método)
         methods = _parse_preprocess(preprocess)
         if methods:
             X = apply_methods(X, methods)
-        y_series = df[target]
 
+        # =========================
+        # Saneamento pós-preprocess (resolve NaN/Inf em X)
+        #  - remove COLUNAS 100% NaN
+        #  - remove LINHAS 100% NaN
+        #  - imputa NaNs restantes por MEDIANA
+        #  - alinha y às linhas mantidas
+        # =========================
+        import numpy as np
+        from sklearn.impute import SimpleImputer
+
+        # garante array float e troca ±inf por NaN
+        X = np.asarray(X, dtype=float)
+        X[~np.isfinite(X)] = np.nan
+
+        # 1) drop de colunas 100% NaN (não têm mediana)
+        col_ok = ~np.isnan(X).all(axis=0)
+        if not col_ok.any():
+            raise HTTPException(status_code=400,
+                                detail="Todas as variáveis espectrais ficaram inválidas após o pré-processamento.")
+        if not col_ok.all():
+            X = X[:, col_ok]
+            features = [f for i, f in enumerate(features) if col_ok[i]]
+
+        # 2) drop de linhas 100% NaN
+        row_ok = ~np.isnan(X).all(axis=1)
+        if not row_ok.any():
+            raise HTTPException(status_code=400, detail="Todas as amostras ficaram inválidas após o pré-processamento.")
+        if not row_ok.all():
+            X = X[row_ok]
+            row_mask_for_y = row_ok
+        else:
+            row_mask_for_y = None
+
+        # 3) imputação de NaNs restantes com mediana da coluna
+        imputer = SimpleImputer(strategy="median")
+        X = imputer.fit_transform(X)  # agora X está 100% finito (sem NaN/Inf)
+
+        # 4) alinhar y às linhas mantidas
+        if row_mask_for_y is not None:
+            y_series = df[target].iloc[row_mask_for_y].reset_index(drop=True)
+        else:
+            y_series = df[target].reset_index(drop=True)
+
+        scores = None
+        model = None
+        metrics: dict = {}
+        extra: dict = {}
+
+        # --- HOLDOUT (tratamento especial)
         if validation_method == "Holdout":
             val_params = val_params or {"test_size": 0.2, "random_state": 42}
             cv = build_cv("Holdout", y_series.values, classification, val_params)
             train_idx, test_idx = next(cv)
-            X_train, X_test = X[train_idx], X[test_idx]
-            y_train, y_test = y_series.iloc[train_idx], y_series.iloc[test_idx]
+            X_train_raw, X_test_raw = X[train_idx], X[test_idx]
+            y_train_raw, y_test_raw = y_series.iloc[train_idx], y_series.iloc[test_idx]
+
+            # LIMPEZA/IMPUTAÇÃO CONSISTENTE ENTRE TREINO/TESTE
+            X_train, col_ok, imp, train_row_ok = _fit_clean_X(X_train_raw)
+            # alinhar y de treino se houve remoção de linhas 100% NaN
+            y_train = y_train_raw.iloc[train_row_ok].reset_index(drop=True)
+            X_test = _transform_clean_X(X_test_raw, col_ok, imp)
+            y_test = y_test_raw.reset_index(drop=True)
+
             if classification:
                 model, train_metrics, extra = train_plsda(
                     X_train, y_train.values, n_components=n_components, threshold=threshold
@@ -562,49 +755,55 @@ async def analisar_file(
                 classes = extra.get("classes", [])
                 y_test_pred = np.array([classes[i] for i in idx_test])
                 test_metrics = classification_metrics(y_test.astype(str).values, y_test_pred, labels=classes)
+
                 metrics = {"train": train_metrics, "test": test_metrics}
                 y_pred = y_test_pred.tolist()
-                y_series = y_test.astype(str)
-                X = X_test
+                y_series_out = y_test.astype(str)
+                X_out = X_test
+
             else:
-                try:
-                    y_train_num = y_train.astype(float).values
-                    y_test_num = y_test.astype(float).values
-                except Exception:
-                    raise ValueError(
-                        "Erro: coluna alvo não numérica. Por favor, selecione uma coluna com valores numéricos para regressão."
-                    )
+                # regressão
                 from sklearn.cross_decomposition import PLSRegression
                 from sklearn.metrics import r2_score, mean_squared_error
+
+                # alvo numérico robusto
+                y_train_num = _to_numeric_series(y_train)
+                y_test_num = _to_numeric_series(y_test)
+                if y_train_num.isna().all() or y_test_num.isna().all():
+                    raise HTTPException(status_code=400,
+                                        detail="Erro: coluna alvo não numérica. Selecione uma coluna numérica para regressão.")
+
+                # já está tudo limpo em X_train/X_test
                 pls = PLSRegression(n_components=n_components)
-                pls.fit(X_train, y_train_num)
+                pls.fit(X_train, y_train_num.values)
                 y_train_pred = pls.predict(X_train).ravel()
                 y_test_pred = pls.predict(X_test).ravel()
-                r2_cal = r2_score(y_train_num, y_train_pred)
-                rmsec = np.sqrt(mean_squared_error(y_train_num, y_train_pred))
+
+                r2_cal = float(r2_score(y_train_num, y_train_pred))
+                rmsec = float(np.sqrt(mean_squared_error(y_train_num, y_train_pred)))
                 try:
-                    r2_val = r2_score(y_test_num, y_test_pred)
+                    r2_val = float(r2_score(y_test_num, y_test_pred))
                 except Exception:
-                    r2_val = float("nan")
-                rmsep = np.sqrt(mean_squared_error(y_test_num, y_test_pred))
+                    r2_val = None
+                rmsep = float(np.sqrt(mean_squared_error(y_test_num, y_test_pred)))
+
                 from core.metrics import vip_scores
-                vip = vip_scores(pls, X_train, y_train_num.reshape(-1,1)).tolist()
-                scores = pls.x_scores_.tolist()
-                extra = {"vip": vip, "scores": scores}
-                metrics = {
-                    "R2_cal": float(r2_cal),
-                    "RMSEC": float(rmsec),
-                    "R2_val": float(r2_val),
-                    "RMSEP": float(rmsep),
-                }
+                vip_list = vip_scores(pls, X_train, y_train_num.values.reshape(-1, 1)).tolist()
+                extra = {"vip": vip_list, "scores": pls.x_scores_.tolist()}
+                metrics = {"R2_cal": r2_cal, "RMSEC": rmsec, "R2_val": r2_val, "RMSEP": rmsep}
                 model = pls
+
                 y_pred = y_test_pred.tolist()
-                y_series = pd.Series(y_test_num)
-                X = X_test
+                y_series_out = y_test_num
+                X_out = X_test
+        # =========================
+        # KFold / LOO / Sem validação explícita
+        # =========================
         else:
             if classification:
-                model, metrics, extra = train_plsda(
-                    X, y_series.values, n_components=n_components, threshold=threshold
+                model, metrics, extra = await run_in_threadpool(
+                    train_plsda, X, y_series.values,
+                    n_components=n_components, threshold=threshold
                 )
                 Y_pred = model.predict(X)
                 if Y_pred.ndim > 1 and Y_pred.shape[1] > 1:
@@ -614,26 +813,62 @@ async def analisar_file(
                 classes = extra.get("classes", [])
                 y_pred = [classes[i] for i in idx]
                 y_series = y_series.astype(str)
-            else:
-                try:
-                    y_numeric = y_series.astype(float).values
-                except Exception:
-                    raise ValueError(
-                        "Erro: coluna alvo não numérica. Por favor, selecione uma coluna com valores numéricos para regressão."
+
+                if validation_method in {"KFold", "LOO"}:
+                    cvm = _cross_val_metrics(
+                        X, y_series.values, n_components, classification=True,
+                        validation_method=validation_method, validation_params=val_params, threshold=threshold
                     )
-                model, metrics, extra = train_plsr(X, y_numeric, n_components=n_components)
+                    metrics = {"train": metrics, "cv": cvm}
+            else:
+                y_numeric = _to_numeric_series(y_series)
+                if y_numeric.isna().all():
+                    raise ValueError("Erro: coluna alvo não numérica. Por favor, selecione uma coluna com valores numéricos para regressão.")
+                # alinha X ao y válido
+                y_mask = y_numeric.notna().values
+                X = X[y_mask]
+                y_numeric = y_numeric[y_mask].values
+
+                # saneamento-final em X (colunas+linhas)
+                if not np.isfinite(X).all():
+                    col_ok = np.isfinite(X).all(axis=0)
+                    if not col_ok.any():
+                        raise HTTPException(status_code=400, detail="Todas as variáveis ficaram inválidas após o pré-processamento.")
+                    if not col_ok.all():
+                        features = [f for i, f in enumerate(features) if col_ok[i]]
+                        X = X[:, col_ok]
+                    row_ok = np.isfinite(X).all(axis=1)
+                    if not row_ok.any():
+                        raise HTTPException(status_code=400, detail="Todas as amostras ficaram inválidas após o pré-processamento (NaN/Inf).")
+                    X = X[row_ok]
+                    y_numeric = y_numeric[row_ok]
+
+                model, metrics, extra = await run_in_threadpool(
+                    train_plsr, X, y_numeric, n_components=n_components
+                )
                 y_pred = model.predict(X).ravel().tolist()
                 y_series = pd.Series(y_numeric)
+
+                if validation_method in {"KFold", "LOO"}:
+                    cvm = _cross_val_metrics(
+                        X, y_numeric, n_components, classification=False,
+                        validation_method=validation_method, validation_params=val_params
+                    )
+                    metrics = {"train": metrics, "cv": cvm}
+
+        # =========================
+        # Bootstrap opcional
+        # =========================
         if n_bootstrap and int(n_bootstrap) > 0:
-            boot = bootstrap_metrics(
-                X,
-                y_series.values,
-                n_components=n_components,
-                classification=classification,
-                n_bootstrap=int(n_bootstrap),
+            boot = await run_in_threadpool(
+                bootstrap_metrics, X, y_series.values,
+                n_components=n_components, classification=classification, n_bootstrap=int(n_bootstrap)
             )
             metrics["bootstrap"] = boot
-        # Salvar modelo treinado
+
+        # =========================
+        # Salvar modelo e montar resposta
+        # =========================
         ts = datetime.now().strftime("%Y%m%d_%H%M")
         suffix = "plsda" if classification else "plsr"
         save_dir = settings.plsda_dir if classification else settings.plsr_dir
@@ -641,23 +876,25 @@ async def analisar_file(
         model_name = f"modelo_{suffix}_{ts}.pkl"
         with open(os.path.join(save_dir, model_name), "wb") as fh:
             pickle.dump(model, fh)
+
         vip = extra["vip"]
-        scores = extra.get("scores")
-        features = X_df.columns.tolist()
+        features_for_vip = features  # já sincronizado quando removemos colunas
         idx = np.argsort(vip)[::-1][:10]
         top_vips = []
-        wls_numeric = [float(f) if str(f).replace('.', '', 1).isdigit() else None for f in features]
+        wls_numeric = [float(f) if str(f).replace('.', '', 1).isdigit() else None for f in features_for_vip]
         for i in idx:
             try:
-                wl_float = float(features[i])
+                wl_float = float(features_for_vip[i])
             except Exception:
                 wl_float = None
-            wl_value = wl_float if wl_float is not None else features[i]
+            wl_value = wl_float if wl_float is not None else features_for_vip[i]
             label = _chemical_label(wl_float) if wl_float is not None else ""
             top_vips.append({"wavelength": wl_value, "vip": float(vip[i]), "label": label})
+
         interpretacao = interpretar_vips(vip, wls_numeric)
         resumo = gerar_resumo_interpretativo(interpretacao)
         method_names = [m["method"] if isinstance(m, dict) else m for m in methods]
+
         _append_history({
             "file": file.filename,
             "target": target,
@@ -672,15 +909,16 @@ async def analisar_file(
             "range_used": spectral_ranges if spectral_ranges else "",
             "model_name": model_name,
         })
+
         return jsonable_encoder({
             "metrics": metrics,
             "vip": vip,
             "y_real": y_series.tolist(),
             "y_pred": y_pred,
-            "features": features,
+            "features": features_for_vip,
             "top_vips": top_vips,
             "range_used": spectral_ranges if spectral_ranges else "",
-            "scores": scores,
+            "scores": extra.get("scores"),
             "analysis_type": "PLS-DA" if classification else "PLS-R",
             "model_name": model_name,
             "interpretacao_vips": interpretacao,
@@ -688,12 +926,14 @@ async def analisar_file(
             "class_mapping": {int(i): cls for i, cls in enumerate(extra.get("classes", []))} if classification else None,
             "decision_mode": decision_mode,
         })
+
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - sanity
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+# ✅ Mantém para testes internos (opcional). O front usa /analisar.
 @app.post("/analyze")
 async def analyze_file(
     file: UploadFile = File(...),
@@ -703,61 +943,113 @@ async def analyze_file(
     n_bootstrap: int = Form(0),
     preprocess: str = Form(""),
     threshold: float = Form(0.5),
+    # ⬇ adicionados para CV
+    validation_method: str | None = Form(None),          # "KFold" | "LOO" | None
+    validation_params: str = Form(""),                   # ex.: {"n_splits":5,"shuffle":true}
 ) -> dict:
     """Execute PLS analysis with cross-validation and optional bootstrap."""
     try:
         content = await file.read()
         df = _read_dataframe(file.filename, content)
+
+        if target not in df.columns:
+            raise HTTPException(status_code=400, detail=f"A coluna '{target}' não foi encontrada no arquivo.")
+
         X_df = df.drop(columns=[target])
         X = X_df.values
+
         methods = _parse_preprocess(preprocess)
         if methods:
             X = apply_methods(X, methods)
-        y = df[target].values
+
+        # y e treino
         if classification:
-            model, train_metrics, extra = train_plsda(
-                X, y, n_components=n_components, threshold=threshold
-            )
+            y = df[target].astype(str).values
+            model, train_metrics, extra = train_plsda(X, y, n_components=n_components, threshold=threshold)
         else:
-            model, train_metrics, extra = train_plsr(X, y.astype(float), n_components=n_components)
-        cv_metrics = _cross_val_metrics(
-            X,
-            y,
-            n_components,
-            classification,
-            threshold=threshold,
-            validation_method=validation_method,
-            validation_params=val_params,
-        )
-        metrics = {"train": train_metrics, "cv": cv_metrics}
+            try:
+                y = df[target].astype(float).values
+            except Exception:
+                raise HTTPException(status_code=400, detail="Erro: coluna alvo não numérica para regressão.")
+            model, train_metrics, extra = train_plsr(X, y, n_components=n_components)
+
+        # CV opcional (KFold/LOO)
+        try:
+            val_params = json.loads(validation_params) if validation_params else {}
+        except Exception:
+            val_params = {}
+        cv_metrics = None
+        if validation_method in {"KFold", "LOO"}:
+            cv_metrics = _cross_val_metrics(
+                X, y, n_components, classification,
+                validation_method=validation_method, validation_params=val_params,
+                threshold=threshold
+            )
+
+        metrics = {"train": train_metrics}
+        if cv_metrics is not None:
+            metrics["cv"] = cv_metrics
+
+        # bootstrap opcional
         if n_bootstrap and int(n_bootstrap) > 0:
             boot = bootstrap_metrics(X, y, n_components=n_components, classification=classification, n_bootstrap=int(n_bootstrap))
             metrics["bootstrap"] = boot
+
+        # VIP/interpretacao
+        vip_raw = extra.get("vip", [])
+        vip_list = vip_raw.tolist() if hasattr(vip_raw, "tolist") else list(vip_raw)
         wls_numeric = [float(f) if str(f).replace('.', '', 1).isdigit() else None for f in X_df.columns.tolist()]
-        interpretacao = interpretar_vips(extra["vip"], wls_numeric)
-        return {"metrics": metrics, "vip": extra["vip"], "features": X_df.columns.tolist(), "interpretacao_vips": interpretacao}
+        interpretacao = interpretar_vips(vip_list, wls_numeric)
+
+        return jsonable_encoder({
+            "metrics": metrics,
+            "vip": vip_list,
+            "features": X_df.columns.tolist(),
+            "interpretacao_vips": interpretacao
+        })
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-
 class OptimizeParams(BaseModel):
     """Parameters expected by the /optimize endpoint."""
-
     target: str
-    validation_method: str
-    n_components: int | None = None
+    validation_method: Literal["KFold", "LOO", "Holdout"]
+    n_components: Optional[int] = None          # se None, você define um padrão no /optimize
     n_bootstrap: int = 0
-    folds: int | None = None
-    analysis_mode: str = "PLS-R"
-    spectral_range: tuple[float, float] | None = None
-    preprocessing_methods: list[str] | None = None
+    folds: Optional[int] = None                 # usado só quando KFold
+    analysis_mode: Literal["PLS-R", "PLS-DA"] = "PLS-R"
+    spectral_range: Optional[Tuple[float, float]] = None
+    preprocessing_methods: Optional[List[str]] = None
 
+    @validator("n_components")
+    def _check_ncomp(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("n_components deve ser > 0")
+        return v
+
+    @validator("folds")
+    def _check_folds(cls, v, values):
+        if values.get("validation_method") == "KFold":
+            if v is None or v < 2:
+                raise ValueError("Para KFold, 'folds' deve ser >= 2")
+        return v
+
+    @validator("spectral_range")
+    def _order_range(cls, v):
+        if v is None:
+            return v
+        a, b = v
+        return (min(a, b), max(a, b))
 
 @app.get("/optimize/status")
 async def optimize_status() -> dict:
     """Return progress for current optimization."""
-    return OPTIMIZE_PROGRESS
-
+    return {
+        "current": int(OPTIMIZE_PROGRESS.get("current", 0)),
+        "total": int(OPTIMIZE_PROGRESS.get("total", 0)),
+    }
 
 @app.post("/optimize")
 async def optimize_endpoint(
@@ -766,12 +1058,14 @@ async def optimize_endpoint(
 ) -> dict:
     """Run model optimization over preprocessing and PLS components."""
     try:
+        # --- parse / valida params
         try:
             parsed = json.loads(params or "{}")
         except Exception:
-            raise HTTPException(status_code=422, detail="Invalid parameters")
+            raise HTTPException(status_code=422, detail="Invalid parameters: params must be a JSON string")
+
         try:
-            opts = OptimizeParams(**parsed)
+            opts = OptimizeParams(**parsed)  # usa a versão com validators se você aplicou
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
@@ -779,109 +1073,207 @@ async def optimize_endpoint(
         df = _read_dataframe(file.filename, content)
         if opts.target not in df.columns:
             raise HTTPException(status_code=400, detail="Target not found")
+
+        # --- prepara X_df e filtra colunas espectrais numéricas
         X_df = df.drop(columns=[opts.target])
+
+        # helper: detecta colunas com cabeçalho numérico
+        numeric_cols = []
+        for c in X_df.columns:
+            try:
+                float(str(c).strip().replace(",", "."))
+                numeric_cols.append(c)
+            except Exception:
+                pass
+        if not numeric_cols:
+            raise HTTPException(status_code=400, detail="Nenhuma coluna espectral (cabeçalho numérico) foi encontrada.")
+
+        # aplica spectral_range se houver
         if opts.spectral_range:
             start, end = opts.spectral_range
-            cols = [c for c in X_df.columns if _is_number(c) and start <= float(c) <= end]
-            X_df = X_df[cols]
+            filtered = []
+            for c in numeric_cols:
+                v = float(str(c).strip().replace(",", "."))
+                if start <= v <= end:
+                    filtered.append(c)
+            if not filtered:
+                raise HTTPException(status_code=400, detail="Nenhuma coluna dentro do intervalo espectral informado.")
+            numeric_cols = filtered
+
+        # reordena por comprimento de onda crescente
+        wls = [float(str(c).strip().replace(",", ".")) for c in numeric_cols]
+        order = np.argsort(wls)
+        cols_sorted = [numeric_cols[i] for i in order]
+        wls_sorted = [wls[i] for i in order]
+
+        X_df = X_df[cols_sorted]
         X = X_df.values
-        wl = np.array([float(c) for c in X_df.columns.astype(str)])
+        wl = np.array(wls_sorted, dtype=float)
+
+        # --- y e modo
         classification = opts.analysis_mode.upper() == "PLS-DA"
         if classification:
             y_series = df[opts.target]
             y = y_series.astype(str).values
-            log_info(f"y convertido em texto com shape {y.shape}")
             classes = np.unique(y)
             if len(classes) < 2:
                 raise HTTPException(
                     status_code=400,
-                    detail="A coluna alvo precisa ter pelo menos duas classes distintas para otimização.",
+                    detail="A coluna alvo precisa ter pelo menos duas classes distintas para otimização."
                 )
         else:
-            y = df[opts.target].values.astype(float)
-        methods = (
-            opts.preprocessing_methods if opts.preprocessing_methods else ALL_PREPROCESS_METHODS
-        )
+            try:
+                y = df[opts.target].astype(float).values
+            except Exception:
+                raise HTTPException(status_code=400, detail="Target must be numeric for regression (PLS-R).")
+
+        # --- métodos de pré-processamento
+        methods_in = opts.preprocessing_methods if opts.preprocessing_methods else ALL_PREPROCESS_METHODS
+        methods = [m for m in methods_in if m in ALL_PREPROCESS_METHODS]
+        if not methods:
+            raise HTTPException(status_code=422, detail="Nenhum método de pré-processamento válido informado.")
+
+        # --- componentes (cap por n_features)
         max_comp = opts.n_components or min(X.shape[1], 10)
-        OPTIMIZE_PROGRESS["current"] = 0
-        OPTIMIZE_PROGRESS["total"] = len(methods) * max_comp
-        cv_method = opts.validation_method or "KFold"
+        max_comp = max(1, min(max_comp, X.shape[1]))
+
+        # --- validação: só KFold/LOO na otimização
+        cv_method = (opts.validation_method or "KFold").upper()
+        if cv_method == "HOLDOUT":
+            raise HTTPException(status_code=422, detail="Holdout não é suportado na otimização. Use KFold ou LOO.")
         val_params = {}
-        if cv_method == "KFold":
+        if cv_method == "KFOLD":
             val_params = {
                 "n_splits": opts.folds or 5,
                 "shuffle": True,
                 "random_state": 42,
             }
-        log_info(
-            f"Otimizacao iniciada: cv={cv_method}, ncomp={max_comp}, preprocess={methods}"
-        )
-        results = optimize_model_grid(
-            X,
-            y,
-            wl,
-            classification=classification,
-            preprocess_opts=methods,
-            n_components_range=range(1, max_comp + 1),
-            validation_method="LOO" if cv_method == "LOO" else "KFold",
-            validation_params=val_params,
-            progress_callback=lambda c, t: OPTIMIZE_PROGRESS.update({"current": c, "total": t}),
-        )
-        return {"results": results[:15]}
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
 
+        # --- progresso
+        OPTIMIZE_PROGRESS["current"] = 0
+        OPTIMIZE_PROGRESS["total"] = len(methods) * max_comp
+
+        log_info(f"Otimizacao iniciada: cv={cv_method}, ncomp={max_comp}, preprocess={methods}")
+
+        try:
+            results = optimize_model_grid(
+                X,
+                y,
+                wl,
+                classification=classification,
+                preprocess_opts=methods,
+                n_components_range=range(1, int(max_comp) + 1),
+                validation_method="LOO" if cv_method == "LOO" else "KFold",
+                validation_params=val_params,
+                progress_callback=lambda c, t: OPTIMIZE_PROGRESS.update({"current": int(c), "total": int(t)}),
+            )
+        finally:
+            # garante finalização de progresso mesmo em erro
+            OPTIMIZE_PROGRESS["current"] = OPTIMIZE_PROGRESS.get("total", 0)
+
+        # corta para 15 e garante JSON-safe
+        return jsonable_encoder({"results": results[:15]})
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # zera progresso em caso de erro inesperado
+        OPTIMIZE_PROGRESS["current"] = 0
+        OPTIMIZE_PROGRESS["total"] = 0
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/report")
 async def create_report(data: dict = Body(...)):
     """Generate PDF report for given metrics and parameters."""
-    metrics = data.get("metrics", {})
-    params = data.get("params", {})
-    y_real = data.get("y_real")
-    y_pred = data.get("y_pred")
-    vip = data.get("vip")
-    top_vips = data.get("top_vips")
-    interpretacao_vips = data.get("interpretacao_vips")
-    resumo_interpretativo = data.get("resumo_interpretativo")
-    scores = data.get("scores")
-    analysis_type = params.get("analysis_type", "PLS-R")
-    class_report_path = ""
-    if analysis_type == "PLS-DA" and scores and y_real is not None and y_pred is not None:
-        scatter = _scores_plot(scores, y_real)
-        labels = []
-        if isinstance(params.get("class_mapping"), dict):
-            labels = [v for k, v in sorted(params["class_mapping"].items(), key=lambda x: int(x[0]))]
+    try:
+        metrics = data.get("metrics", {}) or {}
+        params = data.get("params", {}) or {}
+        y_real = data.get("y_real")
+        y_pred = data.get("y_pred")
+        vip = data.get("vip")
+        top_vips = data.get("top_vips")
+        interpretacao_vips = data.get("interpretacao_vips")
+        resumo_interpretativo = data.get("resumo_interpretativo")
+        scores = data.get("scores")
+        analysis_type = params.get("analysis_type", "PLS-R")
+
+        # Caminhos temporários para limpar ao final
+        temp_paths: list[str] = []
+        scatter = None
+        conf_path = None
+        class_report_path = None
+        vip_path = None
+
+        # Figuras específicas por tipo de análise
+        if analysis_type == "PLS-DA" and scores and y_real is not None and y_pred is not None:
+            scatter = _scores_plot(scores, y_real)  # retorna path
+            temp_paths.append(scatter)
+
+            if isinstance(params.get("class_mapping"), dict):
+                labels = [v for k, v in sorted(params["class_mapping"].items(), key=lambda x: int(x[0]))]
+            else:
+                labels = list(np.unique(y_real))
+            if y_real and y_pred:
+                conf_path = _cm_plot(y_real, y_pred, labels)
+                temp_paths.append(conf_path)
+
+            if metrics.get("ClassificationReport"):
+                class_report_path = _class_report_plot(metrics["ClassificationReport"])
+                temp_paths.append(class_report_path)
         else:
-            labels = list(np.unique(y_real))
-        conf_path = _cm_plot(y_real, y_pred, labels) if y_real and y_pred else ""
-        if metrics.get("ClassificationReport"):
-            class_report_path = _class_report_plot(metrics["ClassificationReport"])
-    else:
-        scatter = _scatter_plot(y_real, y_pred) if y_real and y_pred else ""
-        conf_path = ""
-    vip_path = _vip_plot(vip) if vip else ""
-    pdf = PDFReport()
-    pdf.add_metrics(
-        metrics,
-        params=params,
-        scatter_path=scatter,
-        vip_path=vip_path,
-        conf_path=conf_path,
-        class_report_path=class_report_path,
-        user=params.get("user", ""),
-        top_vips=top_vips,
-        range_used=params.get("range_used", ""),
-        interpretacao_vips=interpretacao_vips,
-        resumo_interpretativo=resumo_interpretativo,
-    )
-    pdf_bytes = pdf.pdf.output(dest="S").encode("latin1")
-    return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=report.pdf"})
+            # Regressão: scatter y_real vs y_pred
+            if y_real and y_pred:
+                scatter = _scatter_plot(y_real, y_pred)
+                temp_paths.append(scatter)
+
+        # VIP bar plot (se houver VIPs)
+        if vip:
+            vip_path = _vip_plot(vip)
+            temp_paths.append(vip_path)
+
+        # Monta PDF
+        pdf = PDFReport()
+        pdf.add_metrics(
+            metrics,
+            params=params,
+            scatter_path=scatter,
+            vip_path=vip_path,
+            conf_path=conf_path,
+            class_report_path=class_report_path,
+            user=params.get("user", ""),
+            top_vips=top_vips,
+            range_used=params.get("range_used", ""),
+            interpretacao_vips=interpretacao_vips,
+            resumo_interpretativo=resumo_interpretativo,
+        )
+
+        # Gera bytes do PDF
+        pdf_bytes = pdf.pdf.output(dest="S").encode("latin1")
+
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'attachment; filename="report.pdf"'}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        # Limpeza dos arquivos temporários gerados para o relatório
+        for p in list(set([p for p in temp_paths if p])):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
 
 
 @app.get("/metrics")
 def get_metrics() -> Metrics:
     if os.path.exists(METRICS_FILE):
-        with open(METRICS_FILE, "r") as f:
+        with open(METRICS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         return Metrics(**data)
     return Metrics(R2=0.0, RMSE=0.0, Accuracy=0.0)
@@ -889,10 +1281,9 @@ def get_metrics() -> Metrics:
 
 @app.get("/dashboard/data")
 async def dashboard_data(log_type: str = "", date: str = "") -> dict:
-    logs = _latest_log()
+    logs = _latest_log() or ""
     filtered = [
-        line
-        for line in logs.splitlines()
+        line for line in logs.splitlines()
         if (not log_type or log_type in line) and (not date or date in line)
     ]
     log_content = "\n".join(filtered)
@@ -900,17 +1291,18 @@ async def dashboard_data(log_type: str = "", date: str = "") -> dict:
     levels = ["INFO", "ERROR", "WARNING", "DEBUG"]
     counts = {lvl: log_content.count(lvl) for lvl in levels}
 
-    metrics = get_metrics().dict()
+    # Usa a própria função da rota /metrics dentro do mesmo módulo
+    metrics = get_metrics().dict()  # ok
 
     metric_history = {
         "dates": ["2025-07-20", "2025-07-21", "2025-07-22", "2025-07-23"],
-        "r2": [0.91, 0.93, 0.94, 0.95],
-        "rmse": [0.12, 0.11, 0.10, 0.09],
+        "r2":    [0.91, 0.93, 0.94, 0.95],
+        "rmse":  [0.12, 0.11, 0.10, 0.09],
         "accuracy": [0.88, 0.89, 0.90, 0.91],
     }
 
     return {
-        "logs": log_content[-5000:],
+        "logs": log_content[-5000:],   # limita tamanho da resposta
         "log_counts": counts,
         "model_metrics": metrics,
         "metric_history": metric_history,
@@ -919,16 +1311,12 @@ async def dashboard_data(log_type: str = "", date: str = "") -> dict:
 
 @app.get("/history/data")
 async def history_data() -> list[dict]:
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, 'r') as fh:
-            return json.load(fh)
+    try:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+    except Exception:
+        # Se arquivo estiver corrompido, retorna vazio em vez de 500
+        return []
     return []
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-@app.get("/", summary="Health check")
-async def root():
-    return {"status": "ok"}
 
