@@ -170,9 +170,14 @@ export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed 
       }
 
       const data = await postTrainForm(fd);
+      console.debug('[Step3] rangesStr =', rangesStr);
+      console.debug('[Step3] methods =', methods);
+      console.debug('[Step3] step2 =', step2);
+      console.debug('[Step3] data.range_used =', data?.range_used);
+
       const fullParams = {
-        ...step2,
-        spectral_ranges: rangesStr,
+        ...step2,               // <-- spread correto do objeto vindo do Step2
+        ranges: rangesStr,      // <-- nome que o Step4 e a otimização esperam
         preprocess_steps: methods,
         range_used: data.range_used,
       };

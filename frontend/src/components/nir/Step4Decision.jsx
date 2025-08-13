@@ -63,6 +63,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
     setPollId(id);
 
     try {
+      console.debug('[Step4] params recebidos =', result?.params);
       const payload = {
         target: step2.target,
         validation_method: step2.validation_method,
