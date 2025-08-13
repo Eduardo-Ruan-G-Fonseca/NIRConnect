@@ -21,3 +21,7 @@ cd frontend
 npm install # na primeira execução
 npm run dev
 ```
+## API de PLS
+
+As rotas `/model/preprocess`, `/model/train` e `/model/predict` permitem sanear dados, treinar o modelo PLS com validação cruzada e gerar previsões usando o pipeline blindado contra NaN/Inf.
+
