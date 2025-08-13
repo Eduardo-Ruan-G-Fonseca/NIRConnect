@@ -26,13 +26,23 @@ from typing import Optional, Tuple, List, Literal
 from utils.saneamento import saneamento_global
 from ml.pipeline import build_pls_pipeline
 
+
 from core.pls import is_categorical  # (se não for usar, podemos remover depois)
-import joblib
+
+
+from routers import model as model_router
+
 
 # Progresso global para /optimize/status
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
 
 app = FastAPI(title="NIR API v4.6")
+
+
+app.include_router(model_router)
+
+app.include_router(model_router.router)
+
 
 app.add_middleware(
     CORSMiddleware,

@@ -33,3 +33,5 @@ curl -X POST http://localhost:8000/model/preprocess \
      -d '{"X": [[1,2],[3,4]]}'
 ```
 
+
+As rotas `/preprocess`, `/train` e `/predict` permitem sanear dados, treinar o modelo PLS com validação cruzada e gerar previsões usando o pipeline blindado contra NaN/Inf.

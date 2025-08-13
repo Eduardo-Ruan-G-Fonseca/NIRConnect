@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { postOptimize, getOptimizeStatus, postAnalisar } from "../../services/api";
+import { postOptimize, getOptimizeStatus, postTrainForm } from "../../services/api";
 
 // rótulos bonitinhos
 const PREP_LABEL = {
@@ -246,7 +246,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
     }
 
     try {
-      const data = await postAnalisar(fd);
+      const data = await postTrainForm(fd);
       const fullParams = {
         ...result?.params,
         n_components: selected.n_components,
