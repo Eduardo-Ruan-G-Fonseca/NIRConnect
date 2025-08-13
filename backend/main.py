@@ -750,7 +750,19 @@ async def analisar_file(
             X = apply_methods(X, methods)
 
         y_raw = df[target].tolist()
-        y_arr, class_mapping = encode_labels_if_needed(y_raw)
+        if classification:
+            y_arr, class_mapping, n_classes = encode_labels_if_needed(y_raw)
+            if n_classes > 2:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"PLS-DA atual suporta apenas 2 classes. "
+                        f"Encontradas: {n_classes}. Classes: {sorted(set(map(str, y_raw)))}"
+                    ),
+                )
+        else:
+            y_arr = pd.to_numeric(pd.Series(y_raw), errors="coerce").to_numpy(dtype=float)
+            class_mapping = {}
 
         X, y_arr, features = saneamento_global(X, y_arr, features)
 

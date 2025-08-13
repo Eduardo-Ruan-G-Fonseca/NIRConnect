@@ -2,12 +2,14 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional, Union
 import numpy as np
+import pandas as pd
 import joblib
 import os
 from sklearn.model_selection import KFold, cross_validate
 
 from core.io_utils import to_float_matrix, encode_labels_if_needed
 from core.saneamento import saneamento_global
+from core.bootstrap import train_plsda
 try:
     from ml.pipeline import build_pls_pipeline
 except Exception:
@@ -63,17 +65,33 @@ class TrainRequest(BaseModel):
     features: Optional[List[str]] = None
     n_components: int = Field(10, ge=1)
     n_splits: int = Field(5, ge=2)
+    classification: bool = False
 
 
 @router.post("/train")
 def train(req: TrainRequest):
     X = to_float_matrix(req.X)
-    y_arr, class_mapping = encode_labels_if_needed(req.y)
+    if req.classification:
+        y_arr, class_mapping, n_classes = encode_labels_if_needed(req.y)
+        if n_classes > 2:
+            raise HTTPException(
+                status_code=400,
+                detail=f"PLS-DA atual suporta 2 classes (encontradas {n_classes}).",
+            )
+    else:
+        y_arr = pd.to_numeric(pd.Series(req.y), errors="coerce").to_numpy(dtype=float)
+        class_mapping = {}
     X_clean, y_clean, features = saneamento_global(X, y_arr, req.features)
     if (not np.isfinite(X_clean).all()) or np.isnan(X_clean).sum():
         raise HTTPException(status_code=400, detail="Dados inválidos mesmo após saneamento")
     if X_clean.shape[1] == 0:
         raise HTTPException(status_code=400, detail="Nenhuma coluna válida para treino")
+
+    if req.classification:
+        model, metrics, extra = train_plsda(X_clean, y_clean, n_components=req.n_components)
+        os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+        joblib.dump({"pipeline": model, "features": features, "class_mapping": class_mapping}, MODEL_PATH)
+        return {"metrics": metrics, "vip": extra.get("vip"), "features": features, "class_mapping": class_mapping}
 
     pipeline = build_pls_pipeline(req.n_components)
     cv = KFold(n_splits=req.n_splits, shuffle=True, random_state=42)
