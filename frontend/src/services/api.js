@@ -38,3 +38,34 @@ export async function postReport(payload) {
   if (!res.ok) throw new Error(await res.text());
   return res.blob();
 }
+
+// ---- New PLS pipeline endpoints ----
+export async function postPreprocess(payload) {
+  const res = await fetch(`${API_BASE}/preprocess`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function postTrain(payload) {
+  const res = await fetch(`${API_BASE}/train`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function postPredict(payload) {
+  const res = await fetch(`${API_BASE}/predict`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
