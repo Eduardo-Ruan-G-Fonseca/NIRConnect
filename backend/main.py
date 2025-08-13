@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, APIRouter
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import StreamingResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,12 +34,6 @@ import joblib
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
 
 app = FastAPI(title="NIR API v4.6")
-model_router = APIRouter(tags=["Model"])
-
-
-app.include_router(model_router)
-
-app.include_router(model_router.router)
 
 
 app.add_middleware(
