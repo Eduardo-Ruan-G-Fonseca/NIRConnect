@@ -24,6 +24,18 @@ npm run dev
 ## API de PLS
 
 
+As rotas `/model/preprocess`, `/model/train` e `/model/predict` permitem sanear dados, treinar o modelo PLS com validação cruzada e gerar previsões usando o pipeline blindado contra NaN/Inf. Todas respondem apenas JSON e devem ser chamadas via `POST`.
+
+Exemplo de requisição:
+
+```bash
+curl -X POST http://localhost:8000/model/preprocess \
+     -H "Content-Type: application/json" \
+     -d '{"X": [[1,2],[3,4]]}'
+```
+
+
 As rotas `/preprocess`, `/train` e `/predict` permitem sanear dados, treinar o modelo PLS com validação cruzada e gerar previsões usando o pipeline blindado contra NaN/Inf.
+
 
 

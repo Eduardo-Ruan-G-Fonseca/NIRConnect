@@ -45,6 +45,14 @@ export async function postReport(payload: unknown) {
 }
 
 
+// ---- New PLS pipeline endpoints ----
+export async function postPreprocess(payload) {
+  const res = await fetch(`${API_BASE}/model/preprocess`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+
+
 // ====== NOVO – endpoints JSON do backend ======
 // Helpers para garantir que números inválidos virem null (e não NaN/Infinity)
 function toNumberOrNull(v: unknown): number | null {
@@ -104,10 +112,17 @@ export async function predict(X: Array<Array<number | string | null | undefined>
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ X: normalizeMatrix(X) }),>>>>>>> main
+
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export async function postTrain(payload) {
+  const res = await fetch(`${API_BASE}/model/train`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
 
 
 // === Wrappers compatíveis com a outra branch ===
@@ -125,16 +140,38 @@ export async function postPreprocess(payload: unknown) {
 }
 
 
+export async function postPredict(payload) {
+  const res = await fetch(`${API_BASE}/model/predict`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+
+
 export async function postTrain(payload: unknown) {
   const res = await fetch(`${API_BASE}/train`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
 
+
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+
+const api = {
+  postColumns,
+  postAnalisar,
+  postOptimize,
+  getOptimizeStatus,
+  postReport,
+  postPreprocess,
+  postTrain,
+  postPredict,
+};
+
+export default api;
 
 export async function postPredict(payload: unknown) {
   const res = await fetch(`${API_BASE}/predict`, {
