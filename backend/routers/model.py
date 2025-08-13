@@ -13,8 +13,6 @@ from ml.pipeline import build_pls_pipeline
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "pls_pipeline.joblib")
 MODEL_PATH = os.path.normpath(MODEL_PATH)
 
-router = APIRouter()
-
 
 class PreprocessRequest(BaseModel):
     X: List[List[float]]
