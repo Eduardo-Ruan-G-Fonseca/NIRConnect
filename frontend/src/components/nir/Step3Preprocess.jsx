@@ -1,7 +1,9 @@
 // src/components/nir/Step3Preprocess.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-dist-min";
+
 import { postTrain } from "../../services/api";
+
 
 export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed }) {
   const chartRef = useRef(null);
@@ -168,7 +170,9 @@ export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed 
         fd.append("preprocess", JSON.stringify(methods));
       }
 
+
       const data = await postTrain(fd);
+
 
       const fullParams = {
         ...step2,

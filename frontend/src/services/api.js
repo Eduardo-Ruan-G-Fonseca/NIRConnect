@@ -1,3 +1,4 @@
+
 const DEFAULT_API_BASE =
   typeof location !== 'undefined'
     ? location.protocol + '//' + location.hostname + ':8000'
@@ -8,7 +9,9 @@ export const API_BASE =
     ? window.API_BASE
     : DEFAULT_API_BASE;
 
-export async function postColumns(file) {
+
+// ====== Legado (mantidos) ======
+export async function postColumns(file: File) {
   const fd = new FormData();
   fd.append('file', file);
   const res = await fetch(`${API_BASE}/columns`, { method: 'POST', body: fd });
@@ -16,13 +19,15 @@ export async function postColumns(file) {
   return res.json();
 }
 
-export async function postAnalisar(fd) {
+export async function postAnalisar(fd: FormData) {
+  // LEGADO: se ainda existir esse endpoint no backend, continua.
+  // Caso tenha migrado para /train, prefira postTrainForm ou train().
   const res = await fetch(`${API_BASE}/analisar`, { method: 'POST', body: fd });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
-export async function postOptimize(file, params) {
+export async function postOptimize(file: File, params: Record<string, unknown>) {
   const fd = new FormData();
   fd.append('file', file);
   fd.append('params', JSON.stringify(params));
@@ -37,11 +42,11 @@ export async function getOptimizeStatus() {
   return res.json();
 }
 
-export async function postReport(payload) {
+export async function postReport(payload: unknown) {
   const res = await fetch(`${API_BASE}/report`, {
     method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(payload)
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.blob();
@@ -53,6 +58,7 @@ export async function postPreprocess(payload) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
+
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -85,6 +91,7 @@ export async function postPredict(payload) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
+
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
