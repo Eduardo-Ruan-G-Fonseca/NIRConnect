@@ -45,6 +45,7 @@ export async function postReport(payload: unknown) {
 }
 
 
+
 // ---- New PLS pipeline endpoints ----
 export async function postPreprocess(payload) {
   const res = await fetch(`${API_BASE}/model/preprocess`, {
@@ -120,6 +121,7 @@ export async function predict(X: Array<Array<number | string | null | undefined>
 }
 
 export async function postTrain(payload) {
+
   const res = await fetch(`${API_BASE}/model/train`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -153,6 +155,7 @@ export async function postTrain(payload: unknown) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -170,6 +173,7 @@ const api = {
 };
 
 export default api;
+
 
 
 export async function postPredict(payload: unknown) {

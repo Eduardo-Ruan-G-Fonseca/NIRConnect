@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, APIRouter
 from fastapi.responses import StreamingResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +28,7 @@ from ml.pipeline import build_pls_pipeline
 
 
 from core.pls import is_categorical  # (se não for usar, podemos remover depois)
+import joblib
 
 
 from routers import model as model_router
@@ -37,6 +38,7 @@ from routers import model as model_router
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
 
 app = FastAPI(title="NIR API v4.6")
+model_router = APIRouter(tags=["Model"])
 
 
 app.include_router(model_router)
@@ -100,6 +102,7 @@ class PreprocessRequest(BaseModel):
 
 
 @app.post("/preprocess", tags=["Model"])
+
 def preprocess(req: PreprocessRequest):
     X = np.asarray(req.X, dtype=float)
     nan_before = int(np.isnan(X).sum())
@@ -129,6 +132,7 @@ class TrainRequest(BaseModel):
 
 
 @app.post("/train", tags=["Model"])
+
 def train(req: TrainRequest):
     X_clean, y_clean, features = saneamento_global(req.X, req.y, req.features)
     if not np.isfinite(X_clean).all():
@@ -170,7 +174,9 @@ class PredictRequest(BaseModel):
     X: List[List[float]]
 
 
+
 @app.post("/predict", tags=["Model"])
+
 def predict(req: PredictRequest):
     if not os.path.exists(MODEL_PATH):
         raise HTTPException(status_code=400, detail="Modelo não treinado")
@@ -179,6 +185,7 @@ def predict(req: PredictRequest):
     X = np.asarray(req.X, dtype=float)
     preds = pipeline.predict(X).ravel().tolist()
     return {"predictions": preds}
+
 
 
 def _latest_log() -> str:
