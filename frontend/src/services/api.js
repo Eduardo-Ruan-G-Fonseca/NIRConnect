@@ -1,6 +1,13 @@
-// === BASE atual (mantive como está) ===
+
+const DEFAULT_API_BASE =
+  typeof location !== 'undefined'
+    ? location.protocol + '//' + location.hostname + ':8000'
+    : 'http://localhost:8000';
+
 export const API_BASE =
-  (window as any).API_BASE || (location.protocol + '//' + location.hostname + ':8000');
+  typeof window !== 'undefined' && window.API_BASE
+    ? window.API_BASE
+    : DEFAULT_API_BASE;
 
 // ====== Legado (mantidos) ======
 export async function postColumns(file: File) {
@@ -43,6 +50,7 @@ export async function postReport(payload: unknown) {
   if (!res.ok) throw new Error(await res.text());
   return res.blob();
 }
+
 
 
 
@@ -115,6 +123,7 @@ export async function predict(X: Array<Array<number | string | null | undefined>
     body: JSON.stringify({ X: normalizeMatrix(X) }),>>>>>>> main
 
 
+
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -156,6 +165,7 @@ export async function postTrain(payload: unknown) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
 
+
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -174,8 +184,6 @@ const api = {
 
 export default api;
 
-
-
 export async function postPredict(payload: unknown) {
   const res = await fetch(`${API_BASE}/predict`, {
     method: 'POST',
@@ -192,4 +200,3 @@ export async function postTrainForm(fd: FormData) {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
-

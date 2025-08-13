@@ -30,10 +30,6 @@ from ml.pipeline import build_pls_pipeline
 from core.pls import is_categorical  # (se não for usar, podemos remover depois)
 import joblib
 
-
-from routers import model as model_router
-
-
 # Progresso global para /optimize/status
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
 
@@ -102,7 +98,6 @@ class PreprocessRequest(BaseModel):
 
 
 @app.post("/preprocess", tags=["Model"])
-
 def preprocess(req: PreprocessRequest):
     X = np.asarray(req.X, dtype=float)
     nan_before = int(np.isnan(X).sum())
