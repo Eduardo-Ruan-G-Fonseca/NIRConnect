@@ -44,6 +44,7 @@ export async function postReport(payload: unknown) {
   return res.blob();
 }
 
+
 // ====== NOVO – endpoints JSON do backend ======
 // Helpers para garantir que números inválidos virem null (e não NaN/Infinity)
 function toNumberOrNull(v: unknown): number | null {
@@ -102,11 +103,12 @@ export async function predict(X: Array<Array<number | string | null | undefined>
   const res = await fetch(`${API_BASE}/predict`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ X: normalizeMatrix(X) }),
+    body: JSON.stringify({ X: normalizeMatrix(X) }),>>>>>>> main
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
 
 // === Wrappers compatíveis com a outra branch ===
 // Aceitam um payload já pronto (sem normalização automática).
@@ -116,16 +118,19 @@ export async function postPreprocess(payload: unknown) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
 
 export async function postTrain(payload: unknown) {
   const res = await fetch(`${API_BASE}/train`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -147,3 +152,4 @@ export async function postTrainForm(fd: FormData) {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
