@@ -28,13 +28,23 @@ export async function postOptimize(file, params) {
   fd.append('file', file);
   fd.append('params', JSON.stringify(params));
   const res = await fetch(`${API_BASE}/optimize`, { method: 'POST', body: fd });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    let msg;
+    try { const j = await res.json(); msg = j.detail || JSON.stringify(j); }
+    catch { msg = await res.text(); }
+    throw new Error(msg || 'Erro ao otimizar.');
+  }
   return res.json();
 }
 
 export async function getOptimizeStatus() {
   const res = await fetch(`${API_BASE}/optimize/status`);
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    let msg;
+    try { const j = await res.json(); msg = j.detail || JSON.stringify(j); }
+    catch { msg = await res.text(); }
+    throw new Error(msg || 'Erro ao consultar status.');
+  }
   return res.json();
 }
 
@@ -151,11 +161,6 @@ export async function postTrainForm(fd) {
     } catch (e) { last = e; }
   }
   throw last || new Error('Nenhuma rota de treino encontrada.');
-
-  const res = await fetch(`${API_BASE}/train`, { method: 'POST', body: fd });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-
 }
 
 const api = {

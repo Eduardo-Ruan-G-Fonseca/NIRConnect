@@ -63,6 +63,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
     setPollId(id);
 
     try {
+      console.debug('[Step4] params recebidos =', result?.params);
       const payload = {
         target: step2.target,
         validation_method: step2.validation_method,
@@ -81,7 +82,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
       setOptResults(data.results || []);
       setProgress(100);
     } catch (e) {
-      setError(typeof e === "string" ? e : "Falha na otimização.");
+      setError(typeof e === "string" ? e : (e?.message || "Falha na otimização."));
     } finally {
       setRunning(false);
       if (pollId) clearInterval(pollId);
@@ -294,12 +295,19 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
         </>
       )}
 
-      {/* Tabela e gráfico */}
-      {optResults && optResults.length > 0 && (
-        <>
-          {renderTable(optResults)}
-          <div id="decisionChart" className="w-full h-80 mt-4" />
-        </>
+      {/* Resultados ou mensagem */}
+      {optResults && (
+        optResults.length > 0 ? (
+          <>
+            {renderTable(optResults)}
+            <div id="decisionChart" className="w-full h-80 mt-4" />
+          </>
+        ) : (
+          <div className="text-sm text-gray-700">
+            Nenhum resultado foi retornado pela otimização.
+            Tente reduzir o número de componentes ou trocar o método de validação (ex.: KFold).
+          </div>
+        )
       )}
 
       <div className="flex gap-2 pt-2">
