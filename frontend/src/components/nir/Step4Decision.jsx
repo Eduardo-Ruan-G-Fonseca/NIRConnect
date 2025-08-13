@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import Plotly from "plotly.js-dist-min";
 import { postOptimize, getOptimizeStatus, postTrainForm } from "../../services/api";
+
+function joinList(xs) {
+  if (!xs || !xs.length) return "-";
+  return xs.join(", ");
+}
 
 // rótulos bonitinhos
 const PREP_LABEL = {
@@ -36,6 +42,52 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
     const methods = steps.map((p) => p.method);
     return methods.length ? methods : ["none"];
   }, [result]);
+
+  useEffect(() => {
+    if (!result?.data) return;
+
+    // ==== VIPs ====
+    const top = result.data.top_vips || [];
+    const vipArray = Array.isArray(top) && top.length
+      ? top
+      : (Array.isArray(result.data.vip) ? result.data.vip : []);
+
+    let vipNames = [], vipValues = [];
+    if (vipArray.length) {
+      if (typeof vipArray[0] === "object" && vipArray[0] !== null) {
+        vipNames  = vipArray.map(it => it.feature ?? it.name ?? it[0] ?? "");
+        vipValues = vipArray.map(it => Number(it.value ?? it[1] ?? it) || 0);
+      } else if (Array.isArray(vipArray[0])) {
+        vipNames  = vipArray.map(it => String(it[0]));
+        vipValues = vipArray.map(it => Number(it[1]) || 0);
+      } else {
+        vipNames  = vipArray.map((_, i) => `Var ${i+1}`);
+        vipValues = vipArray.map(Number);
+      }
+    }
+    if (vipValues.length) {
+      Plotly.newPlot("vipChart", [{
+        x: vipNames, y: vipValues, type: "bar"
+      }], {
+        margin: { t: 20, r: 10, b: 80, l: 50 },
+        xaxis: { automargin: true }, yaxis: { title: "VIP" }
+      }, { displayModeBar: false });
+    } else {
+      const el = document.getElementById("vipChart"); if (el) el.innerHTML = "";
+    }
+
+    // ==== Confusion Matrix ====
+    const cm = result.data.metrics?.ConfusionMatrix || result.data.metrics?.confusion_matrix;
+    if (Array.isArray(cm) && cm.length && Array.isArray(cm[0])) {
+      Plotly.newPlot("cmChart", [{
+        z: cm, type: "heatmap", colorscale: "Viridis", showscale: true
+      }], {
+        margin: { t: 20, r: 10, b: 40, l: 40 }
+      }, { displayModeBar: false });
+    } else {
+      const el = document.getElementById("cmChart"); if (el) el.innerHTML = "";
+    }
+  }, [result?.data]);
 
   useEffect(() => {
     return () => {
@@ -270,6 +322,63 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
         <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">
           {error}
         </div>
+      )}
+
+      {/* PRÉVIA DO MODELO (vinda da Step 3) */}
+      {result?.data && (
+        <section className="mt-4 mb-6 space-y-4">
+          <h3 className="text-xl font-semibold text-gray-800">Prévia do Modelo</h3>
+
+          {/* Parâmetros */}
+          <div className="rounded-lg border p-4">
+            <h4 className="font-medium mb-2">Parâmetros</h4>
+            <ul className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-700">
+              <li><b>Alvo:</b> {step2?.target || "-"}</li>
+              <li><b>Modo:</b> {step2?.classification ? "PLS-DA" : "PLS-R"}</li>
+              <li><b>Validação:</b> {step2?.validation_method || "-"}</li>
+              <li><b>Componentes (PLS):</b> {step2?.n_components ?? "-"}</li>
+              <li><b>Faixa espectral:</b> {result?.params?.ranges || result?.data?.range_used || "-"}</li>
+              <li><b>Pré-processos:</b> {joinList(result?.params?.preprocess_steps?.map(p => p.method))}</li>
+            </ul>
+          </div>
+
+          {/* Métricas */}
+          {result?.data?.metrics && (
+            <div className="rounded-lg border p-4">
+              <h4 className="font-medium mb-2">Métricas</h4>
+              <div className="overflow-auto">
+                <table className="min-w-[360px] text-sm">
+                  <tbody>
+                    {Object.entries(result.data.metrics).map(([k, v]) => (
+                      <tr key={k} className="border-b last:border-0">
+                        <td className="py-1 pr-4 text-gray-600">{k}</td>
+                        <td className="py-1 font-medium">{typeof v === "number" ? v.toFixed(4) : String(v)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* VIPs */}
+          <div className="rounded-lg border p-4">
+            <h4 className="font-medium mb-2">VIPs (Top)</h4>
+            <div id="vipChart" className="w-full" style={{height: 320}} />
+            {!((result?.data?.top_vips && result.data.top_vips.length) || (result?.data?.vip && result.data.vip.length)) && (
+              <div className="text-sm text-gray-600">Sem VIPs disponíveis para esta calibração.</div>
+            )}
+          </div>
+
+          {/* Matriz de confusão */}
+          <div className="rounded-lg border p-4">
+            <h4 className="font-medium mb-2">Matriz de Confusão</h4>
+            <div id="cmChart" className="w-full" style={{height: 360}} />
+            {!(result?.data?.metrics?.ConfusionMatrix || result?.data?.metrics?.confusion_matrix) && (
+              <div className="text-sm text-gray-600">Não disponível para este modo/validação.</div>
+            )}
+          </div>
+        </section>
       )}
 
       {/* Botão para iniciar otimização */}
