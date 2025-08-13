@@ -697,8 +697,10 @@ async def analisar_file(
         # 1) drop de colunas 100% NaN (não têm mediana)
         col_ok = ~np.isnan(X).all(axis=0)
         if not col_ok.any():
-            raise HTTPException(status_code=400,
-                                detail="Todas as variáveis espectrais ficaram inválidas após o pré-processamento.")
+            raise HTTPException(
+                status_code=400,
+                detail="Todas as variáveis espectrais ficaram inválidas após o pré-processamento."
+            )
         if not col_ok.all():
             X = X[:, col_ok]
             features = [f for i, f in enumerate(features) if col_ok[i]]
@@ -706,7 +708,10 @@ async def analisar_file(
         # 2) drop de linhas 100% NaN
         row_ok = ~np.isnan(X).all(axis=1)
         if not row_ok.any():
-            raise HTTPException(status_code=400, detail="Todas as amostras ficaram inválidas após o pré-processamento.")
+            raise HTTPException(
+                status_code=400,
+                detail="Todas as amostras ficaram inválidas após o pré-processamento."
+            )
         if not row_ok.all():
             X = X[row_ok]
             row_mask_for_y = row_ok
