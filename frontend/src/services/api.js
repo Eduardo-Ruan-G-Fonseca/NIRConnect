@@ -113,6 +113,7 @@ export async function predict(X: Array<Array<number | string | null | undefined>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ X: normalizeMatrix(X) }),>>>>>>> main
 
+
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -152,13 +153,10 @@ export async function postTrain(payload: unknown) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-
-
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
-
 
 const api = {
   postColumns,
@@ -172,6 +170,7 @@ const api = {
 };
 
 export default api;
+
 
 export async function postPredict(payload: unknown) {
   const res = await fetch(`${API_BASE}/predict`, {
