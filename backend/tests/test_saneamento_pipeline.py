@@ -3,8 +3,11 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from utils.saneamento import saneamento_global
-from ml.pipeline import build_pls_pipeline
+from core.saneamento import saneamento_global
+try:
+    from ml.pipeline import build_pls_pipeline
+except Exception:
+    from core.ml.pipeline import build_pls_pipeline
 from sklearn.model_selection import KFold, cross_val_score
 
 

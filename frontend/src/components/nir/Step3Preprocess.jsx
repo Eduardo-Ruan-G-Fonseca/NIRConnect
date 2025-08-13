@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-dist-min";
 
-import { postTrain } from "../../services/api";
+import { postTrainForm } from "../../services/api";
 
 export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed }) {
   const chartRef = useRef(null);
@@ -109,7 +109,7 @@ export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed 
     return () => {
       if (chartRef.current) {
         chartRef.current.removeAllListeners?.("plotly_selected");
-        try { Plotly.purge(chartRef.current); } catch {}
+        try { Plotly.purge(chartRef.current); } catch { /* ignore */ }
       }
     };
   }, [wavelengths, allSpectraValues, meanWl, meanVals, showMean, ranges]);
@@ -169,7 +169,7 @@ export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed 
         fd.append("preprocess", JSON.stringify(methods));
       }
 
-      const data = await postTrain(fd);
+      const data = await postTrainForm(fd);
       const fullParams = {
         ...step2,
         spectral_ranges: rangesStr,

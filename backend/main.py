@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, APIRouter
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import StreamingResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,33 +13,37 @@ from starlette.formparsers import MultiPartParser
 from datetime import datetime
 from pydantic import BaseModel, validator, Field
 
-from core.config import METRICS_FILE, settings
-from core.metrics import regression_metrics, classification_metrics
-from core.report_pdf import PDFReport
-from core.logger import log_info
-from core.validation import build_cv
-from core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
-from core.preprocessing import apply_methods
-from core.optimization import optimize_model_grid
-from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
+from .core.config import METRICS_FILE, settings
+from .core.metrics import regression_metrics, classification_metrics
+from .core.report_pdf import PDFReport
+from .core.logger import log_info
+from .core.validation import build_cv
+from .core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
+from .core.preprocessing import apply_methods
+from .core.optimization import optimize_model_grid
+from .core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from typing import Optional, Tuple, List, Literal
-from utils.saneamento import saneamento_global
-from ml.pipeline import build_pls_pipeline
+from .core.saneamento import saneamento_global
+try:
+    from .ml.pipeline import build_pls_pipeline
+except Exception:
+    from .core.ml.pipeline import build_pls_pipeline  # fallback se mover
 
 
-from core.pls import is_categorical  # (se não for usar, podemos remover depois)
+from .core.pls import is_categorical  # (se não for usar, podemos remover depois)
 import joblib
 
 # Progresso global para /optimize/status
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
 
 app = FastAPI(title="NIR API v4.6")
-model_router = APIRouter(tags=["Model"])
 
 
-app.include_router(model_router)
-
-app.include_router(model_router.router)
+@app.on_event("startup")
+async def _log_routes():
+    for r in app.routes:
+        methods = getattr(r, "methods", set())
+        print("ROTA:", methods, r.path)
 
 
 app.add_middleware(
@@ -102,7 +106,7 @@ def preprocess(req: PreprocessRequest):
     X = np.asarray(req.X, dtype=float)
     nan_before = int(np.isnan(X).sum())
     if req.methods:
-        from core.preprocessing import apply_methods
+        from .core.preprocessing import apply_methods
         X = apply_methods(X, req.methods)
     X_clean, y_clean, features = saneamento_global(X, req.y, req.features)
     nan_after = int(np.isnan(X_clean).sum())
@@ -117,52 +121,6 @@ def preprocess(req: PreprocessRequest):
         "y": y_clean.tolist() if y_clean is not None else None,
     }
 
-
-class TrainRequest(BaseModel):
-    X: List[List[float]]
-    y: List[float]
-    features: Optional[List[str]] = None
-    n_components: int = Field(10, ge=1)
-    n_splits: int = Field(5, ge=2)
-
-
-@app.post("/train", tags=["Model"])
-
-def train(req: TrainRequest):
-    X_clean, y_clean, features = saneamento_global(req.X, req.y, req.features)
-    if not np.isfinite(X_clean).all():
-        raise HTTPException(status_code=400, detail="Dados contêm valores não finitos após saneamento")
-    if np.isnan(X_clean).sum() != 0:
-        raise HTTPException(status_code=400, detail="Dados contêm NaN após saneamento")
-    if X_clean.shape[1] == 0:
-        raise HTTPException(status_code=400, detail="Nenhuma coluna válida para treino")
-
-    pipeline = build_pls_pipeline(req.n_components)
-    from sklearn.model_selection import KFold, cross_validate
-
-    cv = KFold(n_splits=req.n_splits, shuffle=True, random_state=42)
-    cv_results = cross_validate(
-        pipeline,
-        X_clean,
-        y_clean,
-        cv=cv,
-        scoring={"r2": "r2", "rmse": "neg_root_mean_squared_error"},
-        return_train_score=False,
-    )
-    r2_scores = cv_results["test_r2"].tolist()
-    rmse_scores = (-cv_results["test_rmse"]).tolist()
-
-    pipeline.fit(X_clean, y_clean)
-    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-    joblib.dump({"pipeline": pipeline, "features": features}, MODEL_PATH)
-
-    return {
-        "r2": r2_scores,
-        "rmse": rmse_scores,
-        "r2_mean": float(np.mean(r2_scores)),
-        "rmse_mean": float(np.mean(rmse_scores)),
-        "features": features,
-    }
 
 
 class PredictRequest(BaseModel):
@@ -899,7 +857,7 @@ async def analisar_file(
                     r2_val = None
                 rmsep = float(np.sqrt(mean_squared_error(y_test_num, y_test_pred)))
 
-                from core.metrics import vip_scores
+                from .core.metrics import vip_scores
                 vip_list = vip_scores(pls, X_train, y_train_num.values.reshape(-1, 1)).tolist()
                 extra = {"vip": vip_list, "scores": pls.x_scores_.tolist()}
                 metrics = {"R2_cal": r2_cal, "RMSEC": rmsec, "R2_val": r2_val, "RMSEP": rmsep}
@@ -1045,84 +1003,11 @@ async def analisar_file(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-# ✅ Mantém para testes internos (opcional). O front usa /analisar.
-@app.post("/analyze")
-async def analyze_file(
-    file: UploadFile = File(...),
-    target: str = Form(...),
-    n_components: int = Form(5),
-    classification: bool = Form(False),
-    n_bootstrap: int = Form(0),
-    preprocess: str = Form(""),
-    threshold: float = Form(0.5),
-    # ⬇ adicionados para CV
-    validation_method: str | None = Form(None),          # "KFold" | "LOO" | None
-    validation_params: str = Form(""),                   # ex.: {"n_splits":5,"shuffle":true}
-) -> dict:
-    """Execute PLS analysis with cross-validation and optional bootstrap."""
-    try:
-        content = await file.read()
-        df = _read_dataframe(file.filename, content)
 
-        if target not in df.columns:
-            raise HTTPException(status_code=400, detail=f"A coluna '{target}' não foi encontrada no arquivo.")
-
-        X_df = df.drop(columns=[target])
-        X = X_df.values
-
-        methods = _parse_preprocess(preprocess)
-        if methods:
-            X = apply_methods(X, methods)
-
-        # y e treino
-        if classification:
-            y = df[target].astype(str).values
-            model, train_metrics, extra = train_plsda(X, y, n_components=n_components, threshold=threshold)
-        else:
-            try:
-                y = df[target].astype(float).values
-            except Exception:
-                raise HTTPException(status_code=400, detail="Erro: coluna alvo não numérica para regressão.")
-            model, train_metrics, extra = train_plsr(X, y, n_components=n_components)
-
-        # CV opcional (KFold/LOO)
-        try:
-            val_params = json.loads(validation_params) if validation_params else {}
-        except Exception:
-            val_params = {}
-        cv_metrics = None
-        if validation_method in {"KFold", "LOO"}:
-            cv_metrics = _cross_val_metrics(
-                X, y, n_components, classification,
-                validation_method=validation_method, validation_params=val_params,
-                threshold=threshold
-            )
-
-        metrics = {"train": train_metrics}
-        if cv_metrics is not None:
-            metrics["cv"] = cv_metrics
-
-        # bootstrap opcional
-        if n_bootstrap and int(n_bootstrap) > 0:
-            boot = bootstrap_metrics(X, y, n_components=n_components, classification=classification, n_bootstrap=int(n_bootstrap))
-            metrics["bootstrap"] = boot
-
-        # VIP/interpretacao
-        vip_raw = extra.get("vip", [])
-        vip_list = vip_raw.tolist() if hasattr(vip_raw, "tolist") else list(vip_raw)
-        wls_numeric = [float(f) if str(f).replace('.', '', 1).isdigit() else None for f in X_df.columns.tolist()]
-        interpretacao = interpretar_vips(vip_list, wls_numeric)
-
-        return jsonable_encoder({
-            "metrics": metrics,
-            "vip": vip_list,
-            "features": X_df.columns.tolist(),
-            "interpretacao_vips": interpretacao
-        })
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+# Alias de treino que usam o MESMO handler de /analisar (FormData)
+app.add_api_route("/train-form", analisar_file, methods=["POST"], tags=["model"])
+app.add_api_route("/train", analisar_file, methods=["POST"], tags=["model"])
+app.add_api_route("/analyze", analisar_file, methods=["POST"], tags=["model"])
 
 class OptimizeParams(BaseModel):
     """Parameters expected by the /optimize endpoint."""

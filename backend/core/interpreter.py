@@ -1,4 +1,4 @@
-from core.tabela_bandas import BANDAS_NIR
+from .tabela_bandas import BANDAS_NIR
 
 
 def interpretar_vips(vips: list, wavelengths: list, top_n: int = 10) -> list:

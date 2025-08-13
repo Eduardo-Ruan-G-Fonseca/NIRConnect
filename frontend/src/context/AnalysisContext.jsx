@@ -56,6 +56,7 @@ export function AnalysisProvider({ children }) {
   return <AnalysisContext.Provider value={value}>{children}</AnalysisContext.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAnalysis() {
   const ctx = useContext(AnalysisContext);
   if (!ctx) throw new Error("useAnalysis deve ser usado dentro de <AnalysisProvider>");

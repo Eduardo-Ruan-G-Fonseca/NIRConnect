@@ -1,9 +1,9 @@
 import typer
 import pandas as pd
-from core.pls import train_pls
-from core.bootstrap import bootstrap_metrics
-from core.report_pdf import PDFReport
-from generate_dashboard import generate_dashboard
+from .core.pls import train_pls
+from .core.bootstrap import bootstrap_metrics
+from .core.report_pdf import PDFReport
+from .generate_dashboard import generate_dashboard
 import uvicorn
 import json
 

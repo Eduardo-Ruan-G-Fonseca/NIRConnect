@@ -3,11 +3,11 @@ import sys
 import numpy as np
 import pytest
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from core.pls import train_pls
-from core.bootstrap import bootstrap_metrics
-from core.optimization import optimize_nir
+from backend.core.pls import train_pls
+from backend.core.bootstrap import bootstrap_metrics
+from backend.core.optimization import optimize_nir
 
 
 def generate_regression_data(n_samples=40, n_features=8, noise=0.1, random_state=0):
