@@ -6,8 +6,11 @@ import joblib
 import os
 from sklearn.model_selection import KFold, cross_validate
 
-from utils.saneamento import saneamento_global
-from ml.pipeline import build_pls_pipeline
+from ..core.saneamento import saneamento_global
+try:
+    from ..ml.pipeline import build_pls_pipeline
+except Exception:
+    from ..core.ml.pipeline import build_pls_pipeline  # fallback se mover
 
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "pls_pipeline.joblib")
@@ -37,7 +40,7 @@ def preprocess(req: PreprocessRequest):
     X = np.asarray(req.X, dtype=float)
     nan_before = np.isnan(X).sum()
     if req.methods:
-        from core.preprocessing import apply_methods
+        from ..core.preprocessing import apply_methods
         X = apply_methods(X, req.methods)
     X_clean, y_clean, features = saneamento_global(X, req.y, req.features)
     nan_after = np.isnan(X_clean).sum()

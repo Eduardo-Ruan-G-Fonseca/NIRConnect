@@ -87,7 +87,7 @@ export default function Step5Result({ result, onBack, onNew }) {
     );
 
     return () => {
-      try { Plotly.purge(vipRef.current); } catch {}
+      try { Plotly.purge(vipRef.current); } catch { /* ignore */ }
     };
   }, [features, vip]);
 
@@ -131,7 +131,7 @@ export default function Step5Result({ result, onBack, onNew }) {
     }
 
     return () => {
-      try { Plotly.purge(scatterRef.current); } catch {}
+      try { Plotly.purge(scatterRef.current); } catch { /* ignore */ }
     };
   }, [isClass, scores, y_real, y_pred]);
 
@@ -164,7 +164,7 @@ export default function Step5Result({ result, onBack, onNew }) {
     }
 
     return () => {
-      try { Plotly.purge(cmRef.current); } catch {}
+      try { Plotly.purge(cmRef.current); } catch { /* ignore */ }
     };
   }, [isClass, metrics, classLabels]);
 
@@ -197,6 +197,7 @@ export default function Step5Result({ result, onBack, onNew }) {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (e) {
+      console.error(e);
       alert("Falha ao gerar PDF.");
     } finally {
       setDownloading(false);

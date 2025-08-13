@@ -4,9 +4,9 @@ import json
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from main import app, METRICS_FILE
-from cli import app as cli_app
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+from backend.main import app, METRICS_FILE
+from backend.cli import app as cli_app
 
 client = TestClient(app)
 runner = CliRunner()
