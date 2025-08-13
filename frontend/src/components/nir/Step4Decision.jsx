@@ -7,6 +7,13 @@ function joinList(xs) {
   return xs.join(", ");
 }
 
+const nf = (v) =>
+  typeof v === "number"
+    ? v.toLocaleString("pt-BR", { maximumFractionDigits: 4 })
+    : v;
+
+const isPlainObject = (x) => x && typeof x === "object" && !Array.isArray(x);
+
 // rótulos bonitinhos
 const PREP_LABEL = {
   none: "Nenhum",
@@ -331,33 +338,95 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
 
           {/* Parâmetros */}
           <div className="rounded-lg border p-4">
-            <h4 className="font-medium mb-2">Parâmetros</h4>
-            <ul className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-700">
-              <li><b>Alvo:</b> {step2?.target || "-"}</li>
-              <li><b>Modo:</b> {step2?.classification ? "PLS-DA" : "PLS-R"}</li>
-              <li><b>Validação:</b> {step2?.validation_method || "-"}</li>
-              <li><b>Componentes (PLS):</b> {step2?.n_components ?? "-"}</li>
-              <li><b>Faixa espectral:</b> {result?.params?.ranges || result?.data?.range_used || "-"}</li>
-              <li><b>Pré-processos:</b> {joinList(result?.params?.preprocess_steps?.map(p => p.method))}</li>
-            </ul>
+            <h4 className="font-medium mb-3">Parâmetros</h4>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm text-gray-800">
+              <div className="space-y-1">
+                <div><span className="text-gray-600">Alvo:</span> <b className="break-words">{step2?.target || "-"}</b></div>
+                <div><span className="text-gray-600">Modo:</span> <b>{step2?.classification ? "PLS-DA" : "PLS-R"}</b></div>
+                <div><span className="text-gray-600">Validação:</span> <b>{step2?.validation_method || "-"}</b></div>
+              </div>
+              <div className="space-y-1">
+                <div><span className="text-gray-600">Componentes (PLS):</span> <b>{step2?.n_components ?? "-"}</b></div>
+                <div><span className="text-gray-600">Faixa espectral:</span> <b className="break-words">{result?.params?.ranges || result?.data?.range_used || "-"}</b></div>
+              </div>
+              <div className="space-y-1">
+                <div><span className="text-gray-600">Pré‑processos:</span> <b className="break-words">{joinList(result?.params?.preprocess_steps?.map(p => p.method))}</b></div>
+              </div>
+            </div>
           </div>
 
           {/* Métricas */}
           {result?.data?.metrics && (
             <div className="rounded-lg border p-4">
-              <h4 className="font-medium mb-2">Métricas</h4>
-              <div className="overflow-auto">
-                <table className="min-w-[360px] text-sm">
-                  <tbody>
-                    {Object.entries(result.data.metrics).map(([k, v]) => (
-                      <tr key={k} className="border-b last:border-0">
-                        <td className="py-1 pr-4 text-gray-600">{k}</td>
-                        <td className="py-1 font-medium">{typeof v === "number" ? v.toFixed(4) : String(v)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <h4 className="font-medium mb-3">Métricas</h4>
+              {(() => {
+                const m = result.data.metrics;
+                const hasTrain = isPlainObject(m.train);
+                const hasCV = isPlainObject(m.cv);
+
+                if (hasTrain || hasCV) {
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {hasTrain && (
+                        <div className="rounded border">
+                          <div className="px-3 py-2 border-b font-medium bg-gray-50">Treino</div>
+                          <div className="overflow-auto p-3">
+                            <table className="min-w-[260px] text-sm">
+                              <tbody>
+                                {Object.entries(m.train).map(([k, v]) => (
+                                  <tr key={`train-${k}`} className="border-b last:border-0">
+                                    <td className="py-1 pr-4 text-gray-600">{k}</td>
+                                    <td className="py-1 font-medium">
+                                      {typeof v === "number" ? nf(v) : String(v)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                      {hasCV && (
+                        <div className="rounded border">
+                          <div className="px-3 py-2 border-b font-medium bg-gray-50">Validação</div>
+                          <div className="overflow-auto p-3">
+                            <table className="min-w-[260px] text-sm">
+                              <tbody>
+                                {Object.entries(m.cv).map(([k, v]) => (
+                                  <tr key={`cv-${k}`} className="border-b last:border-0">
+                                    <td className="py-1 pr-4 text-gray-600">{k}</td>
+                                    <td className="py-1 font-medium">
+                                      {typeof v === "number" ? nf(v) : String(v)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                // fallback: pares simples (Accuracy, MacroF1, RMSECV etc.)
+                return (
+                  <div className="overflow-auto">
+                    <table className="min-w-[360px] text-sm">
+                      <tbody>
+                        {Object.entries(m).map(([k, v]) => (
+                          <tr key={k} className="border-b last:border-0">
+                            <td className="py-1 pr-4 text-gray-600">{k}</td>
+                            <td className="py-1 font-medium">
+                              {typeof v === "number" ? nf(v) : String(v)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
             </div>
           )}
 
