@@ -1,17 +1,72 @@
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from sklearn.cross_decomposition import PLSRegression
+from sklearn.preprocessing import OneHotEncoder, LabelEncoder
 from sklearn.utils.multiclass import type_of_target
 from .metrics import regression_metrics, classification_metrics, vip_scores
 from .validation import build_cv
 from .logger import log_info
 import warnings
 
+
+@dataclass
+class PLSDAOvR:
+    """One-vs-Rest PLS-DA model using multiple ``PLSRegression`` estimators."""
+
+    n_components: int
+    pls_list: List[PLSRegression]
+    classes_: np.ndarray
+    label_encoder: LabelEncoder
+    one_hot: OneHotEncoder
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        probs = []
+        for pls in self.pls_list:
+            p = pls.predict(X).ravel()
+            p = np.clip(p, 0.0, None)
+            probs.append(p)
+        P = np.vstack(probs).T
+        row_sum = P.sum(axis=1, keepdims=True)
+        row_sum[row_sum == 0] = 1.0
+        return P / row_sum
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        P = self.predict_proba(X)
+        idx = np.argmax(P, axis=1)
+        y_int = self.classes_[idx]
+        return self.label_encoder.inverse_transform(y_int)
+
+
+def fit_plsda_multiclass(X: np.ndarray, y: np.ndarray, n_components: int = 10, random_state: int = 42) -> PLSDAOvR:
+    """Fit a multi-class PLS-DA model via One-vs-Rest strategy."""
+
+    le = LabelEncoder()
+    y_int = le.fit_transform(np.asarray(y).ravel())
+    classes = np.unique(y_int)
+
+    ohe = OneHotEncoder(sparse_output=False, drop=None)
+    Y = ohe.fit_transform(y_int.reshape(-1, 1))
+
+    pls_list: List[PLSRegression] = []
+    for c in range(Y.shape[1]):
+        pls = PLSRegression(n_components=n_components, scale=False, copy=True)
+        pls.random_state = random_state
+        pls.fit(X, Y[:, c])
+        pls_list.append(pls)
+
+    return PLSDAOvR(
+        n_components=n_components,
+        pls_list=pls_list,
+        classes_=classes,
+        label_encoder=le,
+        one_hot=ohe,
+    )
+
 @dataclass
 class PLSModelWrapper:
-    model: PLSRegression
+    model: Any
     classification: bool
     classes_: Optional[np.ndarray] = None
     lb_: Optional[dict] = None
@@ -20,12 +75,8 @@ class PLSModelWrapper:
 
     def predict(self, X: np.ndarray):
         if self.classification:
-            Yhat = self.model.predict(X)
-            if Yhat.ndim == 2 and Yhat.shape[1] > 1:
-                idx = np.argmax(Yhat, axis=1)
-            else:
-                idx = (Yhat.ravel() > 0.5).astype(int)
-            return np.array([self.classes_[i] for i in idx])
+            # ``PLSDAOvR`` already returns labels
+            return self.model.predict(X)
         else:
             return self.model.predict(X).ravel()
 
@@ -57,29 +108,23 @@ def train_pls(
 
     if classification:
         y_series = np.array(list(map(str, y)))
-        classes = sorted(np.unique(y_series))
-        class_to_idx = {c: i for i, c in enumerate(classes)}
-        idx = np.array([class_to_idx[val] for val in y_series])
-        Ybin = np.eye(len(classes))[idx] if len(classes) > 2 else idx.reshape(-1, 1)
-        pls = PLSRegression(n_components=n_components)
-        pls.fit(X, Ybin)
-        wrapper = PLSModelWrapper(pls, True, np.array(classes), None, n_components, {})
-        Yhat = pls.predict(X)
-        if Yhat.ndim > 1 and Yhat.shape[1] > 1:
-            idx_pred = np.argmax(Yhat, axis=1)
-        else:
-            idx_pred = (Yhat.ravel() > 0.5).astype(int)
-        y_pred = np.array([classes[i] for i in idx_pred])
-        metrics = classification_metrics(y_series, y_pred, labels=classes)
+        pls_model = fit_plsda_multiclass(X, y_series, n_components=n_components)
+        wrapper = PLSModelWrapper(pls_model, True, pls_model.label_encoder.classes_, None, n_components, {})
+        y_pred = pls_model.predict(X)
+        metrics = classification_metrics(y_series, y_pred, labels=pls_model.label_encoder.classes_)
+        # Compute VIP as mean of class models
+        Y = pls_model.one_hot.transform(pls_model.label_encoder.transform(y_series).reshape(-1, 1))
+        vips = [vip_scores(pls, X, Y[:, c].reshape(-1, 1)) for c, pls in enumerate(pls_model.pls_list)]
+        vip = np.mean(vips, axis=0).tolist()
+        scores = pls_model.pls_list[0].x_scores_.tolist()
     else:
         pls = PLSRegression(n_components=n_components)
         pls.fit(X, y)
         wrapper = PLSModelWrapper(pls, False, None, None, n_components, {})
         y_pred = wrapper.predict(X)
         metrics = regression_metrics(y, y_pred)
-
-    vip = vip_scores(pls, X, y if y.ndim > 1 else y.reshape(-1, 1)).tolist()
-    scores = pls.x_scores_.tolist()
+        vip = vip_scores(pls, X, y if y.ndim > 1 else y.reshape(-1, 1)).tolist()
+        scores = pls.x_scores_.tolist()
     extra: Dict[str, Any] = {"vip": vip, "scores": scores}
 
     if validation_method == "none":
@@ -99,20 +144,9 @@ def train_pls(
         preds = np.empty(len(y), dtype=object if classification else float)
         for tr, te in cv:
             if classification:
-                y_tr = np.array(list(map(str, y[tr])))
-                classes_tr = sorted(np.unique(y_tr))
-                class_to_idx_tr = {c: i for i, c in enumerate(classes_tr)}
-                idx_tr = np.array([class_to_idx_tr[val] for val in y_tr])
-                Ybin_tr = np.eye(len(classes_tr))[idx_tr] if len(classes_tr) > 2 else idx_tr.reshape(-1, 1)
-                m = PLSRegression(n_components=n_components)
-                m.fit(X[tr], Ybin_tr)
+                m = fit_plsda_multiclass(X[tr], y[tr], n_components=n_components)
                 pr = m.predict(X[te])
-                if pr.ndim > 1 and pr.shape[1] > 1:
-                    idx_pred = np.argmax(pr, axis=1)
-                else:
-                    idx_pred = (pr.ravel() > 0.5).astype(int)
-                # map predictions back to original order of classes_tr
-                preds[te] = np.array([classes_tr[i] for i in idx_pred])
+                preds[te] = pr
             else:
                 m = PLSRegression(n_components=n_components)
                 m.fit(X[tr], y[tr])

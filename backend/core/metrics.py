@@ -5,6 +5,8 @@ from sklearn.metrics import (
     accuracy_score,
     confusion_matrix,
     f1_score,
+    precision_score,
+    recall_score,
     cohen_kappa_score,
     classification_report,
 )
@@ -22,8 +24,10 @@ def regression_metrics(y_true, y_pred):
 
 def classification_metrics(y_true, y_pred, labels=None):
     acc = accuracy_score(y_true, y_pred)
-    f1_macro = f1_score(y_true, y_pred, average="macro")
-    f1_micro = f1_score(y_true, y_pred, average="micro")
+    prec = precision_score(y_true, y_pred, average="macro", zero_division=0)
+    rec = recall_score(y_true, y_pred, average="macro", zero_division=0)
+    f1_macro = f1_score(y_true, y_pred, average="macro", zero_division=0)
+    f1_micro = f1_score(y_true, y_pred, average="micro", zero_division=0)
     kappa = cohen_kappa_score(y_true, y_pred)
     cm = confusion_matrix(y_true, y_pred, labels=labels)
     report = classification_report(
@@ -66,6 +70,9 @@ def classification_metrics(y_true, y_pred, labels=None):
         "Sensitivity_per_class": sens_by_class,
         "SensitivityDescription": desc,
         "ClassificationReport": report,
+        "MacroPrecision": float(prec),
+        "MacroRecall": float(rec),
+        "MacroF1": float(f1_macro),
     }
 
 def vip_scores(pls_model, X, Y):

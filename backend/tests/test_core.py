@@ -48,7 +48,7 @@ def test_train_pls_classification():
     X, y = generate_classification_data()
     model, metrics, extra = train_pls(X, y, n_components=2, classification=True)
     assert model.classification
-    assert set(metrics.keys()) >= {"Accuracy", "F1_macro", "ConfusionMatrix", "Sensitivity", "Specificity", "Sensitivity_per_class"}
+    assert set(metrics.keys()) >= {"Accuracy", "F1_macro", "ConfusionMatrix", "Sensitivity", "Specificity", "Sensitivity_per_class", "MacroPrecision", "MacroRecall", "MacroF1"}
     assert metrics["Accuracy"] >= 0.8
     assert len(extra["vip"]) == X.shape[1]
 
@@ -56,7 +56,7 @@ def test_train_pls_classification():
 def test_train_plsda_binary_threshold():
     from core.bootstrap import train_plsda
     X, y = generate_classification_data()
-    model, metrics, extra = train_plsda(X, y, n_components=2, threshold=0.4)
+    model, metrics, extra = train_plsda(X, y, n_components=2)
     assert metrics["Accuracy"] >= 0.5
     assert extra["classes"] == ["0", "1"]
 
@@ -69,6 +69,7 @@ def test_train_pls_multiclass():
     assert len(metrics["ConfusionMatrix"]) == 3
     assert metrics["Accuracy"] >= 0.3
     assert list(model.classes_) == ["0", "1", "2"]
+    assert "MacroPrecision" in metrics and "MacroRecall" in metrics and "MacroF1" in metrics
 
 
 def test_bootstrap_metrics():
