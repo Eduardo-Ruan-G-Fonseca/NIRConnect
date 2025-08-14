@@ -1198,6 +1198,50 @@ async def optimize_status() -> dict:
         "total": int(OPTIMIZE_PROGRESS.get("total", 0)),
     }
 
+import numpy as np
+
+def _resolve_cv_params(raw_method, classification: bool, y_values: np.ndarray, requested_folds: int | None):
+    """
+    Resolve método e parâmetros de validação de forma segura/robusta.
+    - LOO: retorna ("LOO", {})
+    - StratifiedKFold (classificação): n_splits <= min(amostras por classe), min 2
+    - KFold: n_splits <= n_samples, min 2
+    - Holdout: usa defaults
+    - Vazio/None: default = StratifiedKFold (classif) ou KFold (regr)
+    """
+    method = (raw_method or "").strip() if raw_method else None
+
+    # LOO sempre respeitado
+    if method == "LOO":
+        return "LOO", {}
+
+    # Defaults por tipo de análise
+    if not method:
+        method = "StratifiedKFold" if classification else "KFold"
+
+    # Holdout
+    if method == "Holdout":
+        return "Holdout", {"test_size": 0.2, "shuffle": True, "random_state": 42}
+
+    # StratifiedKFold (classificação)
+    if method == "StratifiedKFold" and classification:
+        folds = int(requested_folds) if requested_folds else 5
+        # cap por classe
+        _, counts = np.unique(y_values, return_counts=True)
+        max_folds = int(max(2, counts.min()))
+        n_splits = int(min(folds, max_folds))
+        return "StratifiedKFold", {"n_splits": n_splits, "shuffle": True, "random_state": 42}
+
+    # KFold (regr ou class sem estratificação)
+    if method == "KFold":
+        folds = int(requested_folds) if requested_folds else 5
+        n_samples = int(len(y_values))
+        n_splits = int(min(max(2, folds), max(2, n_samples)))
+        return "KFold", {"n_splits": n_splits, "shuffle": True, "random_state": 42}
+
+    # fallback
+    return method, {}
+
 @app.post("/optimize")
 async def optimize_endpoint(
     file: UploadFile = File(...),
@@ -1259,8 +1303,8 @@ async def optimize_endpoint(
 
         # --- y e modo
         classification = opts.analysis_mode.upper() == "PLS-DA"
+        y_series = df[opts.target]
         if classification:
-            y_series = df[opts.target]
             y = y_series.astype(str).values
             classes = np.unique(y)
             if len(classes) < 2:
@@ -1270,7 +1314,7 @@ async def optimize_endpoint(
                 )
         else:
             try:
-                y = df[opts.target].astype(float).values
+                y = y_series.astype(float).values
             except Exception:
                 raise HTTPException(status_code=400, detail="Target must be numeric for regression (PLS-R).")
 
@@ -1280,31 +1324,36 @@ async def optimize_endpoint(
         if not methods:
             raise HTTPException(status_code=422, detail="Nenhum método de pré-processamento válido informado.")
 
-        # --- componentes (cap por n_features)
-        max_comp = opts.n_components or min(X.shape[1], 10)
-        max_comp = max(1, min(max_comp, X.shape[1]))
+        # --- componentes (cap por n_features e amostras)
+        max_req = opts.n_components or min(X.shape[1], 10)
+        safe_cap = int(min(X.shape[1], max(1, X.shape[0] - 1)))
+        max_comp = int(min(max_req, safe_cap))
+        n_comp_range = range(1, max_comp + 1)
 
-        # --- validação
+        # ===== Validação: respeita LOO e limita folds com segurança =====
         raw_val_method = parsed.get("validation_method")
-        if raw_val_method == "LOO":
-            val_method = "LOO"
-        elif classification:
-            val_method = raw_val_method or "StratifiedKFold"
-        else:
-            val_method = raw_val_method or "KFold"
-        if val_method == "Holdout":
-            raise HTTPException(status_code=422, detail="Holdout não é suportado na otimização. Use KFold ou LOO.")
-        val_params = {}
-        if val_method in {"KFold", "StratifiedKFold"}:
-            val_params = {
-                "n_splits": opts.folds or 5,
-                "shuffle": True,
-                "random_state": 42,
-            }
+        requested_folds = parsed.get("folds")
+        # y_values: use o vetor real (já codificado em classificação, se houver)
+        y_values = y_series.to_numpy()
+
+        val_method, val_params = _resolve_cv_params(
+            raw_method=raw_val_method,
+            classification=bool(classification),
+            y_values=y_values,
+            requested_folds=(int(requested_folds) if requested_folds is not None else None),
+        )
 
         # --- progresso
+        try:
+            cv_iter = list(build_cv(val_method, y_values, bool(classification), val_params))
+            num_splits = max(1, len(cv_iter))
+        except Exception:
+            num_splits = 1  # fallback
+
+        methods_count = len(methods) if methods else 1
+        total_steps = methods_count * len(list(n_comp_range)) * num_splits
         OPTIMIZE_PROGRESS["current"] = 0
-        OPTIMIZE_PROGRESS["total"] = len(methods) * max_comp
+        OPTIMIZE_PROGRESS["total"] = total_steps
 
         log_info(f"Otimizacao iniciada: cv={val_method}, ncomp={max_comp}, preprocess={methods}")
 
@@ -1315,7 +1364,7 @@ async def optimize_endpoint(
                 wl,
                 classification=classification,
                 preprocess_opts=methods,
-                n_components_range=range(1, max_comp + 1),
+                n_components_range=n_comp_range,
                 validation_method=val_method,
                 validation_params=val_params,
                 progress_callback=lambda c, t: OPTIMIZE_PROGRESS.update({"current": c, "total": t}),
