@@ -20,18 +20,28 @@ from core.config import METRICS_FILE, settings
 from core.metrics import regression_metrics, classification_metrics
 from core.report_pdf import PDFReport
 from core.logger import log_info
-from core.validation import build_cv
+from collections import Counter
+from core.validation import build_cv, make_cv, safe_n_components
 from core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
 from core.preprocessing import apply_methods
-from core.optimization import optimize_model_grid
 from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from typing import Optional, Tuple, List, Literal, Any, Dict
 from core.saneamento import saneamento_global
 from core.io_utils import to_float_matrix, encode_labels_if_needed
 try:
-    from ml.pipeline import build_pls_pipeline
+    from ml.pipeline import (
+        build_pls_pipeline,
+        eval_pls_regression,
+        eval_plsda_binary,
+        eval_plsda_multiclass,
+    )
 except Exception:
-    from core.ml.pipeline import build_pls_pipeline  # fallback se mover
+    from core.ml.pipeline import (
+        build_pls_pipeline,
+        eval_pls_regression,
+        eval_plsda_binary,
+        eval_plsda_multiclass,
+    )  # fallback se mover
 
 
 from core.pls import is_categorical  # (se não for usar, podemos remover depois)
@@ -40,6 +50,155 @@ import joblib
 # Progresso global para /optimize/status
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
 
+
+def _metrics_ok(m):
+    if m is None:
+        return False
+    if isinstance(m, dict):
+        return any(np.isfinite(v) for v in m.values() if isinstance(v, (int, float)))
+    return np.isfinite(m)
+
+
+def apply_preprocess(X: np.ndarray, method: str) -> np.ndarray:
+    if not method or method == "none":
+        return X.copy()
+    return apply_methods(X.copy(), [method])
+
+
+def optimize_handler(X: np.ndarray, y: np.ndarray, params: dict, progress_callback=None):
+    """Core optimization routine with error collection and fallback."""
+    n_samples, n_features = X.shape
+
+    cv = make_cv(params.get("validation_method"), params.get("validation_params"), n_samples)
+
+    max_nc_req = int(params.get("n_components", 10))
+    max_nc = safe_n_components(max_nc_req, n_samples, n_features)
+
+    preps = params.get("preprocessing_methods") or ["none"]
+
+    # Extra protection for heavy LOO combinations
+    if params.get("validation_method") == "LeaveOneOut" and n_samples >= 80:
+        preps = preps[:2]
+        max_nc = min(max_nc, 10)
+
+    analysis_mode = params.get("analysis_mode", "PLS-R")
+
+    results = []
+    errors = Counter()
+
+    total_steps = len(preps) * max_nc
+    done = 0
+
+    for prep in preps:
+        Xp = apply_preprocess(X, prep)
+        for nc in range(1, max_nc + 1):
+            try:
+                if analysis_mode == "PLS-R":
+                    m = eval_pls_regression(Xp, y, nc, cv)
+                    if _metrics_ok(m):
+                        results.append(
+                            {
+                                "preprocess": prep,
+                                "n_components": nc,
+                                "RMSECV": float(m["RMSECV"]),
+                                "val_metrics": {"R2": float(m.get("R2", np.nan))},
+                                "validation": {"method": params.get("validation_method")},
+                                "wl_used": params.get("spectral_range") or [],
+                            }
+                        )
+                    else:
+                        errors["metric_invalid"] += 1
+                else:  # PLS-DA
+                    n_classes = len(np.unique(y))
+                    if n_classes > 2:
+                        m = eval_plsda_multiclass(Xp, y, nc, cv)
+                        if _metrics_ok(m):
+                            results.append(
+                                {
+                                    "preprocess": prep,
+                                    "n_components": nc,
+                                    "val_metrics": {
+                                        "Accuracy": m["Accuracy"],
+                                        "MacroF1": m["MacroF1"],
+                                    },
+                                    "validation": {"method": params.get("validation_method")},
+                                    "wl_used": params.get("spectral_range") or [],
+                                }
+                            )
+                        else:
+                            errors["metric_invalid"] += 1
+                    else:
+                        m = eval_plsda_binary(Xp, y, nc, cv)
+                        if _metrics_ok(m):
+                            results.append(
+                                {
+                                    "preprocess": prep,
+                                    "n_components": nc,
+                                    "val_metrics": {"Accuracy": float(m["Accuracy"])},
+                                    "validation": {"method": params.get("validation_method")},
+                                    "wl_used": params.get("spectral_range") or [],
+                                }
+                            )
+                        else:
+                            errors["metric_invalid"] += 1
+            except Exception as ex:  # noqa: B902
+                errors[type(ex).__name__] += 1
+            finally:
+                done += 1
+                if progress_callback:
+                    progress_callback(done, total_steps)
+
+    if not results:
+        preps_fb = ["none"]
+        nc_fb = min(10, max_nc)
+        try:
+            Xp = apply_preprocess(X, preps_fb[0])
+            if analysis_mode == "PLS-R":
+                m = eval_pls_regression(Xp, y, nc_fb, cv)
+                if _metrics_ok(m):
+                    results.append(
+                        {
+                            "preprocess": preps_fb[0],
+                            "n_components": nc_fb,
+                            "RMSECV": float(m["RMSECV"]),
+                            "val_metrics": {"R2": float(m.get("R2", np.nan))},
+                            "validation": {"method": params.get("validation_method")},
+                            "wl_used": params.get("spectral_range") or [],
+                        }
+                    )
+            else:
+                n_classes = len(np.unique(y))
+                if n_classes > 2:
+                    m = eval_plsda_multiclass(Xp, y, nc_fb, cv)
+                    if _metrics_ok(m):
+                        results.append(
+                            {
+                                "preprocess": preps_fb[0],
+                                "n_components": nc_fb,
+                                "val_metrics": {
+                                    "Accuracy": m["Accuracy"],
+                                    "MacroF1": m["MacroF1"],
+                                },
+                                "validation": {"method": params.get("validation_method")},
+                                "wl_used": params.get("spectral_range") or [],
+                            }
+                        )
+                else:
+                    m = eval_plsda_binary(Xp, y, nc_fb, cv)
+                    if _metrics_ok(m):
+                        results.append(
+                            {
+                                "preprocess": preps_fb[0],
+                                "n_components": nc_fb,
+                                "val_metrics": {"Accuracy": float(m["Accuracy"])},
+                                "validation": {"method": params.get("validation_method")},
+                                "wl_used": params.get("spectral_range") or [],
+                            }
+                        )
+        except Exception as ex:  # noqa: B902
+            errors[f"fallback_{type(ex).__name__}"] += 1
+
+    return {"results": results, "errors_summary": dict(errors)}
 app = FastAPI(title="NIR API v4.6")
 
 
@@ -1106,23 +1265,25 @@ async def optimize_endpoint(
         log_info(f"Otimizacao iniciada: cv={cv_method}, ncomp={max_comp}, preprocess={methods}")
 
         try:
-            results = optimize_model_grid(
+            res = optimize_handler(
                 X,
                 y,
-                wl,
-                classification=classification,
-                preprocess_opts=methods,
-                n_components_range=range(1, int(max_comp) + 1),
-                validation_method="LOO" if cv_method == "LOO" else "KFold",
-                validation_params=val_params,
+                {
+                    "validation_method": "LOO" if cv_method == "LOO" else "KFold",
+                    "validation_params": val_params,
+                    "n_components": max_comp,
+                    "preprocessing_methods": methods,
+                    "analysis_mode": opts.analysis_mode,
+                    "spectral_range": wl.tolist(),
+                },
                 progress_callback=lambda c, t: OPTIMIZE_PROGRESS.update({"current": int(c), "total": int(t)}),
             )
         finally:
             # garante finalização de progresso mesmo em erro
             OPTIMIZE_PROGRESS["current"] = OPTIMIZE_PROGRESS.get("total", 0)
 
-        # corta para 15 e garante JSON-safe
-        return jsonable_encoder({"results": results[:15]})
+        res["results"] = res.get("results", [])[:15]
+        return jsonable_encoder(res)
 
     except HTTPException:
         raise
