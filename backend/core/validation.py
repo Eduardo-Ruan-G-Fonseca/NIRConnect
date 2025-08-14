@@ -4,10 +4,38 @@ from sklearn.model_selection import (
     KFold,
     StratifiedKFold,
     LeaveOneOut,
+    ShuffleSplit,
     train_test_split,
 )
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 from typing import Callable, Dict, Any, List, Optional
+
+
+def make_cv(method: str, params: dict | None, n_samples: int):
+    """Create cross-validation scheme with safeguards for large datasets."""
+    params = params or {}
+    if method == "LeaveOneOut":
+        if n_samples >= 80:
+            warnings.warn("LOO trocado automaticamente por KFold(5) para acelerar.")
+            return KFold(n_splits=5, shuffle=True, random_state=42)
+        return LeaveOneOut()
+
+    if method == "KFold":
+        n = int(params.get("n_splits", 5))
+        return KFold(n_splits=max(2, n), shuffle=True, random_state=42)
+
+    if method == "Holdout":
+        test_size = float(params.get("test_size", 0.3))
+        return ShuffleSplit(n_splits=1, test_size=test_size, random_state=42)
+
+    # fallback
+    return KFold(n_splits=5, shuffle=True, random_state=42)
+
+
+def safe_n_components(n_req: int, n_samples: int, n_features: int) -> int:
+    """Ensure component count within valid bounds."""
+    hard_max = max(1, min(n_samples - 1, n_features - 1))
+    return max(1, min(int(n_req or 1), hard_max))
 
 
 

@@ -196,6 +196,14 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
       };
       const data = await postOptimize(file, payload);
       setOptResults(Array.isArray(data?.results) ? data.results : []);
+      if ((!data.results || data.results.length === 0) && data.errors_summary) {
+        setError(
+          "Otimização não retornou combinações válidas. Detalhes: " +
+          Object.entries(data.errors_summary)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(" • ")
+        );
+      }
       setProgress(100);
     } catch (e) {
       setError(typeof e === "string" ? e : (e?.message || "Falha na otimização."));
