@@ -181,7 +181,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
         const pct = s?.total ? Math.round((s.current / s.total) * 100) : 0;
         setProgress(Math.max(0, Math.min(100, pct)));
         if (s?.total && s.current >= s.total) {
-          clearInterval(pollRef.current);
+          if (pollRef.current) clearInterval(pollRef.current);
         }
       } catch { /* ignora polling error */ }
     }, 1000);
@@ -201,7 +201,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
       const arr = sortResults(res?.results || []);
       setOptResults(arr);
       if (arr.length === 0) {
-        setError("Nenhuma combinação válida encontrada. Tente reduzir n_components, revisar pré-processamentos ou mudar a validação.");
+        setError("Nenhuma combinação válida encontrada. Revise n_components, pré-processos ou validação.");
       } else {
         setSelected(0);
       }
