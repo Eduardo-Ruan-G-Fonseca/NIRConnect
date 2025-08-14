@@ -117,9 +117,14 @@ def optimize_model_grid(
     # construir CV uma única vez
     splits = list(build_cv(validation_method, y, classification, validation_params))
     cv_splits = max(1, len(splits))
-    total_steps = len(preprocess_opts) * len(n_components_range) * cv_splits
+    try:
+        methods_count = len(preprocess_opts) if preprocess_opts else 1
+    except Exception:
+        methods_count = 1
+    total_steps = methods_count * len(n_components_range) * cv_splits
     log_info(f"Otimizacao: {total_steps} combinacoes possiveis")
     done = 0
+    base_nc = len(n_components_range)
 
     cache_Xp: Dict[str, np.ndarray] = {}
     cache_wl: Dict[str, np.ndarray | None] = {}
@@ -134,7 +139,7 @@ def optimize_model_grid(
                 cache_wl[prep] = wl_used
             except Exception as e:
                 log_info(f"[grid] failed preprocess {prep}: {e}")
-                done += len(n_components_range) * cv_splits
+                done += base_nc * cv_splits
                 if progress_callback:
                     progress_callback(done, total_steps)
                 continue
@@ -148,7 +153,7 @@ def optimize_model_grid(
 
         if np.nanvar(Xp) < 1e-12 or Xp.shape[0] < 2 or Xp.shape[1] < 1:
             log_info(f"[grid] skip prep={prep}: degenerate matrix")
-            done += len(n_components_range) * cv_splits
+            done += base_nc * cv_splits
             if progress_callback:
                 progress_callback(done, total_steps)
             continue
@@ -157,10 +162,14 @@ def optimize_model_grid(
         comp_range = [nc for nc in n_components_range if 1 <= nc <= max_nc]
         if not comp_range:
             log_info(f"[grid] skip prep={prep}: sem componentes viáveis (max_nc={max_nc})")
-            done += len(n_components_range) * cv_splits
+            done += base_nc * cv_splits
             if progress_callback:
                 progress_callback(done, total_steps)
             continue
+        if len(comp_range) < base_nc and done == 0:
+            total_steps = methods_count * len(comp_range) * cv_splits
+            base_nc = len(comp_range)
+            log_info(f"Otimizacao: {total_steps} combinacoes possiveis")
 
         for nc in comp_range:
             log_info(
@@ -248,8 +257,8 @@ def optimize_model_grid(
                 done += cv_splits
                 if progress_callback:
                     progress_callback(done, total_steps)
-        if len(comp_range) < len(n_components_range):
-            done += (len(n_components_range) - len(comp_range)) * cv_splits
+        if len(comp_range) < base_nc:
+            done += (base_nc - len(comp_range)) * cv_splits
             if progress_callback:
                 progress_callback(done, total_steps)
     key = (
