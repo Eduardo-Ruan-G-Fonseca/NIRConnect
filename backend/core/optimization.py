@@ -15,6 +15,44 @@ from .preprocessing import apply_methods
 from .logger import log_info
 from .metrics import regression_metrics, classification_metrics
 
+
+def _safe_train_pls(
+    Xtr: np.ndarray,
+    ytr: np.ndarray,
+    Xte: np.ndarray,
+    yte: np.ndarray,
+    n_components: int,
+    classification: bool,
+    extra_kwargs: dict | None,
+):
+    """Wrapper for :func:`train_pls` ensuring no duplicated arguments.
+
+    - ``n_components`` is always passed explicitly.
+    - Any provided kwargs will have ``n_components`` removed.
+    - Validation is forced to a simple train/test split (no inner CV).
+    """
+
+    if extra_kwargs is None:
+        extra_kwargs = {}
+    extra_kwargs = dict(extra_kwargs)
+    extra_kwargs.pop("n_components", None)
+
+    vm = extra_kwargs.get("validation_method", "none") or "none"
+    extra_kwargs["validation_method"] = "none"
+    extra_kwargs["validation_params"] = {}
+
+    from core.pls import train_pls  # local import to avoid circular
+
+    # ``train_pls`` in this project expects only the training data. Predictions
+    # on ``Xte`` are computed outside this helper.
+    return train_pls(
+        Xtr,
+        ytr,
+        n_components=n_components,
+        classification=classification,
+        **extra_kwargs,
+    )
+
 def optimize_nir(
     X: np.ndarray,
     y: np.ndarray,
@@ -145,13 +183,14 @@ def optimize_model_grid(
                 n_jobs = int(os.getenv("NIR_N_JOBS", "1"))
 
                 def eval_one(tr, te):
-                    model, _, _ = train_pls(
+                    model, _, _ = _safe_train_pls(
                         Xp[tr],
                         y[tr],
+                        Xp[te],
+                        y[te],
                         n_components=nc,
                         classification=bool(classification),
-                        validation_method="none",
-                        validation_params={},
+                        extra_kwargs={},
                     )
                     preds = model.predict(Xp[te])
                     if classification:

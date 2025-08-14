@@ -1404,24 +1404,44 @@ async def optimize_endpoint(
 
             splits = list(build_cv("LOO", y_values, bool(classification), {}))
 
-            from core.pls import train_pls
+            def _safe_train_pls_final(
+                Xtr: np.ndarray,
+                ytr: np.ndarray,
+                Xte: np.ndarray,
+                yte: np.ndarray,
+                n_components: int,
+                classification: bool,
+            ):
+                from core.pls import train_pls
 
-            scores = []
+                # ``train_pls`` only needs training data; ensure no inner CV
+                return train_pls(
+                    Xtr,
+                    ytr,
+                    n_components=n_components,
+                    classification=classification,
+                    validation_method="none",
+                    validation_params={},
+                )
+
+            log_info(
+                f"[optimize][final LOO] best_prep={best_prep}, best_nc={best_nc}, splits={len(splits)}"
+            )
+
+            scores: list[float] = []
             for tr, te in splits:
-                res = train_pls(
+                model, metrics, _ = _safe_train_pls_final(
                     Xp[tr],
                     y_values[tr],
                     Xp[te],
                     y_values[te],
                     n_components=best_nc,
                     classification=bool(classification),
-                    validation_method="none",
-                    validation_params={},
                 )
                 metric = (
-                    res["metrics"].get("F1")
+                    metrics.get("F1")
                     if classification
-                    else -res["metrics"].get("RMSE", np.nan)
+                    else -metrics.get("RMSE", np.nan)
                 )
                 scores.append(metric)
             final_score = float(np.mean(scores)) if scores else float("nan")
