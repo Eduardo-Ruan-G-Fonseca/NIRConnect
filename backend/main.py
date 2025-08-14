@@ -1226,11 +1226,13 @@ def _resolve_cv_params(raw_method, classification: bool, y_values: np.ndarray, r
     # StratifiedKFold (classificação)
     if method == "StratifiedKFold" and classification:
         folds = int(requested_folds) if requested_folds else 5
-        # cap por classe
         _, counts = np.unique(y_values, return_counts=True)
-        max_folds = int(max(2, counts.min()))
-        n_splits = int(min(folds, max_folds))
-        return "StratifiedKFold", {"n_splits": n_splits, "shuffle": True, "random_state": 42}
+        n_splits = int(min(max(2, folds), max(2, counts.min())))
+        return "StratifiedKFold", {
+            "n_splits": n_splits,
+            "shuffle": True,
+            "random_state": 42,
+        }
 
     # KFold (regr ou class sem estratificação)
     if method == "KFold":
@@ -1324,11 +1326,10 @@ async def optimize_endpoint(
         if not methods:
             raise HTTPException(status_code=422, detail="Nenhum método de pré-processamento válido informado.")
 
-        # --- componentes (cap por n_features e amostras)
-        max_req = opts.n_components or min(X.shape[1], 10)
-        safe_cap = int(min(X.shape[1], max(1, X.shape[0] - 1)))
-        max_comp = int(min(max_req, safe_cap))
-        n_comp_range = range(1, max_comp + 1)
+        # --- componentes: define intervalo seguro conforme dimensões de X
+        max_comp = int(min(X.shape[1], max(1, X.shape[0] - 1)))
+        n_comp_range = list(range(1, max_comp + 1))
+        log_info(f"[optimize] X shape={X.shape}, n_comp_range={n_comp_range}")
 
         # ===== Validação: respeita LOO e limita folds com segurança =====
         raw_val_method = parsed.get("validation_method")
@@ -1342,6 +1343,7 @@ async def optimize_endpoint(
             y_values=y_values,
             requested_folds=(int(requested_folds) if requested_folds is not None else None),
         )
+        log_info(f"[optimize] validation_method={val_method} params={val_params}")
 
         # --- progresso
         try:
@@ -1351,9 +1353,8 @@ async def optimize_endpoint(
             num_splits = 1  # fallback
 
         methods_count = len(methods) if methods else 1
-        total_steps = methods_count * len(list(n_comp_range)) * num_splits
         OPTIMIZE_PROGRESS["current"] = 0
-        OPTIMIZE_PROGRESS["total"] = total_steps
+        OPTIMIZE_PROGRESS["total"] = methods_count * len(n_comp_range) * num_splits
 
         log_info(f"Otimizacao iniciada: cv={val_method}, ncomp={max_comp}, preprocess={methods}")
 
@@ -1367,7 +1368,10 @@ async def optimize_endpoint(
                 n_components_range=n_comp_range,
                 validation_method=val_method,
                 validation_params=val_params,
-                progress_callback=lambda c, t: OPTIMIZE_PROGRESS.update({"current": c, "total": t}),
+                progress_callback=lambda c, t: OPTIMIZE_PROGRESS.update({
+                    "current": c * num_splits,
+                    "total": t * num_splits,
+                }),
             )
         finally:
             # garante finalização de progresso mesmo em erro

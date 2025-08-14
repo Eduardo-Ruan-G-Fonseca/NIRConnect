@@ -113,7 +113,7 @@ def optimize_model_grid(
             try:
                 Xp = apply_methods(X.copy(), [prep])
             except Exception as e:
-                log_info(f"Erro ao aplicar {prep}: {e}")
+                log_info(f"[grid] failed preprocess {prep}: {e}")
                 done += len(n_components_range)
                 if progress_callback:
                     progress_callback(done, total_steps)
@@ -123,7 +123,7 @@ def optimize_model_grid(
         X_tmp[~np.isfinite(X_tmp)] = np.nan
         row_ok = ~np.isnan(X_tmp).all(axis=1)
         if not row_ok.any():
-            log_info(f"Todas as amostras removidas apos {prep}")
+            log_info(f"[grid] skip prep={prep}: all samples invalid")
             done += len(n_components_range)
             if progress_callback:
                 progress_callback(done, total_steps)
@@ -137,34 +137,29 @@ def optimize_model_grid(
             else:
                 Xp, _ = sanitize_X(Xp)
                 wl_used = wl
+            log_info(f"[grid] after sanitize: Xp.shape={Xp.shape}, nan={np.isnan(Xp).any()}")
         except ValueError as e:
-            log_info(f"Dados inválidos após {prep}: {e}")
+            log_info(f"[grid] skip prep={prep}: {e}")
             done += len(n_components_range)
             if progress_callback:
                 progress_callback(done, total_steps)
             continue
         if np.nanvar(Xp) < 1e-12 or Xp.shape[0] < 2 or Xp.shape[1] < 1:
-            log_info(f"Combinação inválida após {prep}: matriz degenerada")
+            log_info(f"[grid] skip prep={prep}: degenerate matrix")
             done += len(n_components_range)
             if progress_callback:
                 progress_callback(done, total_steps)
             continue
-        max_nc = min(Xp.shape[1], Xp.shape[0] - 1)
-        if max_nc < 1:
-            log_info(f"Combinação inválida: {prep}, sem componentes possíveis.")
-            done += len(n_components_range)
-            if progress_callback:
-                progress_callback(done, total_steps)
-            continue
+        max_nc = int(min(Xp.shape[1], max(1, Xp.shape[0] - 1)))
         comp_range = [nc for nc in n_components_range if 1 <= nc <= max_nc]
         if not comp_range:
-            log_info(f"Nenhum número de componentes viável para {prep}.")
+            log_info(f"[grid] skip prep={prep}: no viable components (max_nc={max_nc})")
             done += len(n_components_range)
             if progress_callback:
                 progress_callback(done, total_steps)
             continue
         for nc in comp_range:
-            log_info(f"[Optimize] Testando combinacao: {prep} com {nc} componentes")
+            log_info(f"[grid] trying prep={prep}, n_comp={nc}, Xp={Xp.shape}")
             try:
                 model, train_metrics, extra = train_pls(
                     Xp,
@@ -232,7 +227,7 @@ def optimize_model_grid(
                     f"[Optimize] RMSECV: {rmsecv if rmsecv is not None else 'NA'}, R2: {val_metrics.get('R2', 'NA')}"
                 )
             except Exception as e:
-                log_info(f"Erro em {prep}, n={nc}: {e}")
+                log_info(f"[grid] failed prep={prep}, n_comp={nc}: {e}")
                 continue
             finally:
                 done += 1
