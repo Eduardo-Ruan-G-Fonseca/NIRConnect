@@ -11,6 +11,22 @@ from .validation import build_cv
 from .logger import log_info
 import warnings
 
+def _sanitize_X_and_cap_components(X: np.ndarray, n_components: int) -> tuple[np.ndarray, int]:
+    X = np.asarray(X, dtype=float)
+    # ±inf -> NaN
+    X[~np.isfinite(X)] = np.nan
+    # remove colunas 100% NaN
+    col_ok = ~np.isnan(X).all(axis=0)
+    if not col_ok.any():
+        raise ValueError("Matriz X inválida após pré-processamento (todas as variáveis são NaN).")
+    if not col_ok.all():
+        X = X[:, col_ok]
+    # imputa medianas (robusto e simples)
+    X = SimpleImputer(strategy="median").fit_transform(X)
+    # cap de componentes pelo rank possível
+    n_max = max(1, min(X.shape[1], X.shape[0] - 1))
+    return X, min(n_components, n_max)
+
 
 @dataclass
 class PLSDAOvR:
@@ -66,18 +82,6 @@ def fit_plsda_multiclass(X: np.ndarray, y: np.ndarray, n_components: int = 10, r
     )
 
 
-def _sanitize_X_and_cap_components(X: np.ndarray, n_components: int) -> tuple[np.ndarray, int]:
-    X = np.asarray(X, dtype=float)
-    X[~np.isfinite(X)] = np.nan
-    col_ok = ~np.isnan(X).all(axis=0)
-    if not col_ok.any():
-        raise ValueError("Matriz X inválida após pré-processamento (todas as variáveis são NaN).")
-    if not col_ok.all():
-        X = X[:, col_ok]
-    X = SimpleImputer(strategy="median").fit_transform(X)
-    n_max = max(1, min(X.shape[1], X.shape[0] - 1))
-    return X, min(n_components, n_max)
-
 @dataclass
 class PLSModelWrapper:
     model: Any
@@ -120,7 +124,7 @@ def train_pls(
     else:
         y = y.astype(float)
 
-    # === NOVO: sanear X e limitar componentes ===
+    # === saneia X e limita n_components ===
     X, n_components = _sanitize_X_and_cap_components(X, n_components)
 
     if classification:
