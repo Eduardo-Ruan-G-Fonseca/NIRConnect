@@ -1,10 +1,61 @@
 import numpy as np
+from typing import Iterable, Optional, Tuple
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.impute import SimpleImputer
 from scipy.signal import savgol_filter
 
 
 EPS = 1e-12
+
+
+def build_spectral_mask(
+    wl: np.ndarray,
+    spectral_ranges: Optional[Iterable[Tuple[Optional[float], Optional[float]]]],
+) -> np.ndarray:
+    """Create a boolean mask for ``wl`` based on wavelength intervals.
+
+    Parameters
+    ----------
+    wl : np.ndarray
+        Array of wavelengths.
+    spectral_ranges : Optional[Iterable[Tuple[Optional[float], Optional[float]]]]
+        Iterable of ``(start, end)`` tuples or dict-like objects with
+        ``start`` and ``end`` keys. ``None`` or empty iterables use the
+        full range.
+
+    Returns
+    -------
+    np.ndarray
+        Boolean mask with the same shape as ``wl``.
+    """
+
+    if spectral_ranges is None:
+        return np.ones_like(wl, dtype=bool)
+
+    mask = np.zeros_like(wl, dtype=bool)
+    for r in spectral_ranges:
+        if r is None:
+            continue
+        if isinstance(r, dict):
+            start = r.get("start")
+            end = r.get("end")
+        else:
+            try:
+                start, end = r if len(r) == 2 else (None, None)
+            except TypeError:
+                start, end = (None, None)
+
+        if start is None or end is None:
+            continue
+        if isinstance(start, float) and (np.isnan(start) or np.isnan(end)):
+            continue
+
+        part = (wl >= start) & (wl <= end)
+        mask |= part
+
+    if not mask.any():
+        return np.ones_like(wl, dtype=bool)
+    return mask
 
 
 def snv(X: np.ndarray) -> np.ndarray:

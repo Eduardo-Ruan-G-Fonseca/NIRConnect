@@ -153,9 +153,9 @@ def optimize_model_grid(
     validation_params = validation_params or {}
 
     splits = list(build_cv(validation_method, y, classification, validation_params))
-    cv_splits = max(1, len(splits))
-    methods_count = len(preprocess_opts) if preprocess_opts else 1
-    total_steps = methods_count * len(n_components_range) * cv_splits
+    cv_splits = int(max(1, len(splits)))
+    methods_count = int(len(preprocess_opts) if preprocess_opts else 1)
+    total_steps = 0
     done = 0
 
     cache_Xp: Dict[str, np.ndarray] = {}
@@ -172,10 +172,13 @@ def optimize_model_grid(
 
         max_nc = int(min(Xp.shape[1], max(1, Xp.shape[0] - 1)))
         comp_range = [nc for nc in n_components_range if 1 <= nc <= max_nc]
+        comp_len = int(len(comp_range))
+        total_steps += methods_count * comp_len * cv_splits
+        total_steps = int(total_steps)
         if not comp_range:
-            done += len(n_components_range) * cv_splits
+            done += cv_splits
             if progress_callback:
-                progress_callback(done, total_steps)
+                progress_callback(int(done), int(max(1, total_steps)))
             continue
 
         for nc in comp_range:
@@ -250,6 +253,6 @@ def optimize_model_grid(
             finally:
                 done += cv_splits
                 if progress_callback:
-                    progress_callback(done, total_steps)
+                    progress_callback(int(done), int(max(1, total_steps)))
 
     return sorted(results, key=lambda r: r.get("score", -np.inf), reverse=True)

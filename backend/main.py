@@ -23,7 +23,7 @@ from core.logger import log_info
 from collections import Counter
 from core.validation import build_cv, make_cv, safe_n_components
 from core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
-from core.preprocessing import apply_methods, sanitize_X
+from core.preprocessing import apply_methods, sanitize_X, build_spectral_mask
 from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from typing import Optional, Tuple, List, Literal, Any, Dict
 from core.saneamento import saneamento_global
@@ -930,11 +930,35 @@ async def analisar_file(
         # X / features (+ faixas)
         # =========================
         X_df = df.drop(columns=[target], errors="ignore")
-        if spectral_ranges:
-            cols = _parse_ranges(spectral_ranges, X_df.columns.tolist())
-            X_df = X_df[cols]
         features = X_df.columns.tolist()
         X = to_float_matrix(X_df.values)
+
+        wl_vals = []
+        for c in features:
+            try:
+                wl_vals.append(float(str(c).strip().replace(",", ".")))
+            except Exception:
+                wl_vals.append(np.nan)
+        wl_arr = np.array(wl_vals, dtype=float)
+
+        ranges_list = []
+        if spectral_ranges:
+            for part in spectral_ranges.split(','):
+                part = part.strip()
+                if not part or '-' not in part:
+                    continue
+                start, end = part.split('-', 1)
+                try:
+                    ranges_list.append((float(start), float(end)))
+                except Exception:
+                    continue
+        else:
+            ranges_list = None
+
+        mask = build_spectral_mask(wl_arr, ranges_list)
+        X = X[:, mask]
+        wl_arr = wl_arr[mask]
+        features = [f for i, f in enumerate(features) if mask[i]]
 
         methods = _parse_preprocess(preprocess)
         if methods:
@@ -1270,38 +1294,51 @@ async def optimize_endpoint(
         # --- prepara X_df e filtra colunas espectrais numéricas
         X_df = df.drop(columns=[opts.target])
 
-        # helper: detecta colunas com cabeçalho numérico
-        numeric_cols = []
+        numeric_cols: list[str] = []
+        wls_vals: list[float] = []
         for c in X_df.columns:
             try:
-                float(str(c).strip().replace(",", "."))
+                v = float(str(c).strip().replace(",", "."))
                 numeric_cols.append(c)
+                wls_vals.append(v)
             except Exception:
                 pass
         if not numeric_cols:
             raise HTTPException(status_code=400, detail="Nenhuma coluna espectral (cabeçalho numérico) foi encontrada.")
 
-        # aplica spectral_range se houver
-        if opts.spectral_range:
-            start, end = opts.spectral_range
-            filtered = []
-            for c in numeric_cols:
-                v = float(str(c).strip().replace(",", "."))
-                if start <= v <= end:
-                    filtered.append(c)
-            if not filtered:
-                raise HTTPException(status_code=400, detail="Nenhuma coluna dentro do intervalo espectral informado.")
-            numeric_cols = filtered
-
-        # reordena por comprimento de onda crescente
-        wls = [float(str(c).strip().replace(",", ".")) for c in numeric_cols]
-        order = np.argsort(wls)
+        order = np.argsort(wls_vals)
         cols_sorted = [numeric_cols[i] for i in order]
-        wls_sorted = [wls[i] for i in order]
+        wls_sorted = [wls_vals[i] for i in order]
 
         X_df = X_df[cols_sorted]
         X = X_df.values
         wl = np.array(wls_sorted, dtype=float)
+
+        ranges_raw = parsed.get("spectral_range")
+        ranges: list | None
+        if isinstance(ranges_raw, str):
+            tmp: list[tuple[float, float]] = []
+            for part in ranges_raw.split(','):
+                part = part.strip()
+                if '-' not in part:
+                    continue
+                start, end = part.split('-', 1)
+                try:
+                    tmp.append((float(start), float(end)))
+                except Exception:
+                    continue
+            ranges = tmp
+        elif ranges_raw is not None and not isinstance(ranges_raw, (list, tuple, set)):
+            ranges = [ranges_raw]
+        else:
+            ranges = ranges_raw  # type: ignore[assignment]
+        if ranges is not None and isinstance(ranges, (list, tuple)):
+            if ranges and isinstance(ranges[0], (int, float, type(None))):
+                ranges = [tuple(ranges)]
+
+        mask = build_spectral_mask(wl, ranges)
+        X = X[:, mask]
+        wl = wl[mask]
 
         # --- y e modo
         classification = opts.analysis_mode.upper() == "PLS-DA"
@@ -1360,13 +1397,14 @@ async def optimize_endpoint(
         # --- progresso
         try:
             cv_iter = list(build_cv(grid_method, y_values, bool(classification), grid_params))
-            num_splits = max(1, len(cv_iter))
+            num_splits = int(max(1, len(cv_iter)))
         except Exception:
             num_splits = 1  # fallback
 
-        methods_count = len(methods) if methods else 1
+        methods_count = int(len(methods) if methods else 1)
         OPTIMIZE_PROGRESS["current"] = 0
-        OPTIMIZE_PROGRESS["total"] = methods_count * len(n_comp_range) * num_splits
+        OPTIMIZE_PROGRESS["total"] = int(OPTIMIZE_PROGRESS.get("total") or 0)
+        OPTIMIZE_PROGRESS["total"] = int(methods_count * len(n_comp_range) * num_splits)
 
         log_info(
             f"Otimizacao iniciada: cv={grid_method}, ncomp={max_comp}, preprocess={methods}"
@@ -1383,12 +1421,12 @@ async def optimize_endpoint(
                 validation_method=grid_method,
                 validation_params=grid_params,
                 progress_callback=lambda c, t: OPTIMIZE_PROGRESS.update(
-                    {"current": c, "total": t}
+                    {"current": int(c), "total": int(t)}
                 ),
             )
         finally:
             # garante finalização de progresso mesmo em erro
-            OPTIMIZE_PROGRESS["current"] = OPTIMIZE_PROGRESS.get("total", 0)
+            OPTIMIZE_PROGRESS["current"] = int(OPTIMIZE_PROGRESS.get("total") or 0)
 
         if raw_val_method == "LOO" and results:
             best = results[0]
