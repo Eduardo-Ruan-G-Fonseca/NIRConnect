@@ -180,6 +180,9 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
         const s = await getOptimizeStatus();
         const pct = s?.total ? Math.round((s.current / s.total) * 100) : 0;
         setProgress(Math.max(0, Math.min(100, pct)));
+        if (s?.total && s.current >= s.total) {
+          clearInterval(pollRef.current);
+        }
       } catch { /* ignora polling error */ }
     }, 1000);
 
@@ -194,22 +197,23 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
         spectral_range: spectralRange || undefined,
         preprocessing_methods: preprocessingList?.length ? preprocessingList : ["none"],
       };
-      const data = await postOptimize(file, payload);
-      setOptResults(Array.isArray(data?.results) ? data.results : []);
-      if ((!data.results || data.results.length === 0) && data.errors_summary) {
-        setError(
-          "Otimização não retornou combinações válidas. Detalhes: " +
-          Object.entries(data.errors_summary)
-            .map(([k, v]) => `${k}: ${v}`)
-            .join(" • ")
-        );
+      const res = await postOptimize(file, payload);
+      const arr = sortResults(res?.results || []);
+      setOptResults(arr);
+      if (arr.length === 0) {
+        setError("Nenhuma combinação válida encontrada. Tente reduzir n_components, revisar pré-processamentos ou mudar a validação.");
+      } else {
+        setSelected(0);
       }
+      setRunning(false);
       setProgress(100);
+      if (pollRef.current) clearInterval(pollRef.current);
     } catch (e) {
       setError(typeof e === "string" ? e : (e?.message || "Falha na otimização."));
     } finally {
-      setRunning(false);
+      // failsafe: se algo deu certo/errado, garante parada do polling
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      setRunning(false);
     }
   }
 
@@ -222,7 +226,6 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
     });
   }
   function renderTable(rs){
-    const sorted = sortResults(rs);
     return (
       <div className="nir-table-wrap">
         <table className="nir-table full">
@@ -245,18 +248,18 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
             </tr>
           </thead>
           <tbody>
-            {sorted.map((r,i)=>{
+            {rs.map((r,i)=>{
               const prep = PREP_LABEL[r.preprocess] || r.preprocess || "-";
               const metric = isClass ? (r?.val_metrics?.Accuracy ?? 0).toFixed(3) : (r?.RMSECV ?? 0).toFixed(3);
               const r2 = (r?.val_metrics?.R2 !== undefined) ? Number(r.val_metrics.R2).toFixed(3) : "-";
               const valMethod = r?.validation?.method || "-";
               const range = r?.wl_used?.length ? `${r.wl_used[0]}-${r.wl_used[r.wl_used.length-1]}` : "-";
-              const active = selected && selected.preprocess === r.preprocess && selected.n_components === r.n_components;
+              const active = selected === i;
               return (
                 <tr
                   key={`${r.preprocess ?? "none"}-${r.n_components ?? "nc"}-${i}`}
                   className={active ? "row-active" : ""}
-                  onClick={()=>setSelected({ preprocess:r.preprocess ?? "none", n_components:r.n_components })}
+                  onClick={()=>setSelected(i)}
                   style={{ cursor: "pointer" }}
                 >
                   <td>{prep}</td>
@@ -303,11 +306,14 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
 
   /* ===== Continuar ===== */
   async function continueWithSelection(){
-    if(!selected) return; setError("");
+    if(selected == null) return; setError("");
+    const choice = optResults?.[selected];
+    if (!choice) return;
+
     const fd = new FormData();
     fd.append("file", file);
     fd.append("target", step2.target ?? "");
-    fd.append("n_components", String(selected.n_components));
+    fd.append("n_components", String(choice.n_components));
     fd.append("classification", step2.classification ? "true" : "false");
     if (step2.threshold !== undefined) fd.append("threshold", String(step2.threshold));
     fd.append("n_bootstrap", String(step2.n_bootstrap || 0));
@@ -319,12 +325,12 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
     }
     if (result?.params?.ranges) fd.append("spectral_ranges", result.params.ranges);
 
-    const steps = selected.preprocess === "none" ? [] : [{ method:selected.preprocess }];
+    const steps = choice.preprocess === "none" ? [] : [{ method:choice.preprocess }];
     if (steps.length) fd.append("preprocess", JSON.stringify(steps));
 
     try {
       const data = await postTrainForm(fd);
-      const fullParams = { ...result?.params, n_components:selected.n_components, preprocess:selected.preprocess, preprocess_steps:steps };
+      const fullParams = { ...result?.params, n_components:choice.n_components, preprocess:choice.preprocess, preprocess_steps:steps };
       onContinue?.(data, fullParams);
     } catch (e) {
       setError(typeof e === "string" ? e : "Erro ao executar modelagem final.");
@@ -491,7 +497,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
         <button
           className="bg-[#2e5339] hover:bg-[#305e6b] text-white px-5 py-2 rounded-lg disabled:opacity-50"
           onClick={continueWithSelection}
-          disabled={!selected}
+          disabled={running || (selected == null && (!optResults || optResults.length === 0))}
         >
           Continuar com seleção
         </button>
