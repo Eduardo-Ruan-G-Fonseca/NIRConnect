@@ -1,8 +1,14 @@
 from typing import List, Dict, Any, Callable
+import os
 import numpy as np
 import pandas as pd
-from joblib import Parallel, delayed
-import os
+
+# opcional, só ativa se quiser paralelizar folds
+try:
+    from joblib import Parallel, delayed  # type: ignore
+except Exception:  # pragma: no cover
+    Parallel = None
+    delayed = None
 
 from .validation import build_cv
 from .pls import train_pls
@@ -107,113 +113,93 @@ def optimize_model_grid(
             "random_state": 42,
         }
     validation_params = validation_params or {}
-    splits_prog = list(build_cv(validation_method, y, classification, validation_params))
-    cv_splits_global = len(splits_prog)
-    total_steps = len(preprocess_opts) * len(n_components_range) * max(1, cv_splits_global)
+
+    # construir CV uma única vez
+    splits = list(build_cv(validation_method, y, classification, validation_params))
+    cv_splits = max(1, len(splits))
+    total_steps = len(preprocess_opts) * len(n_components_range) * cv_splits
     log_info(f"Otimizacao: {total_steps} combinacoes possiveis")
     done = 0
+
     cache_Xp: Dict[str, np.ndarray] = {}
-    cache_row: Dict[str, np.ndarray] = {}
     cache_wl: Dict[str, np.ndarray | None] = {}
 
     for prep in preprocess_opts:
-        if prep in cache_Xp:
-            Xp = cache_Xp[prep]
-            row_mask = cache_row[prep]
-            y_p = y[row_mask]
-            wl_used = cache_wl.get(prep)
-        else:
-            if prep == "none" or prep == "":
-                Xp_raw = X.copy()
-            else:
-                try:
-                    Xp_raw = apply_methods(X.copy(), [prep])
-                except Exception as e:
-                    log_info(f"[grid] failed preprocess {prep}: {e}")
-                    done += len(n_components_range) * max(1, cv_splits_global)
-                    if progress_callback:
-                        progress_callback(done, total_steps)
-                    continue
-
-            X_tmp = np.asarray(Xp_raw, dtype=float)
-            X_tmp[~np.isfinite(X_tmp)] = np.nan
-            row_mask = ~np.isnan(X_tmp).all(axis=1)
-            if not row_mask.any():
-                log_info(f"[grid] skip prep={prep}: all samples invalid")
-                done += len(n_components_range) * max(1, cv_splits_global)
-                if progress_callback:
-                    progress_callback(done, total_steps)
-                continue
-            Xp = X_tmp[row_mask]
-            y_p = y[row_mask]
+        if prep not in cache_Xp:
             try:
-                if wl is not None:
-                    Xp, wl_list = sanitize_X(Xp, wl.tolist())
-                    wl_used = np.array(wl_list, dtype=float)
-                else:
-                    Xp, _ = sanitize_X(Xp)
-                    wl_used = wl
-                log_info(f"[grid] after sanitize: Xp.shape={Xp.shape}, nan={np.isnan(Xp).any()}")
-            except ValueError as e:
-                log_info(f"[grid] skip prep={prep}: {e}")
-                done += len(n_components_range) * max(1, cv_splits_global)
+                Xp = apply_methods(X, methods=[prep])
+                Xp, wl_list = sanitize_X(Xp, wl.tolist() if wl is not None else None)
+                wl_used = np.array(wl_list) if wl_list is not None else None
+                cache_Xp[prep] = Xp
+                cache_wl[prep] = wl_used
+            except Exception as e:
+                log_info(f"[grid] failed preprocess {prep}: {e}")
+                done += len(n_components_range) * cv_splits
                 if progress_callback:
                     progress_callback(done, total_steps)
                 continue
-            if np.nanvar(Xp) < 1e-12 or Xp.shape[0] < 2 or Xp.shape[1] < 1:
-                log_info(f"[grid] skip prep={prep}: degenerate matrix")
-                done += len(n_components_range) * max(1, cv_splits_global)
-                if progress_callback:
-                    progress_callback(done, total_steps)
-                continue
-            cache_Xp[prep] = Xp
-            cache_row[prep] = row_mask
-            cache_wl[prep] = wl_used
+        else:
+            Xp = cache_Xp[prep]
+            wl_used = cache_wl.get(prep)
 
-        max_nc = int(min(Xp.shape[1], max(1, Xp.shape[0] - 1)))
-        comp_range = [nc for nc in n_components_range if 1 <= nc <= max_nc]
-        if not comp_range:
-            log_info(f"[grid] skip {prep}: sem componentes viáveis (max_nc={max_nc})")
-            done += len(n_components_range) * max(1, cv_splits_global)
+        log_info(
+            f"[grid] prep={prep}, Xp.shape={Xp.shape}, nan={np.isnan(Xp).any()}, inf={np.isinf(Xp).any()}"
+        )
+
+        if np.nanvar(Xp) < 1e-12 or Xp.shape[0] < 2 or Xp.shape[1] < 1:
+            log_info(f"[grid] skip prep={prep}: degenerate matrix")
+            done += len(n_components_range) * cv_splits
             if progress_callback:
                 progress_callback(done, total_steps)
             continue
 
-        splits = list(build_cv(validation_method, y_p, classification, validation_params))
-        cv_splits = len(splits)
+        max_nc = int(min(Xp.shape[1], max(1, Xp.shape[0] - 1)))
+        comp_range = [nc for nc in n_components_range if 1 <= nc <= max_nc]
+        if not comp_range:
+            log_info(f"[grid] skip prep={prep}: sem componentes viáveis (max_nc={max_nc})")
+            done += len(n_components_range) * cv_splits
+            if progress_callback:
+                progress_callback(done, total_steps)
+            continue
 
         for nc in comp_range:
-            log_info(f"[grid] trying prep={prep}, n_comp={nc}, Xp={Xp.shape}, cv_splits={cv_splits}")
+            log_info(
+                f"[grid] trying prep={prep}, n_comp={nc}, Xp={Xp.shape}, cv_splits={cv_splits}"
+            )
             try:
                 model, train_metrics, extra = train_pls(
                     Xp,
-                    y_p,
+                    y,
                     n_components=nc,
                     classification=classification,
                     validation_method="none",
                 )
 
-                preds = np.empty(len(y_p), dtype=float if not classification else object)
+                preds = np.empty(len(y), dtype=float if not classification else object)
 
-                def eval_split(tr: np.ndarray, te: np.ndarray):
+                def eval_split(train_idx: np.ndarray, test_idx: np.ndarray):
                     m, _, _ = train_pls(
-                        Xp[tr],
-                        y_p[tr],
+                        Xp[train_idx],
+                        y[train_idx],
                         n_components=nc,
                         classification=classification,
                         validation_method="none",
                     )
-                    pr = m.predict(Xp[te])
-                    return te, np.array(pr).ravel()
+                    pr = m.predict(Xp[test_idx])
+                    return test_idx, np.array(pr).ravel()
 
-                pred_list = Parallel(n_jobs=N_JOBS)(
-                    delayed(eval_split)(tr, te) for tr, te in splits
-                )
+                if Parallel and delayed and N_JOBS > 1:
+                    pred_list = Parallel(n_jobs=N_JOBS)(
+                        delayed(eval_split)(tr, te) for tr, te in splits
+                    )
+                else:
+                    pred_list = [eval_split(tr, te) for tr, te in splits]
+
                 for te, pr in pred_list:
                     preds[te] = pr
 
                 if classification:
-                    y_series = pd.Series(y_p).astype(str)
+                    y_series = pd.Series(y).astype(str)
                     labels = sorted(y_series.unique())
                     val_metrics = classification_metrics(
                         y_series.values, preds.astype(str), labels=labels
@@ -221,8 +207,8 @@ def optimize_model_grid(
                     rmsecv = None
                 else:
                     preds_f = preds.astype(float)
-                    val_metrics = regression_metrics(y_p, preds_f)
-                    rmsecv = float(np.sqrt(np.mean((y_p - preds_f) ** 2)))
+                    val_metrics = regression_metrics(y, preds_f)
+                    rmsecv = float(np.sqrt(np.mean((y - preds_f) ** 2)))
                 T = np.array(extra.get("scores", []))
                 leverage = (
                     np.diag(T @ np.linalg.pinv(T.T @ T) @ T.T).tolist() if T.size else []
