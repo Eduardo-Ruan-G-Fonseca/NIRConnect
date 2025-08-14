@@ -4,6 +4,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.linear_model import LogisticRegression
+from sklearn.multiclass import OneVsRestClassifier
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, r2_score
 from sklearn.preprocessing import LabelEncoder
 from .transformers import ReplaceInfWithNaN, DropAllNaNColumns
@@ -75,7 +76,7 @@ def eval_plsda_multiclass(X, y, n_components, cv):
         Ttr = pls.transform(Xtr)
         Tte = pls.transform(Xte)
 
-        clf = LogisticRegression(max_iter=1000, multi_class="ovr")
+        clf = OneVsRestClassifier(LogisticRegression(max_iter=1000))
         clf.fit(Ttr, y_arr[tr])
         ypred = clf.predict(Tte)
 
@@ -101,6 +102,6 @@ def fit_plsda_multiclass_final(X, y, n_components):
     pls = PLSRegression(n_components=n_components)
     pls.fit(X, y_enc)
     T = pls.transform(X)
-    clf = LogisticRegression(max_iter=1000, multi_class="ovr")
+    clf = OneVsRestClassifier(LogisticRegression(max_iter=1000))
     clf.fit(T, y_arr)
     return pls, clf
