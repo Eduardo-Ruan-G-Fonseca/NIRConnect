@@ -109,16 +109,32 @@ def optimize_model_grid(
         if prep == "none" or prep == "":
             Xp = X.copy()
         else:
-            Xp = apply_methods(X.copy(), [prep])
+            try:
+                Xp = apply_methods(X.copy(), [prep])
+            except Exception as e:
+                log_info(f"Erro ao aplicar {prep}: {e}")
+                done += len(n_components_range)
+                if progress_callback:
+                    progress_callback(done, total_steps)
+                continue
+        if np.nanvar(Xp) < 1e-12:
+            log_info(f"Variancia quase zero apos {prep}")
+            done += len(n_components_range)
+            if progress_callback:
+                progress_callback(done, total_steps)
+            continue
         wl_used = wl
         if wl is not None:
-            var = Xp.var(axis=0)
-            mask = var > 1e-8
+            var = np.nanvar(Xp, axis=0)
+            mask = np.isfinite(var) & (var > 1e-8)
             if mask.any():
                 Xp = Xp[:, mask]
                 wl_used = wl[mask]
             else:
                 log_info(f"Todas as variaveis removidas apos {prep}")
+                done += len(n_components_range)
+                if progress_callback:
+                    progress_callback(done, total_steps)
                 continue
         for nc in n_components_range:
             log_info(f"[Optimize] Testando combinacao: {prep} com {nc} componentes")

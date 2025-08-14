@@ -1,4 +1,5 @@
 import numpy as np
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from scipy.signal import savgol_filter
 
 
@@ -14,23 +15,21 @@ def snv(X: np.ndarray) -> np.ndarray:
 
 
 def msc(X: np.ndarray, reference: np.ndarray | None = None) -> np.ndarray:
-    """Multiplicative Scatter Correction with safe slope."""
     if reference is None:
         reference = np.mean(X, axis=0)
-    corrected = np.zeros_like(X)
+    corrected = np.zeros_like(X, dtype=float)
+    eps = 1e-12
     for i in range(X.shape[0]):
-        fit = np.polyfit(reference, X[i], 1, full=True)
-        slope = fit[0][0]
-        intercept = fit[0][1]
-        slope = slope if abs(slope) > EPS else 1.0
+        slope, intercept = np.polyfit(reference, X[i], 1)
+        if abs(slope) < eps:
+            slope = eps
         corrected[i] = (X[i] - intercept) / slope
     return corrected
 
 
 def savgol_derivative(X: np.ndarray, order: int = 1, window: int = 11, poly: int = 2) -> np.ndarray:
-    """Savitzky-Golay derivative ensuring valid window."""
-    if window <= poly:
-        window = poly + 2
+    if window < (poly + 2):
+        window = poly + 3
     if window % 2 == 0:
         window += 1
     return savgol_filter(X, window_length=window, polyorder=poly, deriv=order, axis=1)
