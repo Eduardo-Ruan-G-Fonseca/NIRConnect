@@ -39,7 +39,7 @@ def test_train_pls_regression():
     X, y = generate_regression_data()
     model, metrics, extra = train_pls(X, y, n_components=3)
     assert not model.classification
-    assert set(metrics.keys()) == {"RMSE", "MAE", "R2"}
+    assert set(metrics.keys()) >= {"RMSE", "MAE", "R2", "MAPE", "ExplainedVariance"}
     assert metrics["R2"] > 0.8
     assert len(extra["vip"]) == X.shape[1]
 
