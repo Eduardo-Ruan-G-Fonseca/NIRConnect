@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from .validation import build_cv
 from .pls import train_pls
-from .preprocessing import apply_methods
+from .preprocessing import apply_methods, sanitize_X
 from .metrics import regression_metrics, classification_metrics, hotelling_t2
 from .logger import log_info
 def optimize_nir(
@@ -106,6 +106,7 @@ def optimize_model_grid(
     log_info(f"Otimizacao: {total_steps} combinacoes possiveis")
     done = 0
     for prep in preprocess_opts:
+
         if prep == "none" or prep == "":
             Xp = X.copy()
         else:
@@ -117,19 +118,42 @@ def optimize_model_grid(
                 if progress_callback:
                     progress_callback(done, total_steps)
                 continue
+
+        X_tmp = np.asarray(Xp, dtype=float)
+        X_tmp[~np.isfinite(X_tmp)] = np.nan
+        row_ok = ~np.isnan(X_tmp).all(axis=1)
+        if not row_ok.any():
+            log_info(f"Todas as amostras removidas apos {prep}")
+            done += len(n_components_range)
+            if progress_callback:
+                progress_callback(done, total_steps)
+            continue
+        try:
+            if wl is not None:
+                Xp, wl_list = sanitize_X(Xp, wl.tolist())
+                wl_used = np.array(wl_list, dtype=float)
+            else:
+                Xp, _ = sanitize_X(Xp)
+                wl_used = wl
+        except ValueError as e:
+            log_info(f"Erro ao sanitizar {prep}: {e}")
+            done += len(n_components_range)
+            if progress_callback:
+                progress_callback(done, total_steps)
+            continue
+        y_p = y[row_ok]
         if np.nanvar(Xp) < 1e-12:
             log_info(f"Variancia quase zero apos {prep}")
             done += len(n_components_range)
             if progress_callback:
                 progress_callback(done, total_steps)
             continue
-        wl_used = wl
         if wl is not None:
             var = np.nanvar(Xp, axis=0)
             mask = np.isfinite(var) & (var > 1e-8)
             if mask.any():
                 Xp = Xp[:, mask]
-                wl_used = wl[mask]
+                wl_used = wl_used[mask]
             else:
                 log_info(f"Todas as variaveis removidas apos {prep}")
                 done += len(n_components_range)
@@ -141,17 +165,17 @@ def optimize_model_grid(
             try:
                 model, train_metrics, extra = train_pls(
                     Xp,
-                    y,
+                    y_p,
                     n_components=nc,
                     classification=classification,
                     validation_method="none",
                 )
-                cv = build_cv(validation_method, y, classification, validation_params)
-                preds = np.empty(len(y), dtype=float if not classification else object)
+                cv = build_cv(validation_method, y_p, classification, validation_params)
+                preds = np.empty(len(y_p), dtype=float if not classification else object)
                 for tr, te in cv:
                     m, _, _ = train_pls(
                         Xp[tr],
-                        y[tr],
+                        y_p[tr],
                         n_components=nc,
                         classification=classification,
                         validation_method="none",
@@ -159,7 +183,7 @@ def optimize_model_grid(
                     pr = m.predict(Xp[te])
                     preds[te] = np.array(pr).ravel()
                 if classification:
-                    y_series = pd.Series(y).astype(str)
+                    y_series = pd.Series(y_p).astype(str)
                     labels = sorted(y_series.unique())
                     val_metrics = classification_metrics(
                         y_series.values, preds.astype(str), labels=labels
@@ -167,8 +191,8 @@ def optimize_model_grid(
                     rmsecv = None
                 else:
                     preds_f = preds.astype(float)
-                    val_metrics = regression_metrics(y, preds_f)
-                    rmsecv = float(np.sqrt(np.mean((y - preds_f) ** 2)))
+                    val_metrics = regression_metrics(y_p, preds_f)
+                    rmsecv = float(np.sqrt(np.mean((y_p - preds_f) ** 2)))
                 T = np.array(extra.get("scores", []))
                 leverage = (
                     np.diag(T @ np.linalg.pinv(T.T @ T) @ T.T).tolist() if T.size else []
