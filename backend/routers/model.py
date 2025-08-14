@@ -5,11 +5,13 @@ import numpy as np
 import pandas as pd
 import joblib
 import os
-from sklearn.model_selection import KFold, cross_validate
+from sklearn.model_selection import cross_validate
 
 from core.io_utils import to_float_matrix
 from core.saneamento import saneamento_global, sanitize_X
 from core.bootstrap import train_plsda
+from core.validation import make_cv, safe_n_components
+from core.logger import log_info
 try:
     from ml.pipeline import build_pls_pipeline
 except Exception:
@@ -76,7 +78,10 @@ def train(req: TrainRequest):
         if len(np.unique(y_arr)) < 2:
             raise HTTPException(status_code=400, detail="variável-alvo precisa de ≥2 classes")
         X_clean, features = sanitize_X(X, req.features)
-        model, metrics, extra = train_plsda(X_clean, y_arr, n_components=req.n_components)
+        max_nc = safe_n_components(
+            req.n_components, n_samples=len(X_clean), n_features=X_clean.shape[1]
+        )
+        model, metrics, extra = train_plsda(X_clean, y_arr, n_components=max_nc)
         class_mapping = {str(i): cls for i, cls in enumerate(extra.get("classes", []))}
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
         joblib.dump({"pipeline": model, "features": features, "class_mapping": class_mapping}, MODEL_PATH)
@@ -90,8 +95,22 @@ def train(req: TrainRequest):
         if X_clean.shape[1] == 0:
             raise HTTPException(status_code=400, detail="Nenhuma coluna válida para treino")
 
-    pipeline = build_pls_pipeline(req.n_components)
-    cv = KFold(n_splits=req.n_splits, shuffle=True, random_state=42)
+    n_samples = len(X_clean)
+    n_features = X_clean.shape[1]
+    max_nc = safe_n_components(req.n_components, n_samples=n_samples, n_features=n_features)
+    pipeline = build_pls_pipeline(max_nc)
+    cv = make_cv(
+        method="KFold",
+        params={"n_splits": req.n_splits},
+        n_samples=n_samples,
+        task="regression",
+    )
+    try:
+        n_splits = getattr(cv, "n_splits", None) or 1
+    except Exception:
+        n_splits = 1
+    log_info(f"[train] splits={n_splits}")
+
     cv_results = cross_validate(
         pipeline,
         X_clean,

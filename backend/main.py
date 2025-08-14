@@ -68,11 +68,30 @@ def apply_preprocess(X: np.ndarray, method: str) -> np.ndarray:
 def optimize_handler(X: np.ndarray, y: np.ndarray, params: dict, progress_callback=None):
     """Core optimization routine with error collection and fallback."""
     n_samples, n_features = X.shape
+    task = "classification" if params.get("analysis_mode") == "PLS-DA" else "regression"
 
-    cv = make_cv(params.get("validation_method"), params.get("validation_params"), n_samples)
+    cv = make_cv(
+        method=params.get("validation_method"),
+        params=params.get("validation_params"),
+        n_samples=n_samples,
+        task=task,
+        y=y,
+    )
 
     max_nc_req = int(params.get("n_components", 10))
-    max_nc = safe_n_components(max_nc_req, n_samples, n_features)
+    max_nc = safe_n_components(max_nc_req, n_samples=n_samples, n_features=n_features)
+
+    try:
+        n_splits = getattr(cv, "n_splits", None) or 1
+    except Exception:
+        n_splits = 1
+
+    if task == "classification":
+        _, counts = np.unique(y, return_counts=True)
+        min_per_class = int(counts.min())
+        log_info(f"[optimize] stratified=True splits={n_splits} min_per_class={min_per_class}")
+    else:
+        log_info(f"[optimize] splits={n_splits}")
 
     preps = params.get("preprocessing_methods") or ["none"]
 
