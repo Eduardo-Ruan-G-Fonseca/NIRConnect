@@ -1,4 +1,3 @@
-// src/NirPage.jsx
 import { useState } from "react";
 import Step1Upload from "./components/nir/Step1Upload.jsx";
 import Step2Parameters from "./components/nir/Step2Parameters.jsx";
@@ -22,7 +21,7 @@ export default function NirPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto p-4 space-y-6">
+    <div className="w-full max-w-[1400px] mx-auto px-4 md:px-6 lg:px-8 space-y-6">
       {/* Cabeçalho */}
       <header className="text-center space-y-1">
         <h1 className="text-3xl font-semibold text-[#2e5339]">
@@ -34,7 +33,7 @@ export default function NirPage() {
       </header>
 
       {/* Progresso */}
-      <nav className="text-sm text-gray-500 flex justify-between">
+      <nav className="text-sm text-gray-500 flex flex-wrap gap-2 justify-center md:justify-between">
         {["1. Upload","2. Parâmetros","3. Pré-processamento","4. Decisão","5. Resultado"]
           .map((t, i) => (
             <span key={t} className={`step ${i < step ? "font-semibold text-green-700" : ""}`}>
@@ -60,7 +59,6 @@ export default function NirPage() {
           meta={meta}
           onBack={() => setStep(1)}
           onNext={(params) => {
-            // params: { target, n_components, classification, threshold?, n_bootstrap, validation_method, validation_params }
             setStep2(params);
             setStep(3);
           }}
@@ -102,6 +100,18 @@ export default function NirPage() {
           onNew={() => resetAll()}
         />
       )}
+    </div>
+  );
+}
+
+/* (se este ProgressBar estiver neste mesmo arquivo) */
+export function ProgressBar({ percent = 0 }) {
+  return (
+    <div className="w-full bg-gray-200 rounded">
+      <div
+        className="h-2 bg-green-500 transition-all"
+        style={{ width: `${percent}%` }}
+      />
     </div>
   );
 }
