@@ -1275,7 +1275,13 @@ async def optimize_endpoint(
         max_comp = max(1, min(max_comp, X.shape[1]))
 
         # --- validação
-        val_method = parsed.get("validation_method") or ("StratifiedKFold" if classification else "KFold")
+        raw_val_method = parsed.get("validation_method")
+        if raw_val_method == "LOO":
+            val_method = "LOO"
+        elif classification:
+            val_method = raw_val_method or "StratifiedKFold"
+        else:
+            val_method = raw_val_method or "KFold"
         if val_method == "Holdout":
             raise HTTPException(status_code=422, detail="Holdout não é suportado na otimização. Use KFold ou LOO.")
         val_params = {}
