@@ -128,6 +128,8 @@ def optimize_model_grid(
             if progress_callback:
                 progress_callback(done, total_steps)
             continue
+        Xp = X_tmp[row_ok]
+        y_p = y[row_ok]
         try:
             if wl is not None:
                 Xp, wl_list = sanitize_X(Xp, wl.tolist())
@@ -136,31 +138,32 @@ def optimize_model_grid(
                 Xp, _ = sanitize_X(Xp)
                 wl_used = wl
         except ValueError as e:
-            log_info(f"Erro ao sanitizar {prep}: {e}")
+            log_info(f"Dados inválidos após {prep}: {e}")
             done += len(n_components_range)
             if progress_callback:
                 progress_callback(done, total_steps)
             continue
-        y_p = y[row_ok]
-        if np.nanvar(Xp) < 1e-12:
-            log_info(f"Variancia quase zero apos {prep}")
+        if np.nanvar(Xp) < 1e-12 or Xp.shape[0] < 2 or Xp.shape[1] < 1:
+            log_info(f"Combinação inválida após {prep}: matriz degenerada")
             done += len(n_components_range)
             if progress_callback:
                 progress_callback(done, total_steps)
             continue
-        if wl is not None:
-            var = np.nanvar(Xp, axis=0)
-            mask = np.isfinite(var) & (var > 1e-8)
-            if mask.any():
-                Xp = Xp[:, mask]
-                wl_used = wl_used[mask]
-            else:
-                log_info(f"Todas as variaveis removidas apos {prep}")
-                done += len(n_components_range)
-                if progress_callback:
-                    progress_callback(done, total_steps)
-                continue
-        for nc in n_components_range:
+        max_nc = min(Xp.shape[1], Xp.shape[0] - 1)
+        if max_nc < 1:
+            log_info(f"Combinação inválida: {prep}, sem componentes possíveis.")
+            done += len(n_components_range)
+            if progress_callback:
+                progress_callback(done, total_steps)
+            continue
+        comp_range = [nc for nc in n_components_range if 1 <= nc <= max_nc]
+        if not comp_range:
+            log_info(f"Nenhum número de componentes viável para {prep}.")
+            done += len(n_components_range)
+            if progress_callback:
+                progress_callback(done, total_steps)
+            continue
+        for nc in comp_range:
             log_info(f"[Optimize] Testando combinacao: {prep} com {nc} componentes")
             try:
                 model, train_metrics, extra = train_pls(
@@ -170,7 +173,10 @@ def optimize_model_grid(
                     classification=classification,
                     validation_method="none",
                 )
-                cv = build_cv(validation_method, y_p, classification, validation_params)
+                if validation_method == "LOO":
+                    cv = build_cv("LOO", y_p, classification, {})
+                else:
+                    cv = build_cv(validation_method, y_p, classification, validation_params)
                 preds = np.empty(len(y_p), dtype=float if not classification else object)
                 for tr, te in cv:
                     m, _, _ = train_pls(
@@ -232,6 +238,10 @@ def optimize_model_grid(
                 done += 1
                 if progress_callback:
                     progress_callback(done, total_steps)
+        if len(comp_range) < len(n_components_range):
+            done += len(n_components_range) - len(comp_range)
+            if progress_callback:
+                progress_callback(done, total_steps)
     key = (
         lambda r: r["RMSECV"]
         if r["RMSECV"] is not None
