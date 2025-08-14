@@ -271,9 +271,15 @@ export default function Step2Parameters({ meta, onBack, onNext }) {
             onChange={(e) => setValidationMethod(e.target.value)}
           >
             <option value="KFold">K-Fold</option>
+            {classification && <option value="StratifiedKFold">Stratified K-Fold</option>}
             <option value="LOO">Leave-One-Out (LOO)</option>
             <option value="Holdout">Train/Test Split</option>
           </select>
+          {validationMethod === "LOO" && (
+            <p className="mt-1 text-xs text-amber-700">
+              LOO executa 1 treino por amostra (pode ser lento em bases grandes).
+            </p>
+          )}
         </div>
 
         {/* params de validação condicionais */}
