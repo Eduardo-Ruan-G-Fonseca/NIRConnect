@@ -460,6 +460,11 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
 
       {(running || progress > 0) && (
         <>
+          {step2?.validation_method === "LOO" && (
+            <div className="text-xs text-amber-700 mb-2">
+              Executando Leave-One-Out — cada combinação roda N vezes (N = número de amostras). Pode levar mais tempo.
+            </div>
+          )}
           <div className="w-full bg-gray-200 rounded">
             <div className="h-2 bg-green-500 transition-all" style={{ width: `${progress}%` }} />
           </div>
