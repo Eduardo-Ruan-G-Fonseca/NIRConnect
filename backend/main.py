@@ -1331,23 +1331,35 @@ async def optimize_endpoint(
         n_comp_range = list(range(1, max_comp + 1))
         log_info(f"[optimize] X shape={X.shape}, n_comp_range={n_comp_range}")
 
-        # ===== Validação: respeita LOO e limita folds com segurança =====
+        # ===== Validação: grid leve + LOO final se solicitado =====
         raw_val_method = parsed.get("validation_method")
         requested_folds = parsed.get("folds")
-        # y_values: use o vetor real (já codificado em classificação, se houver)
         y_values = y_series.to_numpy()
 
-        val_method, val_params = _resolve_cv_params(
-            raw_method=raw_val_method,
-            classification=bool(classification),
-            y_values=y_values,
-            requested_folds=(int(requested_folds) if requested_folds is not None else None),
+        if raw_val_method == "LOO":
+            grid_method, grid_params = _resolve_cv_params(
+                raw_method=("StratifiedKFold" if classification else "KFold"),
+                classification=bool(classification),
+                y_values=y_values,
+                requested_folds=(int(requested_folds) if requested_folds is not None else None),
+            )
+            final_method, final_params = "LOO", {}
+        else:
+            grid_method, grid_params = _resolve_cv_params(
+                raw_method=raw_val_method,
+                classification=bool(classification),
+                y_values=y_values,
+                requested_folds=(int(requested_folds) if requested_folds is not None else None),
+            )
+            final_method, final_params = grid_method, grid_params
+
+        log_info(
+            f"[optimize] grid_method={grid_method} grid_params={grid_params} final={final_method}"
         )
-        log_info(f"[optimize] validation_method={val_method} params={val_params}")
 
         # --- progresso
         try:
-            cv_iter = list(build_cv(val_method, y_values, bool(classification), val_params))
+            cv_iter = list(build_cv(grid_method, y_values, bool(classification), grid_params))
             num_splits = max(1, len(cv_iter))
         except Exception:
             num_splits = 1  # fallback
@@ -1356,7 +1368,9 @@ async def optimize_endpoint(
         OPTIMIZE_PROGRESS["current"] = 0
         OPTIMIZE_PROGRESS["total"] = methods_count * len(n_comp_range) * num_splits
 
-        log_info(f"Otimizacao iniciada: cv={val_method}, ncomp={max_comp}, preprocess={methods}")
+        log_info(
+            f"Otimizacao iniciada: cv={grid_method}, ncomp={max_comp}, preprocess={methods}"
+        )
 
         try:
             results = optimize_model_grid(
@@ -1366,16 +1380,55 @@ async def optimize_endpoint(
                 classification=classification,
                 preprocess_opts=methods,
                 n_components_range=n_comp_range,
-                validation_method=val_method,
-                validation_params=val_params,
-                progress_callback=lambda c, t: OPTIMIZE_PROGRESS.update({
-                    "current": c * num_splits,
-                    "total": t * num_splits,
-                }),
+                validation_method=grid_method,
+                validation_params=grid_params,
+                progress_callback=lambda c, t: OPTIMIZE_PROGRESS.update(
+                    {"current": c, "total": t}
+                ),
             )
         finally:
             # garante finalização de progresso mesmo em erro
             OPTIMIZE_PROGRESS["current"] = OPTIMIZE_PROGRESS.get("total", 0)
+
+        if raw_val_method == "LOO" and results:
+            best = results[0]
+            best_prep = best.get("preprocess") or best.get("prep") or "none"
+            best_nc = int(best.get("n_components") or best.get("components") or 1)
+
+            from core.preprocessing import apply_methods, sanitize_X
+
+            Xp = apply_methods(X, methods=[best_prep])
+            Xp, _ = sanitize_X(Xp)
+
+            from core.validation import build_cv
+
+            splits = list(build_cv("LOO", y_values, bool(classification), {}))
+
+            from core.pls import train_pls
+
+            scores = []
+            for tr, te in splits:
+                res = train_pls(
+                    Xp[tr],
+                    y_values[tr],
+                    Xp[te],
+                    y_values[te],
+                    n_components=best_nc,
+                    classification=bool(classification),
+                    validation_method="none",
+                    validation_params={},
+                )
+                metric = (
+                    res["metrics"].get("F1")
+                    if classification
+                    else -res["metrics"].get("RMSE", np.nan)
+                )
+                scores.append(metric)
+            final_score = float(np.mean(scores)) if scores else float("nan")
+            results[0]["final_validation"] = {
+                "method": "LOO",
+                "score": final_score,
+            }
 
         return jsonable_encoder({"results": results[:15]})
 

@@ -1,10 +1,9 @@
 from typing import List, Dict, Any, Callable
-import os
+import os, time
 import numpy as np
 import pandas as pd
 
-# opcional, só ativa se quiser paralelizar folds
-try:
+try:  # opcional, só ativa se quiser paralelizar folds
     from joblib import Parallel, delayed  # type: ignore
 except Exception:  # pragma: no cover
     Parallel = None
@@ -12,11 +11,10 @@ except Exception:  # pragma: no cover
 
 from .validation import build_cv
 from .pls import train_pls
-from .preprocessing import apply_methods, sanitize_X
-from .metrics import regression_metrics, classification_metrics, hotelling_t2
+from .preprocessing import apply_methods
 from .logger import log_info
+from .metrics import regression_metrics, classification_metrics
 
-N_JOBS = int(os.getenv("NIR_N_JOBS", "1"))
 def optimize_nir(
     X: np.ndarray,
     y: np.ndarray,
@@ -99,12 +97,14 @@ def optimize_model_grid(
 
     if classification:
         y = y.astype(str)
+        labels = sorted(np.unique(y))
     else:
         y = y.astype(float)
+        labels = None
 
     if preprocess_opts is None:
         preprocess_opts = ["none"]
-    results: List[Dict[str, Any]] = []
+
     if validation_method is None:
         validation_method = "StratifiedKFold" if classification else "KFold"
         validation_params = {
@@ -114,157 +114,103 @@ def optimize_model_grid(
         }
     validation_params = validation_params or {}
 
-    # construir CV uma única vez
     splits = list(build_cv(validation_method, y, classification, validation_params))
     cv_splits = max(1, len(splits))
-    try:
-        methods_count = len(preprocess_opts) if preprocess_opts else 1
-    except Exception:
-        methods_count = 1
+    methods_count = len(preprocess_opts) if preprocess_opts else 1
     total_steps = methods_count * len(n_components_range) * cv_splits
-    log_info(f"Otimizacao: {total_steps} combinacoes possiveis")
     done = 0
-    base_nc = len(n_components_range)
 
     cache_Xp: Dict[str, np.ndarray] = {}
-    cache_wl: Dict[str, np.ndarray | None] = {}
+    results: List[Dict[str, Any]] = []
 
     for prep in preprocess_opts:
         if prep not in cache_Xp:
-            try:
-                Xp = apply_methods(X, methods=[prep])
-                Xp, wl_list = sanitize_X(Xp, wl.tolist() if wl is not None else None)
-                wl_used = np.array(wl_list) if wl_list is not None else None
-                cache_Xp[prep] = Xp
-                cache_wl[prep] = wl_used
-            except Exception as e:
-                log_info(f"[grid] failed preprocess {prep}: {e}")
-                done += base_nc * cv_splits
-                if progress_callback:
-                    progress_callback(done, total_steps)
-                continue
+            Xp = apply_methods(X, methods=[prep])
+            from .preprocessing import sanitize_X
+            Xp, _ = sanitize_X(Xp)
+            cache_Xp[prep] = Xp
         else:
             Xp = cache_Xp[prep]
-            wl_used = cache_wl.get(prep)
-
-        log_info(
-            f"[grid] prep={prep}, Xp.shape={Xp.shape}, nan={np.isnan(Xp).any()}, inf={np.isinf(Xp).any()}"
-        )
-
-        if np.nanvar(Xp) < 1e-12 or Xp.shape[0] < 2 or Xp.shape[1] < 1:
-            log_info(f"[grid] skip prep={prep}: degenerate matrix")
-            done += base_nc * cv_splits
-            if progress_callback:
-                progress_callback(done, total_steps)
-            continue
 
         max_nc = int(min(Xp.shape[1], max(1, Xp.shape[0] - 1)))
         comp_range = [nc for nc in n_components_range if 1 <= nc <= max_nc]
         if not comp_range:
-            log_info(f"[grid] skip prep={prep}: sem componentes viáveis (max_nc={max_nc})")
-            done += base_nc * cv_splits
+            done += len(n_components_range) * cv_splits
             if progress_callback:
                 progress_callback(done, total_steps)
             continue
-        if len(comp_range) < base_nc and done == 0:
-            total_steps = methods_count * len(comp_range) * cv_splits
-            base_nc = len(comp_range)
-            log_info(f"Otimizacao: {total_steps} combinacoes possiveis")
 
         for nc in comp_range:
-            log_info(
-                f"[grid] trying prep={prep}, n_comp={nc}, Xp={Xp.shape}, cv_splits={cv_splits}"
-            )
             try:
-                model, train_metrics, extra = train_pls(
-                    Xp,
-                    y,
-                    n_components=nc,
-                    classification=classification,
-                    validation_method="none",
-                )
+                n_jobs = int(os.getenv("NIR_N_JOBS", "1"))
 
-                preds = np.empty(len(y), dtype=float if not classification else object)
-
-                def eval_split(train_idx: np.ndarray, test_idx: np.ndarray):
-                    m, _, _ = train_pls(
-                        Xp[train_idx],
-                        y[train_idx],
+                def eval_one(tr, te):
+                    model, _, _ = train_pls(
+                        Xp[tr],
+                        y[tr],
                         n_components=nc,
-                        classification=classification,
+                        classification=bool(classification),
                         validation_method="none",
+                        validation_params={},
                     )
-                    pr = m.predict(Xp[test_idx])
-                    return test_idx, np.array(pr).ravel()
+                    preds = model.predict(Xp[te])
+                    if classification:
+                        m = classification_metrics(
+                            y[te], np.array(preds).astype(str), labels=labels
+                        )
+                    else:
+                        m = regression_metrics(
+                            y[te], np.array(preds, dtype=float)
+                        )
+                    return m
 
-                if Parallel and delayed and N_JOBS > 1:
-                    pred_list = Parallel(n_jobs=N_JOBS)(
-                        delayed(eval_split)(tr, te) for tr, te in splits
+                if Parallel and delayed and n_jobs > 1:
+                    metrics_list = Parallel(n_jobs=n_jobs)(
+                        delayed(eval_one)(tr, te) for (tr, te) in splits
                     )
                 else:
-                    pred_list = [eval_split(tr, te) for tr, te in splits]
-
-                for te, pr in pred_list:
-                    preds[te] = pr
+                    metrics_list = [eval_one(tr, te) for (tr, te) in splits]
 
                 if classification:
-                    y_series = pd.Series(y).astype(str)
-                    labels = sorted(y_series.unique())
-                    val_metrics = classification_metrics(
-                        y_series.values, preds.astype(str), labels=labels
-                    )
+                    scores = [m.get("F1") or m.get("MacroF1") or m.get("Accuracy", 0) for m in metrics_list]
+                    mean_score = float(np.mean(scores))
+                    agg_metrics: Dict[str, Any] = {}
+                    for k in metrics_list[0].keys():
+                        vals = [m.get(k) for m in metrics_list if isinstance(m.get(k), (int, float))]
+                        if vals:
+                            agg_metrics[k] = float(np.mean(vals))
+                    val_metrics = agg_metrics
                     rmsecv = None
                 else:
-                    preds_f = preds.astype(float)
-                    val_metrics = regression_metrics(y, preds_f)
-                    rmsecv = float(np.sqrt(np.mean((y - preds_f) ** 2)))
-                T = np.array(extra.get("scores", []))
-                leverage = (
-                    np.diag(T @ np.linalg.pinv(T.T @ T) @ T.T).tolist() if T.size else []
-                )
-                ht2 = hotelling_t2(model.model).tolist()
-                mean_t = T.mean(axis=0) if T.size else 0
-                inv_cov = np.linalg.pinv(np.cov(T, rowvar=False)) if T.size else np.array([])
-                mahal = (
-                    [float((ti - mean_t) @ inv_cov @ (ti - mean_t).T) for ti in T]
-                    if T.size
-                    else []
-                )
+                    rmse_vals = [m.get("RMSE", np.nan) for m in metrics_list]
+                    rmsecv = float(np.mean(rmse_vals))
+                    mean_score = -rmsecv
+                    agg_metrics: Dict[str, Any] = {}
+                    for k in metrics_list[0].keys():
+                        vals = [m.get(k) for m in metrics_list if isinstance(m.get(k), (int, float))]
+                        if vals:
+                            agg_metrics[k] = float(np.mean(vals))
+                    val_metrics = agg_metrics
+
                 results.append(
                     {
                         "preprocess": prep,
                         "n_components": nc,
-                        "train_metrics": train_metrics,
                         "val_metrics": val_metrics,
                         "RMSECV": rmsecv,
-                        "leverage": leverage,
-                        "hotelling_t2": ht2,
-                        "mahalanobis": mahal,
-                        "wl_used": wl_used.tolist() if wl_used is not None else None,
                         "validation": {
                             "method": validation_method,
                             "params": validation_params,
                         },
+                        "score": mean_score,
                     }
                 )
-                log_info(
-                    f"[Optimize] RMSECV: {rmsecv if rmsecv is not None else 'NA'}, R2: {val_metrics.get('R2', 'NA')}"
-                )
+
             except Exception as e:
-                log_info(f"[grid] failed prep={prep}, n_comp={nc}: {e}")
-                continue
+                print(f"[grid] failed prep={prep} n_comp={nc}: {e}", flush=True)
             finally:
                 done += cv_splits
                 if progress_callback:
                     progress_callback(done, total_steps)
-        if len(comp_range) < base_nc:
-            done += (base_nc - len(comp_range)) * cv_splits
-            if progress_callback:
-                progress_callback(done, total_steps)
-    key = (
-        lambda r: r["RMSECV"]
-        if r["RMSECV"] is not None
-        else -r["val_metrics"].get("Accuracy", 0)
-    )
-    log_info(f"[Optimize] Sucesso: {len(results)} combinacoes testadas")
-    return sorted(results, key=key)
+
+    return sorted(results, key=lambda r: r.get("score", -np.inf), reverse=True)
