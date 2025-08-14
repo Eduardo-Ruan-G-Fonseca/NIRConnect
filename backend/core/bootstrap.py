@@ -2,10 +2,15 @@ import numpy as np
 import pandas as pd
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.model_selection import KFold
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.preprocessing import LabelEncoder
 from .metrics import vip_scores, classification_metrics
 
-from .pls import train_pls, fit_plsda_multiclass
+from .pls import train_pls
+try:
+    from ml.pipeline import fit_plsda_multiclass_final
+except Exception:  # pragma: no cover - fallback
+    from core.ml.pipeline import fit_plsda_multiclass_final
 
 
 def bootstrap_metrics(X, y, n_components=5, classification=False, n_bootstrap=500, random_state=42):
@@ -61,23 +66,41 @@ def train_plsr(X: np.ndarray, y: np.ndarray, n_components: int = 5):
     return pls, metrics, {"vip": vip, "scores": scores}
 
 
+class PLSDAClassifier:
+    """Wrapper for PLS + logistic regression pipeline."""
+
+    def __init__(self, pls: PLSRegression, clf):
+        self.pls = pls
+        self.clf = clf
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        T = self.pls.transform(X)
+        return self.clf.predict(T)
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        T = self.pls.transform(X)
+        return self.clf.predict_proba(T)
+
+
 def train_plsda(
     X: np.ndarray, y: np.ndarray, n_components: int = 5
 ):
-    """Train a multi-class PLS-DA model using One-vs-Rest strategy."""
+    """Train a multi-class PLS-DA model using logistic regression on latent space."""
 
     y_series = pd.Series(y).astype(str)
     classes = sorted(y_series.unique())
     if len(classes) < 2:
         raise ValueError("A coluna alvo precisa ter pelo menos duas classes distintas.")
 
-    model = fit_plsda_multiclass(X, y_series.values, n_components=n_components)
+    pls, clf = fit_plsda_multiclass_final(X, y_series.values, n_components)
+    model = PLSDAClassifier(pls, clf)
     y_pred = model.predict(X)
-    metrics = classification_metrics(y_series.values, y_pred, labels=model.label_encoder.classes_)
 
-    Y = model.one_hot.transform(model.label_encoder.transform(y_series.values).reshape(-1, 1))
-    vips = [vip_scores(pls, X, Y[:, c].reshape(-1, 1)) for c, pls in enumerate(model.pls_list)]
-    vip = np.mean(vips, axis=0).tolist()
-    scores = model.pls_list[0].x_scores_.tolist()
+    le = LabelEncoder()
+    y_enc = le.fit_transform(y_series.values)
+    metrics = classification_metrics(y_series.values, y_pred, labels=le.classes_)
 
-    return model, metrics, {"vip": vip, "scores": scores, "classes": model.label_encoder.classes_.tolist()}
+    vip = vip_scores(pls, X, y_enc.reshape(-1, 1)).tolist()
+    scores = pls.x_scores_.tolist()
+
+    return model, metrics, {"vip": vip, "scores": scores, "classes": le.classes_.tolist()}

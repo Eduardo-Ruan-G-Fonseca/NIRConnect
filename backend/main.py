@@ -140,6 +140,8 @@ def optimize_handler(X: np.ndarray, y: np.ndarray, params: dict, progress_callba
                                         "Accuracy": m["Accuracy"],
                                         "MacroF1": m["MacroF1"],
                                     },
+                                    "ConfusionMatrix": m.get("ConfusionMatrix"),
+                                    "labels": m.get("labels"),
                                     "validation": {"method": params.get("validation_method")},
                                     "wl_used": params.get("spectral_range") or [],
                                 }
@@ -154,6 +156,8 @@ def optimize_handler(X: np.ndarray, y: np.ndarray, params: dict, progress_callba
                                     "preprocess": prep,
                                     "n_components": nc,
                                     "val_metrics": {"Accuracy": float(m["Accuracy"])},
+                                    "ConfusionMatrix": m.get("ConfusionMatrix"),
+                                    "labels": m.get("labels"),
                                     "validation": {"method": params.get("validation_method")},
                                     "wl_used": params.get("spectral_range") or [],
                                 }
@@ -198,6 +202,8 @@ def optimize_handler(X: np.ndarray, y: np.ndarray, params: dict, progress_callba
                                     "Accuracy": m["Accuracy"],
                                     "MacroF1": m["MacroF1"],
                                 },
+                                "ConfusionMatrix": m.get("ConfusionMatrix"),
+                                "labels": m.get("labels"),
                                 "validation": {"method": params.get("validation_method")},
                                 "wl_used": params.get("spectral_range") or [],
                             }
@@ -210,6 +216,8 @@ def optimize_handler(X: np.ndarray, y: np.ndarray, params: dict, progress_callba
                                 "preprocess": preps_fb[0],
                                 "n_components": nc_fb,
                                 "val_metrics": {"Accuracy": float(m["Accuracy"])},
+                                "ConfusionMatrix": m.get("ConfusionMatrix"),
+                                "labels": m.get("labels"),
                                 "validation": {"method": params.get("validation_method")},
                                 "wl_used": params.get("spectral_range") or [],
                             }

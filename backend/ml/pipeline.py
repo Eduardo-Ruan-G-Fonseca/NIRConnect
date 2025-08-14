@@ -5,6 +5,7 @@ from sklearn.feature_selection import VarianceThreshold
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, r2_score
+from sklearn.preprocessing import LabelEncoder
 from .transformers import ReplaceInfWithNaN, DropAllNaNColumns
 
 
@@ -33,8 +34,9 @@ def eval_pls_regression(X: np.ndarray, y: np.ndarray, n_components: int, cv) -> 
 
 def eval_plsda_binary(X: np.ndarray, y: np.ndarray, n_components: int, cv) -> dict:
     """Evaluate binary PLS-DA using logistic regression on latent space."""
-    accs = []
+    accs: list[float] = []
     cm_sum = None
+    labels = np.unique(y)
     for tr, te in cv.split(X, y):
         pls = PLSRegression(n_components=n_components)
         pls.fit(X[tr], y[tr])
@@ -44,40 +46,61 @@ def eval_plsda_binary(X: np.ndarray, y: np.ndarray, n_components: int, cv) -> di
         clf.fit(Ttr, y[tr])
         ypred = clf.predict(Tte)
         accs.append(accuracy_score(y[te], ypred))
-        cm = confusion_matrix(y[te], ypred, labels=np.unique(y))
+        cm = confusion_matrix(y[te], ypred, labels=labels)
         cm_sum = cm if cm_sum is None else (cm_sum + cm)
     return {
         "Accuracy": float(np.mean(accs)),
         "ConfusionMatrix": cm_sum.tolist() if cm_sum is not None else None,
+        "labels": labels.tolist(),
     }
 
 
 def eval_plsda_multiclass(X, y, n_components, cv):
-    """PLS-DA multiclasse via OneVsRest."""
-    accs, f1s = [], []
+    """PLS-DA Multiclasse (One-vs-Rest)."""
+    y_arr = np.asarray(y)
+    le = LabelEncoder()
+    y_enc = le.fit_transform(y_arr)
+    labels = le.classes_
+
+    accs: list[float] = []
+    f1s: list[float] = []
     cm_sum = None
 
-    for train_idx, test_idx in cv.split(X, y):
-        Xtr, Xte = X[train_idx], X[test_idx]
-        ytr, yte = y[train_idx], y[test_idx]
+    for tr, te in cv.split(X, y_arr):
+        Xtr, Xte = X[tr], X[te]
+        ytr_enc, yte = y_enc[tr], y_arr[te]
 
         pls = PLSRegression(n_components=n_components)
-        pls.fit(Xtr, ytr)
+        pls.fit(Xtr, ytr_enc)
         Ttr = pls.transform(Xtr)
         Tte = pls.transform(Xte)
 
         clf = LogisticRegression(max_iter=1000, multi_class="ovr")
-        clf.fit(Ttr, ytr)
+        clf.fit(Ttr, y_arr[tr])
         ypred = clf.predict(Tte)
 
         accs.append(accuracy_score(yte, ypred))
         f1s.append(f1_score(yte, ypred, average="macro"))
 
-        cm = confusion_matrix(yte, ypred, labels=np.unique(y))
+        cm = confusion_matrix(yte, ypred, labels=labels)
         cm_sum = cm if cm_sum is None else (cm_sum + cm)
 
     return {
         "Accuracy": float(np.mean(accs)),
         "MacroF1": float(np.mean(f1s)),
         "ConfusionMatrix": cm_sum.tolist() if cm_sum is not None else None,
+        "labels": labels.tolist(),
     }
+
+
+def fit_plsda_multiclass_final(X, y, n_components):
+    """Treino final de PLS-DA multiclasse usando regressão logística OvR."""
+    y_arr = np.asarray(y)
+    le = LabelEncoder()
+    y_enc = le.fit_transform(y_arr)
+    pls = PLSRegression(n_components=n_components)
+    pls.fit(X, y_enc)
+    T = pls.transform(X)
+    clf = LogisticRegression(max_iter=1000, multi_class="ovr")
+    clf.fit(T, y_arr)
+    return pls, clf
