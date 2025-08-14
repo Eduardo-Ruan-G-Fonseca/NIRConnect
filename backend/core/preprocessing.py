@@ -15,6 +15,7 @@ def snv(X: np.ndarray) -> np.ndarray:
 
 
 def msc(X: np.ndarray, reference: np.ndarray | None = None) -> np.ndarray:
+    """Multiplicative Scatter Correction (robusto a slope~0)."""
     if reference is None:
         reference = np.mean(X, axis=0)
     corrected = np.zeros_like(X, dtype=float)
@@ -28,6 +29,7 @@ def msc(X: np.ndarray, reference: np.ndarray | None = None) -> np.ndarray:
 
 
 def savgol_derivative(X: np.ndarray, order: int = 1, window: int = 11, poly: int = 2) -> np.ndarray:
+    """Savitzky-Golay derivative (janela válida)."""
     if window < (poly + 2):
         window = poly + 3
     if window % 2 == 0:

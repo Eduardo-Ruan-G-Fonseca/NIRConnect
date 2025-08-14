@@ -66,7 +66,13 @@ def safe_n_components(n_req: int, n_samples: int, n_features: int) -> int:
 
 
 
-def build_cv(method: str, y: np.ndarray, classification: bool, params: dict[str, Any]) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+def build_cv(
+    method: str,
+    y: np.ndarray,
+    classification: bool,
+    params: dict[str, Any],
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Return generator of train/test indices for the given validation method."""
     params = params or {}
     indices = np.arange(len(y))
 
@@ -74,7 +80,7 @@ def build_cv(method: str, y: np.ndarray, classification: bool, params: dict[str,
         if len(y) <= 2:
             raise ValueError("Leave-One-Out requer > 2 amostras.")
         if len(y) > 2000:
-            warnings.warn("Leave-One-Out pode ser lento para datasets grandes", stacklevel=2)
+            warnings.warn("Leave-One-Out pode ser lento em bases grandes", stacklevel=2)
         return LeaveOneOut().split(indices)
 
     if method == "KFold":
@@ -88,7 +94,7 @@ def build_cv(method: str, y: np.ndarray, classification: bool, params: dict[str,
 
     if method == "StratifiedKFold":
         if not classification:
-            raise ValueError("StratifiedKFold apenas para classificação")
+            raise ValueError("StratifiedKFold only valid for classification")
         classes, counts = np.unique(y, return_counts=True)
         min_per_class = int(counts.min())
         desired = int(params.get("n_splits", 5))
@@ -127,7 +133,7 @@ def build_cv(method: str, y: np.ndarray, classification: bool, params: dict[str,
 
         return _gen()
 
-    raise ValueError(f"Método de validação desconhecido: {method}")
+    raise ValueError(f"Unknown validation method: {method}")
 
 
 def evaluate_plsda_multiclass(model_factory: Callable[[], Any], X: np.ndarray, y: np.ndarray, method: str = "LOO", params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

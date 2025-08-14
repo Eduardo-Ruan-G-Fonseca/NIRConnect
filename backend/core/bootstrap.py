@@ -42,6 +42,8 @@ def bootstrap_metrics(X, y, n_components=5, classification=False, n_bootstrap=50
 def train_plsr(X: np.ndarray, y: np.ndarray, n_components: int = 5):
     """Train a PLS regression model and compute metrics."""
     y = y.astype(float)
+    n_max = max(1, min(X.shape[1], X.shape[0] - 1))
+    n_components = min(n_components, n_max)
     pls = PLSRegression(n_components=n_components)
     pls.fit(X, y)
     y_pred = pls.predict(X).ravel()
@@ -49,7 +51,7 @@ def train_plsr(X: np.ndarray, y: np.ndarray, n_components: int = 5):
     rmsep = np.sqrt(mean_squared_error(y, y_pred))
 
     # cross-validation RMSECV
-    n_splits = min(5, len(y)) if len(y) > 1 else 2
+    n_splits = max(2, min(5, len(y)))
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
     preds = []
     obs = []
