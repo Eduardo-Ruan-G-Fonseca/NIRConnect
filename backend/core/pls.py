@@ -11,21 +11,35 @@ from .validation import build_cv
 from .logger import log_info
 import warnings
 
+
 def _sanitize_X_and_cap_components(X: np.ndarray, n_components: int) -> tuple[np.ndarray, int]:
-    X = np.asarray(X, dtype=float)
-    # ±inf -> NaN
+    X = np.asarray(X)
+    n_max = max(1, min(X.shape[1], X.shape[0] - 1))
+    if X.dtype == float and np.isfinite(X).all():
+        if n_components > n_max:
+            log_info(
+                f"n_components ajustado de {n_components} para {n_max} devido ao limite do rank."
+            )
+            return X, n_max
+        return X, n_components
+
+    X = X.astype(float, copy=False)
     X[~np.isfinite(X)] = np.nan
-    # remove colunas 100% NaN
     col_ok = ~np.isnan(X).all(axis=0)
     if not col_ok.any():
-        raise ValueError("Matriz X inválida após pré-processamento (todas as variáveis são NaN).")
+        raise ValueError(
+            "Matriz X inválida após pré-processamento (todas as variáveis são NaN)."
+        )
     if not col_ok.all():
         X = X[:, col_ok]
-    # imputa medianas (robusto e simples)
     X = SimpleImputer(strategy="median").fit_transform(X)
-    # cap de componentes pelo rank possível
     n_max = max(1, min(X.shape[1], X.shape[0] - 1))
-    return X, min(n_components, n_max)
+    if n_components > n_max:
+        log_info(
+            f"n_components ajustado de {n_components} para {n_max} devido ao limite do rank."
+        )
+        n_components = n_max
+    return X, n_components
 
 
 @dataclass
@@ -59,8 +73,9 @@ class PLSDAOvR:
 def fit_plsda_multiclass(X: np.ndarray, y: np.ndarray, n_components: int = 10, random_state: int = 42) -> PLSDAOvR:
     """Fit a multi-class PLS-DA model via One-vs-Rest strategy."""
 
+    y = np.array(list(map(str, y)))
     le = LabelEncoder()
-    y_int = le.fit_transform(np.asarray(y).ravel())
+    y_int = le.fit_transform(y.ravel())
     classes = np.unique(y_int)
 
     ohe = OneHotEncoder(sparse_output=False, drop=None)
@@ -120,7 +135,7 @@ def train_pls(
         classification = is_categorical(y)
 
     if classification:
-        y = y.astype(str)
+        y = np.array(list(map(str, y)))
     else:
         y = y.astype(float)
 
@@ -128,14 +143,19 @@ def train_pls(
     X, n_components = _sanitize_X_and_cap_components(X, n_components)
 
     if classification:
-        y_series = np.array(list(map(str, y)))
-        pls_model = fit_plsda_multiclass(X, y_series, n_components=n_components)
-        wrapper = PLSModelWrapper(pls_model, True, pls_model.label_encoder.classes_, None, n_components, {})
+        pls_model = fit_plsda_multiclass(X, y, n_components=n_components)
+        wrapper = PLSModelWrapper(
+            pls_model, True, pls_model.label_encoder.classes_, None, n_components, {}
+        )
         y_pred = pls_model.predict(X)
-        metrics = classification_metrics(y_series, y_pred, labels=pls_model.label_encoder.classes_)
+        metrics = classification_metrics(y, y_pred, labels=pls_model.label_encoder.classes_)
         # Compute VIP as mean of class models
-        Y = pls_model.one_hot.transform(pls_model.label_encoder.transform(y_series).reshape(-1, 1))
-        vips = [vip_scores(pls, X, Y[:, c].reshape(-1, 1)) for c, pls in enumerate(pls_model.pls_list)]
+        Y = pls_model.one_hot.transform(pls_model.label_encoder.transform(y).reshape(-1, 1))
+        vips = [
+            vip_scores(pls, X, Y[:, c].reshape(-1, 1))
+            for c, pls in enumerate(pls_model.pls_list)
+        ]
+        vip_per_class = [v.tolist() for v in vips]
         vip = np.mean(vips, axis=0).tolist()
         scores = pls_model.pls_list[0].x_scores_.tolist()
     else:
@@ -147,6 +167,8 @@ def train_pls(
         vip = vip_scores(pls, X, y if y.ndim > 1 else y.reshape(-1, 1)).tolist()
         scores = pls.x_scores_.tolist()
     extra: Dict[str, Any] = {"vip": vip, "scores": scores}
+    if classification:
+        extra["vip_per_class"] = vip_per_class
 
     if validation_method == "none":
         return wrapper, metrics, extra
@@ -174,7 +196,7 @@ def train_pls(
                 preds[te] = m.predict(X[te]).ravel()
         if classification:
             cv_metrics = classification_metrics(
-                np.array(list(map(str, y))), preds.astype(str), labels=sorted(np.unique(np.array(list(map(str, y)))))
+                y, preds.astype(str), labels=sorted(np.unique(y))
             )
         else:
             cv_metrics = regression_metrics(y, preds.astype(float))
