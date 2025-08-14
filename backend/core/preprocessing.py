@@ -1,5 +1,6 @@
 import numpy as np
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.impute import SimpleImputer
 from scipy.signal import savgol_filter
 
 
@@ -108,3 +109,48 @@ def apply_methods(X: np.ndarray, methods: list) -> np.ndarray:
         elif m == "vn":
             X = vn(X)
     return X
+
+
+def sanitize_X(X: np.ndarray, feature_names: list[str] | None = None):
+    """Sanitize feature matrix ``X``.
+
+    - Cast to float and replace ``±Inf`` with ``NaN``.
+    - Drop columns that are entirely ``NaN``.
+    - Drop rows that are entirely ``NaN``.
+    - Impute remaining ``NaN`` values with the column median.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Input matrix of shape (samples, features).
+    feature_names : list[str] | None, optional
+        Optional list of feature names to filter alongside ``X``.
+
+    Returns
+    -------
+    tuple
+        Sanitized ``X`` and corresponding ``feature_names`` (if provided).
+    """
+
+    X = np.asarray(X, dtype=float)
+    X[~np.isfinite(X)] = np.nan
+
+    # Column filter
+    col_ok = ~np.isnan(X).all(axis=0)
+    if not col_ok.any():
+        raise ValueError(
+            "Todas as variáveis espectrais ficaram inválidas após o pré-processamento."
+        )
+    X = X[:, col_ok]
+    if feature_names is not None:
+        feature_names = [f for i, f in enumerate(feature_names) if col_ok[i]]
+
+    # Row filter
+    row_ok = ~np.isnan(X).all(axis=1)
+    X = X[row_ok, :]
+
+    # Impute remaining NaNs with median
+    imputer = SimpleImputer(strategy="median")
+    X = imputer.fit_transform(X)
+
+    return X, feature_names

@@ -23,7 +23,7 @@ from core.logger import log_info
 from collections import Counter
 from core.validation import build_cv, make_cv, safe_n_components
 from core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
-from core.preprocessing import apply_methods
+from core.preprocessing import apply_methods, sanitize_X
 from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from typing import Optional, Tuple, List, Literal, Any, Dict
 from core.saneamento import saneamento_global
@@ -62,8 +62,11 @@ def _metrics_ok(m):
 
 def apply_preprocess(X: np.ndarray, method: str) -> np.ndarray:
     if not method or method == "none":
-        return X.copy()
-    return apply_methods(X.copy(), [method])
+        Xp = X.copy()
+    else:
+        Xp = apply_methods(X.copy(), [method])
+    Xp, _ = sanitize_X(Xp)
+    return Xp
 
 
 def optimize_handler(X: np.ndarray, y: np.ndarray, params: dict, progress_callback=None):
@@ -744,19 +747,26 @@ async def process_file(
         if methods:
             X = apply_methods(X, methods)
 
+        X_tmp = np.asarray(X, dtype=float)
+        X_tmp[~np.isfinite(X_tmp)] = np.nan
+        row_ok = ~np.isnan(X_tmp).all(axis=1)
+        X, features = sanitize_X(X, features)
+
         # 4) treina
         if classification:
-            y = df[target].values  # classes como string/obj funcionam
+            y_all = df[target].values  # classes como string/obj funcionam
+            y = y_all[row_ok]
             _, metrics, extra = train_plsda(X, y, n_components=n_components)
         else:
             # garante numérico na regressão
             try:
-                y = df[target].astype(float).values
+                y_all = df[target].astype(float).values
             except Exception:
                 raise HTTPException(
                     status_code=400,
-                    detail="Erro: coluna alvo não numérica. Selecione uma coluna numérica para regressão."
+                    detail="Erro: coluna alvo não numérica. Selecione uma coluna numérica para regressão.",
                 )
+            y = y_all[row_ok]
             _, metrics, extra = train_plsr(X, y, n_components=n_components)
 
         # 5) VIP + top Vips serializáveis
@@ -1461,4 +1471,3 @@ async def history_data() -> list[dict]:
         # Se arquivo estiver corrompido, retorna vazio em vez de 500
         return []
     return []
-
