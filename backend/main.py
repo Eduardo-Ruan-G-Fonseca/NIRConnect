@@ -28,6 +28,7 @@ from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from typing import Optional, Tuple, List, Literal, Any, Dict
 from core.saneamento import saneamento_global
 from core.io_utils import to_float_matrix, encode_labels_if_needed
+from core.optimization import optimize_model_grid
 try:
     from ml.pipeline import (
         build_pls_pipeline,
@@ -1273,12 +1274,12 @@ async def optimize_endpoint(
         max_comp = opts.n_components or min(X.shape[1], 10)
         max_comp = max(1, min(max_comp, X.shape[1]))
 
-        # --- validação: só KFold/LOO na otimização
-        cv_method = (opts.validation_method or "KFold").upper()
-        if cv_method == "HOLDOUT":
+        # --- validação
+        val_method = parsed.get("validation_method") or ("StratifiedKFold" if classification else "KFold")
+        if val_method == "Holdout":
             raise HTTPException(status_code=422, detail="Holdout não é suportado na otimização. Use KFold ou LOO.")
         val_params = {}
-        if cv_method == "KFOLD":
+        if val_method in {"KFold", "StratifiedKFold"}:
             val_params = {
                 "n_splits": opts.folds or 5,
                 "shuffle": True,
@@ -1289,28 +1290,25 @@ async def optimize_endpoint(
         OPTIMIZE_PROGRESS["current"] = 0
         OPTIMIZE_PROGRESS["total"] = len(methods) * max_comp
 
-        log_info(f"Otimizacao iniciada: cv={cv_method}, ncomp={max_comp}, preprocess={methods}")
+        log_info(f"Otimizacao iniciada: cv={val_method}, ncomp={max_comp}, preprocess={methods}")
 
         try:
-            res = optimize_handler(
+            results = optimize_model_grid(
                 X,
                 y,
-                {
-                    "validation_method": "LOO" if cv_method == "LOO" else "KFold",
-                    "validation_params": val_params,
-                    "n_components": max_comp,
-                    "preprocessing_methods": methods,
-                    "analysis_mode": opts.analysis_mode,
-                    "spectral_range": wl.tolist(),
-                },
-                progress_callback=lambda c, t: OPTIMIZE_PROGRESS.update({"current": int(c), "total": int(t)}),
+                wl,
+                classification=classification,
+                preprocess_opts=methods,
+                n_components_range=range(1, max_comp + 1),
+                validation_method=val_method,
+                validation_params=val_params,
+                progress_callback=lambda c, t: OPTIMIZE_PROGRESS.update({"current": c, "total": t}),
             )
         finally:
             # garante finalização de progresso mesmo em erro
             OPTIMIZE_PROGRESS["current"] = OPTIMIZE_PROGRESS.get("total", 0)
 
-        res["results"] = res.get("results", [])[:15]
-        return jsonable_encoder(res)
+        return jsonable_encoder({"results": results[:15]})
 
     except HTTPException:
         raise
