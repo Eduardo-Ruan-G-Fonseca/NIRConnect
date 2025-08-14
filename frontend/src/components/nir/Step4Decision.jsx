@@ -324,7 +324,11 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
   }
 
   const faixaStr = result?.params?.ranges || result?.data?.range_used || "-";
-  const preprocessStr = joinList(result?.params?.preprocess_steps?.map(p=>p.method));
+// nomes amigáveis (ex.: sg1 -> "1ª Derivada")
+  const preprocessStr = joinList(
+    result?.params?.preprocess_steps?.map(p => PREP_LABEL[p.method] || p.method)
+  );
+
 
   return (
     <div className="space-y-6">
@@ -339,6 +343,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
           {/* Parâmetros */}
           <div className="nir-card md:col-span-5 xl:col-span-4 2xl:col-span-4">
             <h4 className="nir-card-title">Parâmetros</h4>
+
             <div className="nir-kv nir-kv--wide nir-params">
               <div>Alvo</div>                 <b>{step2?.target || "-"}</b>
               <div>Modo</div>                 <b>{step2?.classification ? "PLS-DA" : "PLS-R"}</b>
@@ -348,6 +353,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
               <div>Pré‑processos</div>        <b>{preprocessStr || "Nenhum"}</b>
             </div>
           </div>
+
 
 
           {/* Métricas */}
