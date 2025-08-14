@@ -1,39 +1,65 @@
-import numpy as np
 import warnings
+import numpy as np
 from sklearn.model_selection import (
-    KFold,
-    StratifiedKFold,
-    LeaveOneOut,
-    ShuffleSplit,
+    LeaveOneOut, KFold, ShuffleSplit,
+    StratifiedKFold, StratifiedShuffleSplit,
     train_test_split,
 )
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 from typing import Callable, Dict, Any, List, Optional
 
-
-def make_cv(method: str, params: dict | None, n_samples: int):
-    """Create cross-validation scheme with safeguards for large datasets."""
+def make_cv(
+    method: str,
+    params: dict | None,
+    n_samples: int,
+    task: str = "regression",
+    y: np.ndarray | None = None,
+):
+    """
+    Retorna o esquema de validação adequado:
+    - Classificação: usa versões estratificadas (KFold/Holdout)
+    - LOO em dataset grande: troca por KFold(5)
+    - Ajusta n_splits para não ultrapassar o mínimo de amostras por classe
+    """
     params = params or {}
+
     if method == "LeaveOneOut":
         if n_samples >= 80:
             warnings.warn("LOO trocado automaticamente por KFold(5) para acelerar.")
-            return KFold(n_splits=5, shuffle=True, random_state=42)
+            return (
+                StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+                if task == "classification"
+                else KFold(n_splits=5, shuffle=True, random_state=42)
+            )
         return LeaveOneOut()
 
     if method == "KFold":
         n = int(params.get("n_splits", 5))
+        if task == "classification" and y is not None:
+            _, counts = np.unique(y, return_counts=True)
+            max_splits = int(counts.min())
+            n = max(2, min(n, max_splits))
+            return StratifiedKFold(n_splits=n, shuffle=True, random_state=42)
         return KFold(n_splits=max(2, n), shuffle=True, random_state=42)
 
     if method == "Holdout":
         test_size = float(params.get("test_size", 0.3))
+        if task == "classification" and y is not None:
+            return StratifiedShuffleSplit(
+                n_splits=1, test_size=test_size, random_state=42
+            )
         return ShuffleSplit(n_splits=1, test_size=test_size, random_state=42)
 
     # fallback
-    return KFold(n_splits=5, shuffle=True, random_state=42)
+    return (
+        StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        if task == "classification"
+        else KFold(n_splits=5, shuffle=True, random_state=42)
+    )
 
 
 def safe_n_components(n_req: int, n_samples: int, n_features: int) -> int:
-    """Ensure component count within valid bounds."""
+    """Garante 1 ≤ n_components ≤ min(n_samples-1, n_features-1)."""
     hard_max = max(1, min(n_samples - 1, n_features - 1))
     return max(1, min(int(n_req or 1), hard_max))
 
