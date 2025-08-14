@@ -125,8 +125,8 @@ def optimize_model_grid(
             continue
         wl_used = wl
         if wl is not None:
-            var = Xp.var(axis=0)
-            mask = var > 1e-8
+            var = np.nanvar(Xp, axis=0)
+            mask = np.isfinite(var) & (var > 1e-8)
             if mask.any():
                 Xp = Xp[:, mask]
                 wl_used = wl[mask]
