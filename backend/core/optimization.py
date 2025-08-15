@@ -101,7 +101,15 @@ def optimize_model_grid(
     validation_method: str,
     validation_params: Dict[str, Any] | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
+    """Grid-search over preprocessing and number of components.
+
+    Returns a dictionary with the list of ``results`` and the ``best`` entry.
+    Each result contains top-level metrics (Accuracy/F1 for classification or
+    RMSECV/R2 for regression) plus an ``id`` and ``rank`` field for the
+    frontend.
+    """
+
     validation_params = validation_params or {}
     splits = list(build_cv(validation_method, y, classification, validation_params))
     cv_splits = max(1, len(splits))
@@ -112,8 +120,9 @@ def optimize_model_grid(
 
     done = 0
     total_steps = 0
-    results: List[Dict[str, Any]] = []
+    grid_results: List[Dict[str, Any]] = []
     cache_Xp: dict[str, np.ndarray] = {}
+    classes_global = np.unique(y) if classification else None
 
     for prep in (methods or ["none"]):
         if prep not in cache_Xp:
@@ -130,12 +139,10 @@ def optimize_model_grid(
         log_info(f"[grid] prep={prep} Xp.shape={Xp.shape} max_nc={max_nc} splits={len(splits)}")
 
         for nc in comp_range:
-            last_metrics = {}
+            all_true: list[Any] = []
+            all_pred: list[Any] = []
             try:
-                log_info(f"[grid] nc={nc}")
-
-                def eval_one(tr, te):
-                    nonlocal last_metrics
+                for tr, te in splits:
                     r = train_pls(
                         Xp[tr],
                         y[tr],
@@ -145,33 +152,66 @@ def optimize_model_grid(
                         classification=bool(classification),
                         validation_method="none",
                         validation_params={},
-                        all_labels=np.unique(y),
+                        all_labels=classes_global,
                     )
-                    last_metrics = r.get("metrics", {})
-                    return _extract_score(last_metrics, bool(classification))
+                    model = r.get("model")
+                    if classification:
+                        pred = model.predict(Xp[te])
+                    else:
+                        pred = model.predict(Xp[te]).ravel()
+                    all_true.extend(y[te].tolist())
+                    all_pred.extend(pred.tolist())
 
-                n_jobs = int(os.getenv("NIR_N_JOBS", "1"))
-                if n_jobs > 1:
-                    from joblib import Parallel, delayed
+                if classification:
+                    from .metrics import classification_metrics
 
-                    scores = Parallel(n_jobs=n_jobs)(delayed(eval_one)(tr, te) for (tr, te) in splits)
+                    m = classification_metrics(np.array(all_true), np.array(all_pred), labels=classes_global)
+                    result = {
+                        "id": f"{prep}__{nc}",
+                        "prep": prep,
+                        "n_components": int(nc),
+                        "Accuracy": round(m.get("Accuracy", 0.0), 6),
+                        "Kappa": round(m.get("Kappa", 0.0), 6),
+                        "F1": round(m.get("F1", 0.0), 6),
+                        "validation": {"method": validation_method},
+                        "is_valid": True,
+                    }
                 else:
-                    scores = [eval_one(tr, te) for (tr, te) in splits]
+                    from .metrics import regression_metrics
 
-                mean_score = float(np.mean(scores))
-                results.append({"preprocess": prep, "n_components": int(nc), "score": mean_score})
+                    m = regression_metrics(np.array(all_true), np.array(all_pred))
+                    result = {
+                        "id": f"{prep}__{nc}",
+                        "prep": prep,
+                        "n_components": int(nc),
+                        "RMSECV": round(m.get("RMSE", 0.0), 6),
+                        "R2": round(m.get("R2", 0.0), 6),
+                        "validation": {"method": validation_method},
+                        "is_valid": True,
+                    }
+
+                grid_results.append(result)
 
             except Exception as ex:
-                m = last_metrics if isinstance(last_metrics, dict) else {}
-                log_info(
-                    f"[grid] skip prep={prep} n_comp={nc}: {type(ex).__name__}: {ex}; metrics_keys={list(m.keys()) if isinstance(m, dict) else 'N/A'}"
-                )
+                log_info(f"[grid] skip prep={prep} n_comp={nc}: {type(ex).__name__}: {ex}")
 
             finally:
                 done += cv_splits
                 if progress_callback:
                     progress_callback(int(done), int(max(1, total_steps)))
 
-    results.sort(key=lambda r: r["score"], reverse=True)
-    return results
+    if classification:
+        grid_sorted = sorted(
+            grid_results,
+            key=lambda r: (r.get("F1") or 0.0, r.get("Accuracy") or 0.0),
+            reverse=True,
+        )
+    else:
+        grid_sorted = sorted(grid_results, key=lambda r: r.get("RMSECV", float("inf")))
+
+    for rank, r in enumerate(grid_sorted, start=1):
+        r["rank"] = rank
+
+    best = grid_sorted[0] if grid_sorted else None
+    return {"results": grid_sorted, "best": best}
 
