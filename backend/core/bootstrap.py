@@ -19,13 +19,15 @@ def bootstrap_metrics(X, y, n_components=5, classification=False, n_bootstrap=50
     for _ in range(n_bootstrap):
         idx = rng.integers(0, len(y), len(y))
         X_bs, y_bs = X[idx], y[idx]
-        model, metrics, _ = train_pls(
+        res = train_pls(
+            X_bs,
+            y_bs,
             X_bs,
             y_bs,
             n_components=n_components,
             classification=classification,
         )
-        metrics_list.append(metrics)
+        metrics_list.append(res["metrics"])
     # Calcular média e intervalo 95%
     keys = metrics_list[0].keys()
     out = {}

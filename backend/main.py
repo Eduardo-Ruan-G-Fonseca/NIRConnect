@@ -750,7 +750,8 @@ async def process_file(
         X_tmp = np.asarray(X, dtype=float)
         X_tmp[~np.isfinite(X_tmp)] = np.nan
         row_ok = ~np.isnan(X_tmp).all(axis=1)
-        X, features = sanitize_X(X, features)
+        X, col_ok = sanitize_X(X)
+        features = [f for i, f in enumerate(features) if col_ok[i]]
 
         # 4) treina
         if classification:
@@ -1314,31 +1315,17 @@ async def optimize_endpoint(
         X = X_df.values
         wl = np.array(wls_sorted, dtype=float)
 
-        ranges_raw = parsed.get("spectral_range")
-        ranges: list | None
-        if isinstance(ranges_raw, str):
-            tmp: list[tuple[float, float]] = []
-            for part in ranges_raw.split(','):
-                part = part.strip()
-                if '-' not in part:
-                    continue
-                start, end = part.split('-', 1)
-                try:
-                    tmp.append((float(start), float(end)))
-                except Exception:
-                    continue
-            ranges = tmp
-        elif ranges_raw is not None and not isinstance(ranges_raw, (list, tuple, set)):
-            ranges = [ranges_raw]
-        else:
-            ranges = ranges_raw  # type: ignore[assignment]
-        if ranges is not None and isinstance(ranges, (list, tuple)):
-            if ranges and isinstance(ranges[0], (int, float, type(None))):
-                ranges = [tuple(ranges)]
-
-        mask = build_spectral_mask(wl, ranges)
-        X = X[:, mask]
-        wl = wl[mask]
+        sr = parsed.get("spectral_range")
+        if sr:
+            if isinstance(sr, dict):
+                ranges = [(sr.get("start"), sr.get("end"))]
+            elif isinstance(sr, (list, tuple)) and len(sr) >= 2:
+                ranges = [(sr[0], sr[1])]
+            else:
+                ranges = None
+            mask = build_spectral_mask(wl, ranges)
+            X = X[:, mask]
+            wl = wl[mask]
 
         # --- y e modo
         classification = opts.analysis_mode.upper() == "PLS-DA"
@@ -1412,11 +1399,11 @@ async def optimize_endpoint(
 
         try:
             results = optimize_model_grid(
-                X,
-                y,
-                wl,
+                X=X,
+                y=y,
+                wl=wl,
                 classification=classification,
-                preprocess_opts=methods,
+                methods=methods,
                 n_components_range=n_comp_range,
                 validation_method=grid_method,
                 validation_params=grid_params,
@@ -1439,53 +1426,31 @@ async def optimize_endpoint(
             Xp, _ = sanitize_X(Xp)
 
             from core.validation import build_cv
-
             splits = list(build_cv("LOO", y_values, bool(classification), {}))
 
-            def _safe_train_pls_final(
-                Xtr: np.ndarray,
-                ytr: np.ndarray,
-                Xte: np.ndarray,
-                yte: np.ndarray,
-                n_components: int,
-                classification: bool,
-            ):
-                from core.pls import train_pls
-
-                # ``train_pls`` only needs training data; ensure no inner CV
-                return train_pls(
-                    Xtr,
-                    ytr,
-                    n_components=n_components,
-                    classification=classification,
-                    validation_method="none",
-                    validation_params={},
-                )
-
+            from core.pls import train_pls
             log_info(
                 f"[optimize][final LOO] best_prep={best_prep}, best_nc={best_nc}, splits={len(splits)}"
             )
 
             scores: list[float] = []
             for tr, te in splits:
-                model, metrics, _ = _safe_train_pls_final(
+                r = train_pls(
                     Xp[tr],
                     y_values[tr],
                     Xp[te],
                     y_values[te],
                     n_components=best_nc,
                     classification=bool(classification),
+                    validation_method="none",
+                    validation_params={},
                 )
-                metric = (
-                    metrics.get("F1")
-                    if classification
-                    else -metrics.get("RMSE", np.nan)
+                scores.append(
+                    r["metrics"].get("F1") if classification else -r["metrics"].get("RMSE", np.nan)
                 )
-                scores.append(metric)
-            final_score = float(np.mean(scores)) if scores else float("nan")
             results[0]["final_validation"] = {
                 "method": "LOO",
-                "score": final_score,
+                "score": float(np.mean(scores)) if scores else float("nan"),
             }
 
         return jsonable_encoder({"results": results[:15]})

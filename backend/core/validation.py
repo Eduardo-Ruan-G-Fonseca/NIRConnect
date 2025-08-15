@@ -66,74 +66,30 @@ def safe_n_components(n_req: int, n_samples: int, n_features: int) -> int:
 
 
 
-def build_cv(
-    method: str,
-    y: np.ndarray,
-    classification: bool,
-    params: dict[str, Any],
-) -> Iterator[tuple[np.ndarray, np.ndarray]]:
-    """Return generator of train/test indices for the given validation method."""
+def build_cv(method: str, y: np.ndarray, classification: bool, params: dict | None) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    method = (method or "").strip()
     params = params or {}
-    indices = np.arange(len(y))
 
-    if method == "LOO":
-        if len(y) <= 2:
-            raise ValueError("Leave-One-Out requer > 2 amostras.")
-        if len(y) > 2000:
-            warnings.warn("Leave-One-Out pode ser lento em bases grandes", stacklevel=2)
-        return LeaveOneOut().split(indices)
+    if method.upper() == "LOO":
+        loo = LeaveOneOut()
+        for tr, te in loo.split(np.zeros((len(y), 1)), y if classification else None):
+            yield tr, te
+        return
 
-    if method == "KFold":
-        desired = int(params.get("n_splits", 5))
-        n_splits = max(2, min(desired, len(y)))
-        return KFold(
-            n_splits=n_splits,
-            shuffle=params.get("shuffle", True),
-            random_state=params.get("random_state", 42),
-        ).split(indices)
-
-    if method == "StratifiedKFold":
-        if not classification:
-            raise ValueError("StratifiedKFold only valid for classification")
-        classes, counts = np.unique(y, return_counts=True)
-        min_per_class = int(counts.min())
-        desired = int(params.get("n_splits", 5))
-        n_splits = max(2, min(desired, min_per_class))
-        return StratifiedKFold(
-            n_splits=n_splits,
-            shuffle=params.get("shuffle", True),
-            random_state=params.get("random_state", 42),
-        ).split(indices, y)
-
-    if method == "Holdout":
-        test_size = params.get("test_size", 0.2)
-        shuffle = params.get("shuffle", True)
-        random_state = params.get("random_state", 42)
-        if classification:
-            classes, counts = np.unique(y, return_counts=True)
-            if np.any(counts < 2):
-                raise ValueError("Holdout requer ao menos 2 amostras por classe")
-            train_idx, test_idx = train_test_split(
-                indices,
-                test_size=test_size,
-                shuffle=shuffle,
-                random_state=random_state,
-                stratify=y,
-            )
-        else:
-            train_idx, test_idx = train_test_split(
-                indices,
-                test_size=test_size,
-                shuffle=shuffle,
-                random_state=random_state,
-            )
-
-        def _gen():
-            yield train_idx, test_idx
-
-        return _gen()
-
-    raise ValueError(f"Unknown validation method: {method}")
+    if classification:
+        folds = int(params.get("n_splits", 5))
+        _, counts = np.unique(y, return_counts=True)
+        n_splits = int(min(max(2, folds), max(2, counts.min())))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=bool(params.get("shuffle", True)), random_state=params.get("random_state", 42))
+        for tr, te in cv.split(np.zeros((len(y), 1)), y):
+            yield tr, te
+    else:
+        folds = int(params.get("n_splits", 5))
+        n = int(len(y))
+        n_splits = int(min(max(2, folds), max(2, n)))
+        cv = KFold(n_splits=n_splits, shuffle=bool(params.get("shuffle", True)), random_state=params.get("random_state", 42))
+        for tr, te in cv.split(np.zeros((len(y), 1))):
+            yield tr, te
 
 
 def evaluate_plsda_multiclass(model_factory: Callable[[], Any], X: np.ndarray, y: np.ndarray, method: str = "LOO", params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
