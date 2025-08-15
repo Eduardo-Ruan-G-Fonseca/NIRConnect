@@ -169,16 +169,17 @@ def evaluate_plsda_multiclass(model_factory: Callable[[], Any], X: np.ndarray, y
     else:
         raise ValueError("validation_method inválido")
 
+    labels = np.unique(y)
     acc = accuracy_score(trues, preds)
-    prec = precision_score(trues, preds, average="macro", zero_division=0)
-    rec = recall_score(trues, preds, average="macro", zero_division=0)
-    f1 = f1_score(trues, preds, average="macro", zero_division=0)
-    cm = confusion_matrix(trues, preds).tolist()
+    prec = precision_score(trues, preds, labels=labels, average="macro", zero_division=0)
+    rec = recall_score(trues, preds, labels=labels, average="macro", zero_division=0)
+    f1 = f1_score(trues, preds, labels=labels, average="macro", zero_division=0)
+    cm = confusion_matrix(trues, preds, labels=labels).tolist()
 
     return {
         "Accuracy": float(acc),
         "MacroPrecision": float(prec),
         "MacroRecall": float(rec),
         "MacroF1": float(f1),
-        "ConfusionMatrix": cm,
+        "confusion_matrix": cm,
     }

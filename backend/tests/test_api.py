@@ -276,7 +276,7 @@ def test_analisar_multiclass(tmp_path):
     assert resp.status_code == 200
     data = resp.json()
     assert data["analysis_type"] == "PLS-DA"
-    assert len(data["metrics"]["ConfusionMatrix"]) == 3
+    assert len(data["metrics"]["confusion_matrix"]) == 3
 
 
 def test_analisar_with_custom_cv(tmp_path):

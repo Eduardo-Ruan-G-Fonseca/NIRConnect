@@ -51,7 +51,7 @@ def eval_plsda_binary(X: np.ndarray, y: np.ndarray, n_components: int, cv) -> di
         cm_sum = cm if cm_sum is None else (cm_sum + cm)
     return {
         "Accuracy": float(np.mean(accs)),
-        "ConfusionMatrix": cm_sum.tolist() if cm_sum is not None else None,
+        "confusion_matrix": cm_sum.tolist() if cm_sum is not None else None,
         "labels": labels.tolist(),
     }
 
@@ -81,7 +81,9 @@ def eval_plsda_multiclass(X, y, n_components, cv):
         ypred = clf.predict(Tte)
 
         accs.append(accuracy_score(yte, ypred))
-        f1s.append(f1_score(yte, ypred, average="macro"))
+        f1s.append(
+            f1_score(yte, ypred, labels=labels, average="macro", zero_division=0)
+        )
 
         cm = confusion_matrix(yte, ypred, labels=labels)
         cm_sum = cm if cm_sum is None else (cm_sum + cm)
@@ -89,7 +91,7 @@ def eval_plsda_multiclass(X, y, n_components, cv):
     return {
         "Accuracy": float(np.mean(accs)),
         "MacroF1": float(np.mean(f1s)),
-        "ConfusionMatrix": cm_sum.tolist() if cm_sum is not None else None,
+        "confusion_matrix": cm_sum.tolist() if cm_sum is not None else None,
         "labels": labels.tolist(),
     }
 

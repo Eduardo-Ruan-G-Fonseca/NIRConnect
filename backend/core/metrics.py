@@ -51,21 +51,29 @@ def classification_metrics(y_true, y_pred, labels=None):
 
     kwargs = dict(labels=classes, zero_division=0)
     acc = float(accuracy_score(y_true, y_pred))
-    f1m = float(f1_score(y_true, y_pred, average="macro", **kwargs))
-    kapp = float(cohen_kappa_score(y_true, y_pred, labels=classes))
-    precm = float(precision_score(y_true, y_pred, average="macro", **kwargs))
-    recm = float(recall_score(y_true, y_pred, average="macro", **kwargs))
+    f1_macro = float(f1_score(y_true, y_pred, average="macro", **kwargs))
+    f1_micro = float(f1_score(y_true, y_pred, average="micro", **kwargs))
+
+    if np.unique(y_true).size < 2 or np.unique(y_pred).size < 2:
+        kappa = 0.0
+    else:
+        kappa = float(cohen_kappa_score(y_true, y_pred, labels=classes))
+
+    prec_macro = float(precision_score(y_true, y_pred, average="macro", **kwargs))
+    rec_macro = float(recall_score(y_true, y_pred, average="macro", **kwargs))
     cm_array = confusion_matrix(y_true, y_pred, labels=classes)
 
     return {
         "Accuracy": acc,
-        "Kappa": kapp,
-        "F1": f1m,
-        "F1_macro": f1m,
-        "MacroPrecision": precm,
-        "MacroRecall": recm,
-        "MacroF1": f1m,
-        "ConfusionMatrix": cm_array.tolist(),
+        "Kappa": kappa,
+        "F1": f1_macro,
+        "F1_macro": f1_macro,
+        "F1_micro": f1_micro,
+        "MacroPrecision": prec_macro,
+        "MacroRecall": rec_macro,
+        "MacroF1": f1_macro,
+        "confusion_matrix": cm_array.tolist(),
+        "labels": classes.tolist(),
     }
 
 def vip_scores(pls_model, X, Y):
