@@ -21,7 +21,7 @@ def test_pdf_classification(tmp_path):
         "F1_macro": 0.9,
         "F1_micro": 0.9,
         "Kappa": 0.9,
-        "ConfusionMatrix": [[3, 0, 0], [0, 3, 0], [0, 0, 3]],
+        "confusion_matrix": [[3, 0, 0], [0, 3, 0], [0, 0, 3]],
     }
     params = {
         "analysis_type": "PLS-DA",

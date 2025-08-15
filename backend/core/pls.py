@@ -34,13 +34,15 @@ def _compute_classification_metrics(
     # force confusion matrix shape even if some classes are missing
     confusion_matrix(y_true, y_pred, labels=all_labels)
 
-    f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
+    f1 = f1_score(
+        y_true, y_pred, labels=all_labels, average="macro", zero_division=0
+    )
     acc = accuracy_score(y_true, y_pred)
     bac = balanced_accuracy_score(y_true, y_pred)
-    try:
-        kap = cohen_kappa_score(y_true, y_pred, labels=all_labels)
-    except Exception:
+    if np.unique(y_true).size < 2 or np.unique(y_pred).size < 2:
         kap = 0.0
+    else:
+        kap = cohen_kappa_score(y_true, y_pred, labels=all_labels)
 
     return {
         "F1": _safe_float(f1),
