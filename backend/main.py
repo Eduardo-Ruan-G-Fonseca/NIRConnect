@@ -1536,7 +1536,7 @@ async def create_report(data: dict = Body(...)):
         return StreamingResponse(
             io.BytesIO(pdf_bytes),
             media_type="application/pdf",
-            headers={"Content-Disposition": 'attachment; filename="report.pdf"'}
+            headers={"Content-Disposition": "attachment; filename=report.pdf"},
         )
 
     except HTTPException:
