@@ -205,7 +205,12 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
       if (arr.length === 0) {
         setError("Nenhuma combinação válida encontrada. Revise n_components, pré-processos ou validação.");
       } else {
-        setSelected(0);
+        if (res?.best?.id) {
+          const idx = arr.findIndex(r => r.id === res.best.id);
+          setSelected(idx >= 0 ? idx : 0);
+        } else {
+          setSelected(0);
+        }
       }
       setRunning(false);
       setProgress(100);
@@ -222,8 +227,8 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
   function sortResults(rs){
     const arr = [...rs];
     return arr.sort((a,b)=>{
-      const aval = isClass ? -(a?.val_metrics?.Accuracy || 0) : (a?.RMSECV ?? Number.POSITIVE_INFINITY);
-      const bval = isClass ? -(b?.val_metrics?.Accuracy || 0) : (b?.RMSECV ?? Number.POSITIVE_INFINITY);
+      const aval = isClass ? -(a?.Accuracy ?? a?.val_metrics?.Accuracy ?? 0) : (a?.RMSECV ?? a?.val_metrics?.RMSECV ?? Number.POSITIVE_INFINITY);
+      const bval = isClass ? -(b?.Accuracy ?? b?.val_metrics?.Accuracy ?? 0) : (b?.RMSECV ?? b?.val_metrics?.RMSECV ?? Number.POSITIVE_INFINITY);
       return aval - bval;
     });
   }
@@ -251,15 +256,18 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
           </thead>
           <tbody>
             {rs.map((r,i)=>{
-              const prep = PREP_LABEL[r.preprocess] || r.preprocess || "-";
-              const metric = isClass ? (r?.val_metrics?.Accuracy ?? 0).toFixed(3) : (r?.RMSECV ?? 0).toFixed(3);
-              const r2 = (r?.val_metrics?.R2 !== undefined) ? Number(r.val_metrics.R2).toFixed(3) : "-";
-              const valMethod = r?.validation?.method || "-";
-              const range = r?.wl_used?.length ? `${r.wl_used[0]}-${r.wl_used[r.wl_used.length-1]}` : "-";
+              const prepRaw = r.preprocess ?? r.prep;
+              const prep = PREP_LABEL[prepRaw] || prepRaw || "-";
+              const acc = Number(r?.Accuracy ?? r?.val_metrics?.Accuracy ?? 0);
+              const metric = isClass ? acc.toFixed(3) : Number(r?.RMSECV ?? r?.val_metrics?.RMSECV ?? 0).toFixed(3);
+              const r2raw = r?.R2 ?? r?.val_metrics?.R2;
+              const r2 = r2raw !== undefined && Number.isFinite(Number(r2raw)) ? Number(r2raw).toFixed(3) : "-";
+              const valMethod = r?.validation?.method || r?.validation || "-";
+              const range = r?.range || (r?.wl_used?.length ? `${r.wl_used[0]}-${r.wl_used[r.wl_used.length-1]}` : "-");
               const active = selected === i;
               return (
                 <tr
-                  key={`${r.preprocess ?? "none"}-${r.n_components ?? "nc"}-${i}`}
+                  key={`${r.id || `${prepRaw ?? "none"}-${r.n_components ?? "nc"}`}`}
                   className={active ? "row-active" : ""}
                   onClick={()=>setSelected(i)}
                   style={{ cursor: "pointer" }}
@@ -284,8 +292,10 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
     if (!optResults?.length || !decisionRef.current) return;
     const grouped = {};
     optResults.forEach(r=>{
-      const key = PREP_LABEL[r.preprocess] || r.preprocess || "Nenhum";
-      (grouped[key] ||= []).push({ nc:r.n_components, val: isClass ? (r?.val_metrics?.Accuracy || 0) : (r?.RMSECV || 0) });
+      const keyRaw = r.preprocess ?? r.prep;
+      const key = PREP_LABEL[keyRaw] || keyRaw || "Nenhum";
+      const val = isClass ? (r?.Accuracy ?? r?.val_metrics?.Accuracy || 0) : (r?.RMSECV ?? r?.val_metrics?.RMSECV || 0);
+      (grouped[key] ||= []).push({ nc:r.n_components, val });
     });
     const traces = Object.keys(grouped).map(k=>{
       const arr = grouped[k].sort((a,b)=>a.nc-b.nc);

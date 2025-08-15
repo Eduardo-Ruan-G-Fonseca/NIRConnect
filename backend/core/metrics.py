@@ -9,7 +9,6 @@ from sklearn.metrics import (
     recall_score,
     cohen_kappa_score,
     confusion_matrix,
-    classification_report,
 )
 
 def regression_metrics(y_true, y_pred):
@@ -34,60 +33,39 @@ def regression_metrics(y_true, y_pred):
     }
 
 def classification_metrics(y_true, y_pred, labels=None):
-    acc = accuracy_score(y_true, y_pred)
-    prec = precision_score(y_true, y_pred, average="macro", zero_division=0)
-    rec = recall_score(y_true, y_pred, average="macro", zero_division=0)
-    f1_macro = f1_score(y_true, y_pred, average="macro", zero_division=0)
-    f1_micro = f1_score(y_true, y_pred, average="micro", zero_division=0)
-    kappa = float(cohen_kappa_score(y_true, y_pred))
-    cm_array = (
-        confusion_matrix(y_true, y_pred, labels=labels)
-        if labels is not None
-        else confusion_matrix(y_true, y_pred)
-    )
-    report = classification_report(
-        y_true, y_pred, labels=labels, output_dict=True, zero_division=0
-    )
-    sensitivity = None
-    specificity = None
-    sens_by_class = {}
-    if labels is None:
-        labels = np.unique(y_true)
-    row_sums = cm_array.sum(axis=1)
-    for idx, label in enumerate(labels):
-        sens = cm_array[idx, idx] / row_sums[idx] if row_sums[idx] > 0 else 0.0
-        sens_by_class[str(label)] = float(sens)
+    """Return common classification metrics with safe defaults.
 
-    if cm_array.shape == (2, 2):
-        tn, fp, fn, tp = cm_array.ravel()
-        sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    Unknown predictions (not present in ``labels``) are mapped to the first
+    known class to avoid metric errors. ``zero_division=0`` ensures we never
+    propagate NaNs.
+    """
 
-    desc = (
-        "Sensibilidade na PLS-DA: A sensibilidade de acerto na "
-        "análise estatística multivariada refere-se à capacidade de um modelo "
-        "multivariado em identificar corretamente as relações entre múltiplas "
-        "variáveis e fazer previsões precisas. É uma medida de quão bem o "
-        "modelo captura a complexidade dos dados e a variabilidade entre as "
-        "variáveis. Vários métodos de análise multivariada, como análise de "
-        "componentes principais, análise de regressão multivariada e análise "
-        "discriminante, são usados para avaliar essa sensibilidade."
-    )
+    classes = np.asarray(labels) if labels is not None else np.unique(y_true)
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+
+    mask_unknown = ~np.isin(y_pred, classes)
+    if mask_unknown.any() and classes.size > 0:
+        y_pred = y_pred.copy()
+        y_pred[mask_unknown] = classes[0]
+
+    kwargs = dict(labels=classes, zero_division=0)
+    acc = float(accuracy_score(y_true, y_pred))
+    f1m = float(f1_score(y_true, y_pred, average="macro", **kwargs))
+    kapp = float(cohen_kappa_score(y_true, y_pred, labels=classes))
+    precm = float(precision_score(y_true, y_pred, average="macro", **kwargs))
+    recm = float(recall_score(y_true, y_pred, average="macro", **kwargs))
+    cm_array = confusion_matrix(y_true, y_pred, labels=classes)
 
     return {
-        "Accuracy": float(acc),
-        "F1_macro": float(f1_macro),
-        "F1_micro": float(f1_micro),
-        "Kappa": kappa,
+        "Accuracy": acc,
+        "Kappa": kapp,
+        "F1": f1m,
+        "F1_macro": f1m,
+        "MacroPrecision": precm,
+        "MacroRecall": recm,
+        "MacroF1": f1m,
         "ConfusionMatrix": cm_array.tolist(),
-        "Sensitivity": None if sensitivity is None else float(sensitivity),
-        "Specificity": None if specificity is None else float(specificity),
-        "Sensitivity_per_class": sens_by_class,
-        "SensitivityDescription": desc,
-        "ClassificationReport": report,
-        "MacroPrecision": float(prec),
-        "MacroRecall": float(rec),
-        "MacroF1": float(f1_macro),
     }
 
 def vip_scores(pls_model, X, Y):

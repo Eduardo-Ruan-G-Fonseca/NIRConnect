@@ -66,30 +66,58 @@ def safe_n_components(n_req: int, n_samples: int, n_features: int) -> int:
 
 
 
-def build_cv(method: str, y: np.ndarray, classification: bool, params: dict | None) -> Iterator[tuple[np.ndarray, np.ndarray]]:
-    method = (method or "").strip()
+def build_cv(
+    method: str,
+    y: np.ndarray,
+    classification: bool,
+    params: dict | None,
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Yield train/test indices for the requested CV method.
+
+    The helper caps ``n_splits`` by the smallest class frequency when
+    ``classification`` is True and falls back to a simple ``KFold`` when the
+    split would be degenerate (e.g. single-class folds).
+    """
+
+    method = (method or "").upper()
     params = params or {}
 
-    if method.upper() == "LOO":
+    if method in ("LOO", "LEAVE-ONE-OUT"):
         loo = LeaveOneOut()
         for tr, te in loo.split(np.zeros((len(y), 1)), y if classification else None):
             yield tr, te
         return
 
-    if classification:
+    strat_names = {
+        "SKF",
+        "STRATIFIEDK",
+        "STRATIFIEDK_FOLD",
+        "STRATIFIEDKFOLD",
+        "STRATIFIEDK-FOLD",
+        "STRATIFIED",
+    }
+
+    if classification and (method in strat_names or method == "KFold" or not method):
         folds = int(params.get("n_splits", 5))
         _, counts = np.unique(y, return_counts=True)
-        n_splits = int(min(max(2, folds), max(2, counts.min())))
-        cv = StratifiedKFold(n_splits=n_splits, shuffle=bool(params.get("shuffle", True)), random_state=params.get("random_state", 42))
+        max_splits = int(counts.min())
+        if max_splits < 2:
+            cv = KFold(n_splits=min(3, len(y)))
+            for tr, te in cv.split(np.zeros((len(y), 1))):
+                yield tr, te
+            return
+        n_splits = int(min(max(2, folds), max_splits))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
         for tr, te in cv.split(np.zeros((len(y), 1)), y):
             yield tr, te
-    else:
-        folds = int(params.get("n_splits", 5))
-        n = int(len(y))
-        n_splits = int(min(max(2, folds), max(2, n)))
-        cv = KFold(n_splits=n_splits, shuffle=bool(params.get("shuffle", True)), random_state=params.get("random_state", 42))
-        for tr, te in cv.split(np.zeros((len(y), 1))):
-            yield tr, te
+        return
+
+    folds = int(params.get("n_splits", 5))
+    n = int(len(y))
+    n_splits = int(min(max(2, folds), max(2, n)))
+    cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    for tr, te in cv.split(np.zeros((len(y), 1))):
+        yield tr, te
 
 
 def evaluate_plsda_multiclass(model_factory: Callable[[], Any], X: np.ndarray, y: np.ndarray, method: str = "LOO", params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

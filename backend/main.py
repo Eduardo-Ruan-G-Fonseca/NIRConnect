@@ -1398,7 +1398,7 @@ async def optimize_endpoint(
         )
 
         try:
-            results = optimize_model_grid(
+            opt_res = optimize_model_grid(
                 X=X,
                 y=y,
                 wl=wl,
@@ -1411,14 +1411,16 @@ async def optimize_endpoint(
                     {"current": int(c), "total": int(t)}
                 ),
             )
+            results = opt_res.get("results", [])
+            best = opt_res.get("best")
         finally:
             # garante finalização de progresso mesmo em erro
             OPTIMIZE_PROGRESS["current"] = int(OPTIMIZE_PROGRESS.get("total") or 0)
 
         if raw_val_method == "LOO" and results:
-            best = results[0]
+            best = best or results[0]
             best_prep = best.get("preprocess") or best.get("prep") or "none"
-            best_nc = int(best.get("n_components") or best.get("components") or 1)
+            best_nc = int(best.get("n_components") or best.get("components") or best.get("n_comp") or 1)
 
             from core.preprocessing import apply_methods, sanitize_X
 
@@ -1453,7 +1455,7 @@ async def optimize_endpoint(
                 "score": float(np.mean(scores)) if scores else float("nan"),
             }
 
-        return jsonable_encoder({"results": results[:15]})
+        return jsonable_encoder({"results": results[:15], "best": best})
 
     except HTTPException:
         raise

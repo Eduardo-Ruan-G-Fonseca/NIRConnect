@@ -65,4 +65,4 @@ def test_optimize_model_grid():
         validation_method="KFold",
         validation_params={"n_splits": 2},
     )
-    assert res and {"preprocess", "n_components", "score"} <= res[0].keys()
+    assert res["results"] and {"id", "prep", "n_components"} <= res["results"][0].keys()
