@@ -5,9 +5,49 @@ from typing import Dict, Any, List, Optional
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.preprocessing import OneHotEncoder, LabelEncoder
 from sklearn.utils.multiclass import type_of_target
-from .metrics import regression_metrics, classification_metrics
-from .logger import log_info
-import warnings
+from .metrics import regression_metrics
+from sklearn.metrics import (
+    f1_score,
+    accuracy_score,
+    balanced_accuracy_score,
+    cohen_kappa_score,
+    confusion_matrix,
+)
+
+
+def _safe_float(x, default: float = 0.0) -> float:
+    """Convert x to float, returning ``default`` if NaN/inf/invalid."""
+    import numpy as _np
+
+    try:
+        v = float(x)
+        return v if _np.isfinite(v) else default
+    except Exception:
+        return default
+
+
+def _compute_classification_metrics(
+    y_true: np.ndarray, y_pred: np.ndarray, all_labels: np.ndarray
+) -> Dict[str, float]:
+    """Compute basic classification metrics ensuring finite outputs."""
+
+    # force confusion matrix shape even if some classes are missing
+    confusion_matrix(y_true, y_pred, labels=all_labels)
+
+    f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
+    acc = accuracy_score(y_true, y_pred)
+    bac = balanced_accuracy_score(y_true, y_pred)
+    try:
+        kap = cohen_kappa_score(y_true, y_pred, labels=all_labels)
+    except Exception:
+        kap = 0.0
+
+    return {
+        "F1": _safe_float(f1),
+        "Accuracy": _safe_float(acc),
+        "BalancedAccuracy": _safe_float(bac),
+        "Kappa": _safe_float(kap),
+    }
 
 
 @dataclass
@@ -91,7 +131,12 @@ def train_pls(
         yte = np.array(list(map(str, yte)))
         model = fit_plsda_multiclass(Xtr, ytr, n_components=n_components)
         preds = model.predict(Xte)
-        metrics = classification_metrics(yte, preds, labels=model.label_encoder.classes_)
+        all_labels = kwargs.get("all_labels")
+        if all_labels is None:
+            all_labels = np.unique(np.concatenate([ytr, yte]))
+        else:
+            all_labels = np.array(list(map(str, all_labels)))
+        metrics = _compute_classification_metrics(yte, preds, all_labels=all_labels)
     else:
         model = PLSRegression(n_components=n_components)
         model.fit(Xtr, ytr)
