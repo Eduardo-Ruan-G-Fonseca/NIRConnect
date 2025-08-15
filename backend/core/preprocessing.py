@@ -1,61 +1,50 @@
 import numpy as np
 from typing import Iterable, Optional, Tuple
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn.impute import SimpleImputer
 from scipy.signal import savgol_filter
-
 
 EPS = 1e-12
 
 
-def build_spectral_mask(
-    wl: np.ndarray,
-    spectral_ranges: Optional[Iterable[Tuple[Optional[float], Optional[float]]]],
-) -> np.ndarray:
-    """Create a boolean mask for ``wl`` based on wavelength intervals.
-
-    Parameters
-    ----------
-    wl : np.ndarray
-        Array of wavelengths.
-    spectral_ranges : Optional[Iterable[Tuple[Optional[float], Optional[float]]]]
-        Iterable of ``(start, end)`` tuples or dict-like objects with
-        ``start`` and ``end`` keys. ``None`` or empty iterables use the
-        full range.
-
-    Returns
-    -------
-    np.ndarray
-        Boolean mask with the same shape as ``wl``.
-    """
-
-    if spectral_ranges is None:
+def build_spectral_mask(wl: np.ndarray,
+                        spectral_ranges: Optional[Iterable[Tuple[Optional[float], Optional[float]]]] | None) -> np.ndarray:
+    """OR de intervalos; se vazio/None => usa tudo. Nunca usa None + None."""
+    if not spectral_ranges:
         return np.ones_like(wl, dtype=bool)
-
     mask = np.zeros_like(wl, dtype=bool)
-    for r in spectral_ranges:
-        if r is None:
+    for rng in spectral_ranges:
+        if rng is None:
             continue
-        if isinstance(r, dict):
-            start = r.get("start")
-            end = r.get("end")
+        if isinstance(rng, dict):
+            a, b = rng.get("start"), rng.get("end")
         else:
-            try:
-                start, end = r if len(r) == 2 else (None, None)
-            except TypeError:
-                start, end = (None, None)
-
-        if start is None or end is None:
+            a, b = rng if isinstance(rng, tuple) and len(rng) >= 2 else (None, None)
+        if a is None or b is None:
             continue
-        if isinstance(start, float) and (np.isnan(start) or np.isnan(end)):
-            continue
-
-        part = (wl >= start) & (wl <= end)
+        lo, hi = (a, b) if a <= b else (b, a)
+        part = (wl >= lo) & (wl <= hi)
         mask |= part
+    return mask if mask.any() else np.ones_like(wl, dtype=bool)
 
-    if not mask.any():
-        return np.ones_like(wl, dtype=bool)
-    return mask
+
+def sanitize_X(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """±Inf→NaN, drop colunas 100% NaN, imputação por mediana."""
+    X = np.where(np.isinf(X), np.nan, X)
+    col_ok = ~(np.all(np.isnan(X), axis=0))
+    X = X[:, col_ok]
+    if np.isnan(X).any():
+        med = np.nanmedian(X, axis=0)
+        med = np.where(~np.isfinite(med), 0.0, med)
+        ii = np.where(np.isnan(X))
+        X[ii] = np.take(med, ii[1])
+    return X, col_ok
+
+
+def sg1(X: np.ndarray, window_length: int = 11, polyorder: int = 2) -> np.ndarray:
+    wl = int(window_length or 11)
+    po = int(polyorder or 2)
+    if wl < (po + 2): wl = po + 3
+    if wl % 2 == 0: wl += 1
+    return savgol_filter(X, window_length=wl, polyorder=po, deriv=1, axis=1)
 
 
 def snv(X: np.ndarray) -> np.ndarray:
@@ -119,18 +108,10 @@ def vn(X: np.ndarray) -> np.ndarray:
     return X / np.where(norm == 0, 1, norm)
 
 
-def apply_methods(X: np.ndarray, methods: list) -> np.ndarray:
-    """Apply preprocessing methods in sequence.
+def apply_methods(X: np.ndarray, methods: list, wl: np.ndarray | None = None) -> np.ndarray:
+    """Apply preprocessing methods in sequence."""
 
-    Parameters
-    ----------
-    X : np.ndarray
-        Matrix of spectra (samples x wavelengths).
-    methods : list
-        Each element can be either a string with the method name or a
-        dictionary in the form ``{"method": "sg1", "params": {...}}``.
-    """
-
+    Xp = X.copy()
     for method in methods:
         if isinstance(method, dict):
             m = str(method.get("method", "")).lower()
@@ -140,68 +121,21 @@ def apply_methods(X: np.ndarray, methods: list) -> np.ndarray:
             params = {}
 
         if m == "snv":
-            X = snv(X)
+            Xp = snv(Xp)
         elif m == "msc":
-            X = msc(X)
+            Xp = msc(Xp)
         elif m == "sg1":
-            window = int(params.get("window_length", 11))
-            poly = int(params.get("polyorder", 2))
-            X = savgol_derivative(X, order=1, window=window, poly=poly)
+            Xp = sg1(Xp, window_length=params.get("window_length", 11), polyorder=params.get("polyorder", 2))
         elif m == "sg2":
-            window = int(params.get("window_length", 11))
-            poly = int(params.get("polyorder", 2))
-            X = savgol_derivative(X, order=2, window=window, poly=poly)
+            Xp = savgol_derivative(Xp, order=2, window=int(params.get("window_length", 11)), poly=int(params.get("polyorder", 2)))
         elif m == "minmax":
-            X = minmax_norm(X)
+            Xp = minmax_norm(Xp)
         elif m == "zscore":
-            X = zscore(X)
+            Xp = zscore(Xp)
         elif m == "ncl":
-            X = ncl(X)
+            Xp = ncl(Xp)
         elif m == "vn":
-            X = vn(X)
-    return X
+            Xp = vn(Xp)
 
-
-def sanitize_X(X: np.ndarray, feature_names: list[str] | None = None):
-    """Sanitize feature matrix ``X``.
-
-    - Cast to float and replace ``±Inf`` with ``NaN``.
-    - Drop columns that are entirely ``NaN``.
-    - Drop rows that are entirely ``NaN``.
-    - Impute remaining ``NaN`` values with the column median.
-
-    Parameters
-    ----------
-    X : np.ndarray
-        Input matrix of shape (samples, features).
-    feature_names : list[str] | None, optional
-        Optional list of feature names to filter alongside ``X``.
-
-    Returns
-    -------
-    tuple
-        Sanitized ``X`` and corresponding ``feature_names`` (if provided).
-    """
-
-    X = np.asarray(X, dtype=float)
-    X[~np.isfinite(X)] = np.nan
-
-    # Column filter
-    col_ok = ~np.isnan(X).all(axis=0)
-    if not col_ok.any():
-        raise ValueError(
-            "Todas as variáveis espectrais ficaram inválidas após o pré-processamento."
-        )
-    X = X[:, col_ok]
-    if feature_names is not None:
-        feature_names = [f for i, f in enumerate(feature_names) if col_ok[i]]
-
-    # Row filter
-    row_ok = ~np.isnan(X).all(axis=1)
-    X = X[row_ok, :]
-
-    # Impute remaining NaNs with median
-    imputer = SimpleImputer(strategy="median")
-    X = imputer.fit_transform(X)
-
-    return X, feature_names
+    Xp, _ = sanitize_X(Xp)
+    return Xp

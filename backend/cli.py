@@ -25,9 +25,15 @@ def train(
     )
     X = df.drop(columns=[target]).values
     y = df[target].values
-    model, metrics, extra = train_pls(
-        X, y, n_components=n_components, classification=classification
+    res = train_pls(
+        X,
+        y,
+        X,
+        y,
+        n_components=n_components,
+        classification=classification,
     )
+    metrics = res["metrics"]
     if n_bootstrap > 0:
         boot = bootstrap_metrics(
             X,
@@ -37,7 +43,7 @@ def train(
             n_bootstrap=n_bootstrap,
         )
         metrics["bootstrap"] = boot
-    typer.echo(json.dumps({"metrics": metrics, "vip": extra["vip"]}, indent=2))
+    typer.echo(json.dumps({"metrics": metrics}, indent=2))
 
 
 @app.command()
