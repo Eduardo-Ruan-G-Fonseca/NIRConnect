@@ -6,6 +6,45 @@ from .pls import train_pls
 from .preprocessing import apply_methods, sanitize_X
 
 
+def _extract_score(metrics: dict, classification: bool) -> float:
+    """
+    Escolhe a melhor métrica disponível conforme o tipo.
+    Para classificação: tenta f1 (macro), depois balanced_accuracy, depois accuracy.
+    Para regressão: prefere RMSE (negativado), senão usa R2.
+    Lança KeyError se nada conhecido for encontrado.
+    """
+    if not isinstance(metrics, dict):
+        raise KeyError("metrics not a dict")
+
+    if classification:
+        # normaliza chaves pra minúsculas pra tolerar 'F1', 'f1_macro', 'Accuracy', etc.
+        m_lower = {k.lower(): v for k, v in metrics.items()}
+        for key in ("f1_macro", "f1", "f1_score", "f1weighted", "f1_weighted"):
+            if key in m_lower:
+                return float(m_lower[key])
+        for key in ("balanced_accuracy", "bal_acc", "bac"):
+            if key in m_lower:
+                return float(m_lower[key])
+        for key in ("accuracy", "acc"):
+            if key in m_lower:
+                return float(m_lower[key])
+        # último recurso: se tiver 'auc'/'auroc'
+        for key in ("auroc", "auc", "roc_auc"):
+            if key in m_lower:
+                return float(m_lower[key])
+        raise KeyError("No classification metric found (expected F1/accuracy/etc).")
+
+    # regressão
+    m_lower = {k.lower(): v for k, v in metrics.items()}
+    if "rmse" in m_lower:
+        return -float(m_lower["rmse"])  # minimizar RMSE -> maximizamos o negativo
+    if "mae" in m_lower:
+        return -float(m_lower["mae"])
+    if "r2" in m_lower:
+        return float(m_lower["r2"])
+    raise KeyError("No regression metric found (expected RMSE/MAE/R2).")
+
+
 def log_info(msg: str):
     try:
         print(msg, flush=True)
@@ -73,6 +112,10 @@ def optimize_model_grid(
     validation_params = validation_params or {}
     splits = list(build_cv(validation_method, y, classification, validation_params))
     cv_splits = max(1, len(splits))
+    print(
+        f"[grid] mode={'classification' if classification else 'regression'}; validation={validation_method}; splits={len(splits)}",
+        flush=True,
+    )
 
     done = 0
     total_steps = 0
@@ -94,10 +137,12 @@ def optimize_model_grid(
         log_info(f"[grid] prep={prep} Xp.shape={Xp.shape} max_nc={max_nc} splits={len(splits)}")
 
         for nc in comp_range:
+            last_metrics = {}
             try:
                 log_info(f"[grid] nc={nc}")
 
                 def eval_one(tr, te):
+                    nonlocal last_metrics
                     r = train_pls(
                         Xp[tr],
                         y[tr],
@@ -108,7 +153,8 @@ def optimize_model_grid(
                         validation_method="none",
                         validation_params={},
                     )
-                    return r["metrics"]["F1"] if classification else -r["metrics"]["RMSE"]
+                    last_metrics = r.get("metrics", {})
+                    return _extract_score(last_metrics, bool(classification))
 
                 n_jobs = int(os.getenv("NIR_N_JOBS", "1"))
                 if n_jobs > 1:
@@ -122,7 +168,10 @@ def optimize_model_grid(
                 results.append({"preprocess": prep, "n_components": int(nc), "score": mean_score})
 
             except Exception as ex:
-                log_info(f"[grid] skip prep={prep} n_comp={nc}: {type(ex).__name__}: {ex}")
+                m = last_metrics if isinstance(last_metrics, dict) else {}
+                log_info(
+                    f"[grid] skip prep={prep} n_comp={nc}: {type(ex).__name__}: {ex}; metrics_keys={list(m.keys()) if isinstance(m, dict) else 'N/A'}"
+                )
 
             finally:
                 done += cv_splits
