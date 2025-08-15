@@ -178,9 +178,11 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
     pollRef.current = setInterval(async () => {
       try {
         const s = await getOptimizeStatus();
-        const pct = s?.total ? Math.round((s.current / s.total) * 100) : 0;
+        const current = Number(s?.current ?? 0);
+        const total = Number(s?.total ?? 0);
+        const pct = total > 0 ? Math.round((current / total) * 100) : 0;
         setProgress(Math.max(0, Math.min(100, pct)));
-        if (s?.total && s.current >= s.total) {
+        if (total > 0 && current >= total) {
           if (pollRef.current) clearInterval(pollRef.current);
         }
       } catch { /* ignora polling error */ }

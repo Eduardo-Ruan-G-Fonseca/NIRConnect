@@ -7,42 +7,35 @@ from .preprocessing import apply_methods, sanitize_X
 
 
 def _extract_score(metrics: dict, classification: bool) -> float:
-    """
-    Escolhe a melhor métrica disponível conforme o tipo.
-    Para classificação: tenta f1 (macro), depois balanced_accuracy, depois accuracy.
-    Para regressão: prefere RMSE (negativado), senão usa R2.
-    Lança KeyError se nada conhecido for encontrado.
-    """
+    """Return a suitable optimization score from ``metrics``."""
+    import math
+
     if not isinstance(metrics, dict):
         raise KeyError("metrics not a dict")
 
     if classification:
-        # normaliza chaves pra minúsculas pra tolerar 'F1', 'f1_macro', 'Accuracy', etc.
-        m_lower = {k.lower(): v for k, v in metrics.items()}
-        for key in ("f1_macro", "f1", "f1_score", "f1weighted", "f1_weighted"):
-            if key in m_lower:
-                return float(m_lower[key])
-        for key in ("balanced_accuracy", "bal_acc", "bac"):
-            if key in m_lower:
-                return float(m_lower[key])
+        m = {k.lower(): v for k, v in metrics.items()}
+        for key in ("f1", "f1_macro", "f1_score", "f1weighted", "f1_weighted"):
+            if key in m and math.isfinite(float(m[key])):
+                return float(m[key])
+        for key in ("balancedaccuracy", "balanced_accuracy", "bal_acc", "bac"):
+            if key in m and math.isfinite(float(m[key])):
+                return float(m[key])
         for key in ("accuracy", "acc"):
-            if key in m_lower:
-                return float(m_lower[key])
-        # último recurso: se tiver 'auc'/'auroc'
-        for key in ("auroc", "auc", "roc_auc"):
-            if key in m_lower:
-                return float(m_lower[key])
-        raise KeyError("No classification metric found (expected F1/accuracy/etc).")
+            if key in m and math.isfinite(float(m[key])):
+                return float(m[key])
+        for key in ("auroc", "auc", "roc_auc", "kappa"):
+            if key in m and math.isfinite(float(m[key])):
+                return float(m[key])
+        raise KeyError(f"No finite classification metric found; got keys={list(metrics.keys())}")
 
-    # regressão
-    m_lower = {k.lower(): v for k, v in metrics.items()}
-    if "rmse" in m_lower:
-        return -float(m_lower["rmse"])  # minimizar RMSE -> maximizamos o negativo
-    if "mae" in m_lower:
-        return -float(m_lower["mae"])
-    if "r2" in m_lower:
-        return float(m_lower["r2"])
-    raise KeyError("No regression metric found (expected RMSE/MAE/R2).")
+    m = {k.lower(): v for k, v in metrics.items()}
+    for key in ("rmse", "mae"):
+        if key in m and math.isfinite(float(m[key])):
+            return -float(m[key])
+    if "r2" in m and math.isfinite(float(m["r2"])):
+        return float(m["r2"])
+    raise KeyError(f"No finite regression metric found; got keys={list(metrics.keys())}")
 
 
 def log_info(msg: str):
@@ -152,6 +145,7 @@ def optimize_model_grid(
                         classification=bool(classification),
                         validation_method="none",
                         validation_params={},
+                        all_labels=np.unique(y),
                     )
                     last_metrics = r.get("metrics", {})
                     return _extract_score(last_metrics, bool(classification))
