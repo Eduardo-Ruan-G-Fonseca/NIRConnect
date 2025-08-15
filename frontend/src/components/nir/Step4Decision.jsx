@@ -122,13 +122,22 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
     if (vipArray.length) {
       if (typeof vipArray[0] === "object" && vipArray[0] !== null) {
         vipNames  = vipArray.map(it => it.feature ?? it.name ?? it[0] ?? "");
-        vipValues = vipArray.map(it => Number(it.value ?? it[1] ?? it) || 0);
+        vipValues = vipArray.map(it => {
+          const v = Number(it.value ?? it[1] ?? it);
+          return Number.isFinite(v) ? v : 0;
+        });
       } else if (Array.isArray(vipArray[0])) {
         vipNames  = vipArray.map(it => String(it[0]));
-        vipValues = vipArray.map(it => Number(it[1]) || 0);
+        vipValues = vipArray.map(it => {
+          const v = Number(it[1]);
+          return Number.isFinite(v) ? v : 0;
+        });
       } else {
         vipNames  = vipArray.map((_, i) => `Var ${i+1}`);
-        vipValues = vipArray.map(Number);
+        vipValues = vipArray.map(v => {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : 0;
+        });
       }
     }
     if (vipValues.length && vipRef.current) {
@@ -294,7 +303,9 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
     optResults.forEach(r=>{
       const keyRaw = r.preprocess ?? r.prep;
       const key = PREP_LABEL[keyRaw] || keyRaw || "Nenhum";
-      const val = isClass ? (r?.Accuracy ?? r?.val_metrics?.Accuracy || 0) : (r?.RMSECV ?? r?.val_metrics?.RMSECV || 0);
+      const val = isClass
+        ? (r?.Accuracy ?? r?.val_metrics?.Accuracy ?? 0)
+        : (r?.RMSECV ?? r?.val_metrics?.RMSECV ?? 0);
       (grouped[key] ||= []).push({ nc:r.n_components, val });
     });
     const traces = Object.keys(grouped).map(k=>{
