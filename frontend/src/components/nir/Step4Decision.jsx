@@ -304,8 +304,8 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
       const keyRaw = r.preprocess ?? r.prep;
       const key = PREP_LABEL[keyRaw] || keyRaw || "Nenhum";
       const val = isClass
-        ? (r?.Accuracy ?? r?.val_metrics?.Accuracy ?? 0)
-        : (r?.RMSECV ?? r?.val_metrics?.RMSECV ?? 0);
+        ? ((r?.Accuracy ?? r?.val_metrics?.Accuracy) ?? 0)
+        : ((r?.RMSECV  ?? r?.val_metrics?.RMSECV)   ?? 0);
       (grouped[key] ||= []).push({ nc:r.n_components, val });
     });
     const traces = Object.keys(grouped).map(k=>{
