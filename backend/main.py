@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Request
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 import os, sys
@@ -34,10 +35,11 @@ from core.validation import build_cv, make_cv, safe_n_components
 from core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
 from core.preprocessing import apply_methods, sanitize_X, build_spectral_mask
 from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
-from typing import Optional, Tuple, List, Literal, Any, Dict
+from typing import Optional, Tuple, List, Literal, Any, Dict, Union
 from core.saneamento import saneamento_global
 from core.io_utils import to_float_matrix, encode_labels_if_needed
 from core.optimization import optimize_model_grid, preprocess as grid_preprocess, make_pls_da, make_pls_reg
+from ml.validation import build_cv as build_cv_meta
 try:
     from ml.pipeline import (
         build_pls_pipeline,
@@ -251,6 +253,25 @@ def optimize_handler(X: np.ndarray, y: np.ndarray, params: dict, progress_callba
 
     return {"results": results, "errors_summary": dict(errors)}
 app = FastAPI(title="NIR API v4.6")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    def scrub(x):
+        if isinstance(x, (bytes, bytearray)):
+            return f"<{len(x)} bytes>"
+        if isinstance(x, dict):
+            return {k: scrub(v) for k, v in x.items()}
+        if isinstance(x, list):
+            return [scrub(v) for v in x]
+        return x
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": scrub(exc.errors()),
+            "hint": "Esta rota espera application/json. O upload de arquivo é apenas na etapa de importação.",
+        },
+    )
 
 
 @app.on_event("startup")
@@ -1287,7 +1308,7 @@ def _resolve_cv_params(raw_method, classification: bool, y_values: np.ndarray, r
     # fallback
     return method, {}
 
-@app.post("/optimize")
+@app.post("/optimize-upload")
 async def optimize_endpoint(
     file: UploadFile = File(...),
     params: str = Form("{}"),
@@ -1547,75 +1568,103 @@ async def history_data() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-class TrainForm(BaseModel):
-    mode: str
-    validation_method: str | None = None
-    n_splits: int | None = None
-    wavelength_range: tuple[int, int] | None = None
-    preprocessors: list[str] | None = None
-    n_components_max: int | None = None
-
-
-@app.post("/train-form")
-def train_form(form: TrainForm):
-    X, y = state.last_X, state.last_y
-    labels, counts = np.unique(y, return_counts=True)
-    min_class = int(counts.min()) if counts.size else 1
-    folds_eff = max(2, min(form.n_splits or 5, min_class))
-    return {
-        "ok": True,
-        "classes_found": labels.tolist(),
-        "min_samples_per_class": min_class,
-        "n_splits_effective": folds_eff,
-        "preprocessors": form.preprocessors or ["none", "sg1"],
-        "wavelength_range": form.wavelength_range,
-        "mode": form.mode,
-        "validation_method": form.validation_method,
-        "n_components_max": form.n_components_max,
-    }
+class OptimizeRequest(BaseModel):
+    target: str
+    n_components: Optional[int] = None
+    classification: bool = True
+    threshold: float = 0.5
+    n_bootstrap: int = 0
+    validation_method: str = "StratifiedKFold"
+    validation_params: Dict = Field(default_factory=dict)
+    spectral_ranges: Optional[Union[str, List[Tuple[float, float]]]] = None
 
 
 @app.post("/optimize")
-def optimize(body: TrainForm):
+def optimize(req: OptimizeRequest):
     try:
         X, y = state.last_X, state.last_y
+
+        start_nm, end_nm = None, None
+        if isinstance(req.spectral_ranges, str) and "-" in req.spectral_ranges:
+            s, e = req.spectral_ranges.split("-")
+            start_nm, end_nm = float(s), float(e)
+        elif isinstance(req.spectral_ranges, list) and req.spectral_ranges:
+            first = req.spectral_ranges[0]
+            if isinstance(first, (list, tuple)) and len(first) == 2:
+                start_nm, end_nm = float(first[0]), float(first[1])
+
+        cv, val_name, n_splits = build_cv_meta(y, req.validation_method, req.validation_params)
+
         out = optimize_model_grid(
             X,
             y,
-            mode=body.mode,
-            preprocessors=body.preprocessors or [None],
-            n_components_max=body.n_components_max,
-            validation_method=body.validation_method,
-            n_splits=body.n_splits,
-            wavelength_range=body.wavelength_range,
+            mode="classification" if req.classification else "regression",
+            preprocessors=None,
+            n_components_max=req.n_components,
+            validation_method=val_name,
+            n_splits=n_splits,
+            wavelength_range=(start_nm, end_nm) if start_nm is not None and end_nm is not None else None,
             logger=logger,
             time_budget_s=None,
         )
-        return {"ok": True, **out}
+
+        return {
+            "validation_used": val_name,
+            "n_splits_effective": n_splits,
+            "range_used": out.get("range_used"),
+            "curves": out.get("curves"),
+            "best": out.get("best"),
+            "per_class": out.get("best", {}).get("val_metrics", {}).get("per_class")
+            if req.classification
+            else None,
+        }
     except Exception as e:
         logger.exception("optimize failed")
         raise HTTPException(400, str(e))
 
 
-class TrainBody(BaseModel):
-    mode: str
-    preprocess: str | None = None
+class TrainRequest(BaseModel):
+    preprocess: Optional[str] = None
     n_components: int
-    wavelength_range: tuple[int, int] | None = None
-    validation_method: str | None = None
+    classification: bool = True
+    threshold: float = 0.5
+    validation_method: str = "StratifiedKFold"
+    validation_params: Dict = Field(default_factory=dict)
+    spectral_ranges: Optional[Union[str, List[Tuple[float, float]]]] = None
 
 
 @app.post("/train")
-def train(body: TrainBody):
+def train(req: TrainRequest):
     try:
         X, y = state.last_X, state.last_y
-        Xp = grid_preprocess(X, method=body.preprocess, range_nm=body.wavelength_range)
-        if body.mode == "classification":
-            est = make_pls_da(n_components=body.n_components).fit(Xp, y)
+
+        start_nm, end_nm = None, None
+        if isinstance(req.spectral_ranges, str) and "-" in req.spectral_ranges:
+            s, e = req.spectral_ranges.split("-")
+            start_nm, end_nm = float(s), float(e)
+        elif isinstance(req.spectral_ranges, list) and req.spectral_ranges:
+            first = req.spectral_ranges[0]
+            if isinstance(first, (list, tuple)) and len(first) == 2:
+                start_nm, end_nm = float(first[0]), float(first[1])
+
+        cv, val_name, n_splits = build_cv_meta(y, req.validation_method, req.validation_params)
+
+        Xp = grid_preprocess(
+            X,
+            method=req.preprocess,
+            range_nm=(start_nm, end_nm) if start_nm is not None and end_nm is not None else None,
+        )
+        if req.classification:
+            est = make_pls_da(n_components=req.n_components).fit(Xp, y)
         else:
-            est = make_pls_reg(n_components=body.n_components).fit(Xp, y)
+            est = make_pls_reg(n_components=req.n_components).fit(Xp, y)
         state.last_model = est
-        return {"ok": True}
+
+        return {
+            "validation_used": val_name,
+            "n_splits_effective": n_splits,
+            "range_used": [start_nm, end_nm] if start_nm is not None and end_nm is not None else None,
+        }
     except Exception as e:
         logger.exception("train failed")
         raise HTTPException(400, str(e))
