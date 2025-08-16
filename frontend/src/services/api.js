@@ -23,11 +23,12 @@ export async function postAnalisar(fd) {
   return res.json();
 }
 
-export async function postOptimize(file, params) {
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('params', JSON.stringify(params));
-  const res = await fetch(`${API_BASE}/optimize`, { method: 'POST', body: fd });
+export async function postOptimize(payload) {
+  const res = await fetch(`${API_BASE}/optimize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
   if (!res.ok) {
     let msg;
     try { const j = await res.json(); msg = j.detail || JSON.stringify(j); }

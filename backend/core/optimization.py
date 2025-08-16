@@ -1,48 +1,72 @@
-from typing import List, Dict, Any, Callable
-import os
+import time
+from typing import Any, Dict, List, Callable
+
 import numpy as np
-from .validation import build_cv
-from .pls import train_pls
-from .preprocessing import apply_methods, sanitize_X
+from sklearn.base import BaseEstimator
+from sklearn.cross_decomposition import PLSRegression
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    mean_squared_error,
+    r2_score,
+)
+from sklearn.model_selection import cross_val_predict
+
+from .preprocessing import apply_methods
+from .validation import make_cv
+from .pls import fit_plsda_multiclass
 
 
-def _extract_score(metrics: dict, classification: bool) -> float:
-    """Return a suitable optimization score from ``metrics``."""
-    import math
+# ---------------------------------------------------------------------------
+# Helper models and preprocessing
+# ---------------------------------------------------------------------------
 
-    if not isinstance(metrics, dict):
-        raise KeyError("metrics not a dict")
+def preprocess(X: np.ndarray, method: str | None, range_nm: tuple[int, int] | None = None) -> np.ndarray:
+    """Apply optional preprocessing to ``X``.
 
-    if classification:
-        m = {k.lower(): v for k, v in metrics.items()}
-        for key in ("f1", "f1_macro", "f1_score", "f1weighted", "f1_weighted"):
-            if key in m and math.isfinite(float(m[key])):
-                return float(m[key])
-        for key in ("balancedaccuracy", "balanced_accuracy", "bal_acc", "bac"):
-            if key in m and math.isfinite(float(m[key])):
-                return float(m[key])
-        for key in ("accuracy", "acc"):
-            if key in m and math.isfinite(float(m[key])):
-                return float(m[key])
-        for key in ("auroc", "auc", "roc_auc", "kappa"):
-            if key in m and math.isfinite(float(m[key])):
-                return float(m[key])
-        raise KeyError(f"No finite classification metric found; got keys={list(metrics.keys())}")
+    Parameters
+    ----------
+    X : ndarray
+        Feature matrix.
+    method : str or None
+        Preprocessing method name. When ``None`` or ``"none"`` the input is
+        returned unchanged.
+    range_nm : tuple[int, int] or None
+        Optional wavelength range (ignored here but kept for API compatibility).
+    """
 
-    m = {k.lower(): v for k, v in metrics.items()}
-    for key in ("rmse", "mae"):
-        if key in m and math.isfinite(float(m[key])):
-            return -float(m[key])
-    if "r2" in m and math.isfinite(float(m["r2"])):
-        return float(m["r2"])
-    raise KeyError(f"No finite regression metric found; got keys={list(metrics.keys())}")
+    methods = [] if not method or method == "none" else [method]
+    Xp = apply_methods(X, methods=methods)
+    return Xp
 
 
-def log_info(msg: str):
-    try:
-        print(msg, flush=True)
-    except Exception:
-        pass
+class _PLSDAEstimator(BaseEstimator):
+    """Thin wrapper around :func:`fit_plsda_multiclass` for ``cross_val_predict``."""
+
+    def __init__(self, n_components: int):
+        self.n_components = int(n_components)
+
+    def fit(self, X, y):
+        self.model_ = fit_plsda_multiclass(X, y, n_components=self.n_components)
+        return self
+
+    def predict(self, X):
+        return self.model_.predict(X)
+
+
+def make_pls_da(n_components: int) -> BaseEstimator:
+    return _PLSDAEstimator(n_components=n_components)
+
+
+def make_pls_reg(n_components: int) -> PLSRegression:
+    return PLSRegression(n_components=n_components)
+
+
+# ---------------------------------------------------------------------------
+# Legacy optimisation helper retained for compatibility
+# ---------------------------------------------------------------------------
 
 def optimize_nir(
     X: np.ndarray,
@@ -52,6 +76,10 @@ def optimize_nir(
     n_components_list: List[int] | None = None,
     n_intervals: int = 10,
 ) -> List[Dict[str, Any]]:
+    """Minimal wrapper kept for backward compatibility with existing tests."""
+
+    from .pls import train_pls  # local import to avoid cycle
+
     n_components_list = n_components_list or [2, 3, 4, 5]
     results: List[Dict[str, Any]] = []
     if wl is None:
@@ -91,127 +119,111 @@ def optimize_nir(
     return sorted(results, key=lambda r: r["score"])
 
 
+# ---------------------------------------------------------------------------
+# New grid search implementation
+# ---------------------------------------------------------------------------
+
 def optimize_model_grid(
-    X: np.ndarray,
-    y: np.ndarray,
-    wl: np.ndarray | None,
-    classification: bool,
-    methods: List[str],
-    n_components_range: range,
-    validation_method: str,
-    validation_params: Dict[str, Any] | None = None,
-    progress_callback: Callable[[int, int], None] | None = None,
-) -> Dict[str, Any]:
-    """Grid-search over preprocessing and number of components.
+    X,
+    y,
+    mode,
+    preprocessors,
+    n_components_max,
+    validation_method,
+    n_splits,
+    wavelength_range,
+    logger,
+    time_budget_s=None,
+):
+    """Grid-search over preprocessing methods and number of PLS components."""
 
-    Returns a dictionary with the list of ``results`` and the ``best`` entry.
-    Each result contains top-level metrics (Accuracy/F1 for classification or
-    RMSECV/R2 for regression) plus an ``id`` and ``rank`` field for the
-    frontend.
-    """
+    cv, cv_meta = make_cv(y, validation_method, n_splits)
+    labels_all = sorted(list(np.unique(y)))
+    n_feat, n_samp = X.shape[1], X.shape[0]
+    max_nc_safe = min(n_feat // 4, n_samp - 1, 50)
+    max_nc = min(n_components_max or max_nc_safe, max_nc_safe)
+    max_nc = max(max_nc, 1)
 
-    validation_params = validation_params or {}
-    splits = list(build_cv(validation_method, y, classification, validation_params))
-    cv_splits = max(1, len(splits))
-    print(
-        f"[grid] mode={'classification' if classification else 'regression'}; validation={validation_method}; splits={len(splits)}",
-        flush=True,
+    results, curves_map = [], {}
+    t0 = time.time()
+
+    for prep in (preprocessors or [None]):
+        Xp = preprocess(X, method=prep, range_nm=wavelength_range)
+        for nc in range(1, max_nc + 1):
+            if mode == "classification":
+                est = make_pls_da(n_components=nc)
+                y_pred = cross_val_predict(est, Xp, y, cv=cv)
+                acc = float(accuracy_score(y, y_pred))
+                f1m = float(f1_score(y, y_pred, average="macro", zero_division=0))
+                rep = classification_report(
+                    y,
+                    y_pred,
+                    labels=labels_all,
+                    output_dict=True,
+                    zero_division=0,
+                )
+                per_class = {}
+                for lbl in labels_all:
+                    k = str(lbl)
+                    d = rep.get(k, {})
+                    per_class[k] = {
+                        "precision": float(d.get("precision", 0.0)),
+                        "recall": float(d.get("recall", 0.0)),
+                        "f1": float(d.get("f1-score", 0.0)),
+                        "support": int(d.get("support", (y == lbl).sum())),
+                    }
+                cm = confusion_matrix(y, y_pred, labels=labels_all).tolist()
+                met = {
+                    "Accuracy": round(acc, 4),
+                    "MacroF1": round(f1m, 4),
+                    "per_class": per_class,
+                    "confusion_matrix": cm,
+                }
+                curve_val = met["MacroF1"]
+            else:
+                est = make_pls_reg(n_components=nc)
+                y_cv = cross_val_predict(est, Xp, y, cv=cv)
+                rmse = float(np.sqrt(mean_squared_error(y, y_cv)))
+                r2 = float(r2_score(y, y_cv))
+                met = {"RMSECV": round(rmse, 6), "R2CV": round(r2, 6)}
+                curve_val = met["RMSECV"]
+
+            results.append(
+                {
+                    "preprocess": prep or "none",
+                    "n_components": nc,
+                    "val_metrics": met,
+                }
+            )
+            curves_map.setdefault(prep or "none", []).append(
+                {
+                    "n_components": nc,
+                    **({"MacroF1": curve_val} if mode == "classification" else {"RMSECV": curve_val}),
+                }
+            )
+            if logger:
+                logger.info(f"[grid] prep={prep or 'none'} nc={nc} metrics={met}")
+            if time_budget_s and time.time() - t0 > time_budget_s:
+                break
+        if time_budget_s and time.time() - t0 > time_budget_s:
+            break
+
+    best = (
+        max(results, key=lambda r: r["val_metrics"]["MacroF1"])
+        if mode == "classification"
+        else min(results, key=lambda r: r["val_metrics"]["RMSECV"])
     )
 
-    done = 0
-    total_steps = 0
-    grid_results: List[Dict[str, Any]] = []
-    cache_Xp: dict[str, np.ndarray] = {}
-    classes_global = np.unique(y) if classification else None
+    curves = []
+    for k, pts in curves_map.items():
+        curves.append({"preprocess": k, "points": sorted(pts, key=lambda p: p["n_components"])})
 
-    for prep in (methods or ["none"]):
-        if prep not in cache_Xp:
-            Xp = apply_methods(X, methods=[prep] if prep != "none" else [], wl=wl)
-            Xp, _ = sanitize_X(Xp)
-            cache_Xp[prep] = Xp
-        else:
-            Xp = cache_Xp[prep]
-
-        max_nc = int(min(Xp.shape[1], max(1, Xp.shape[0] - 1)))
-        comp_range = [nc for nc in n_components_range if 1 <= nc <= max_nc]
-        total_steps += len(comp_range) * cv_splits
-
-        log_info(f"[grid] prep={prep} Xp.shape={Xp.shape} max_nc={max_nc} splits={len(splits)}")
-
-        for nc in comp_range:
-            all_true: list[Any] = []
-            all_pred: list[Any] = []
-            try:
-                for tr, te in splits:
-                    r = train_pls(
-                        Xp[tr],
-                        y[tr],
-                        Xp[te],
-                        y[te],
-                        n_components=int(nc),
-                        classification=bool(classification),
-                        validation_method="none",
-                        validation_params={},
-                        all_labels=classes_global,
-                    )
-                    model = r.get("model")
-                    if classification:
-                        pred = model.predict(Xp[te])
-                    else:
-                        pred = model.predict(Xp[te]).ravel()
-                    all_true.extend(y[te].tolist())
-                    all_pred.extend(pred.tolist())
-
-                if classification:
-                    from .metrics import classification_metrics
-
-                    m = classification_metrics(np.array(all_true), np.array(all_pred), labels=classes_global)
-                    result = {
-                        "id": f"{prep}__{nc}",
-                        "prep": prep,
-                        "n_components": int(nc),
-                        "Accuracy": round(m.get("Accuracy", 0.0), 6),
-                        "Kappa": round(m.get("Kappa", 0.0), 6),
-                        "F1": round(m.get("F1", 0.0), 6),
-                        "validation": {"method": validation_method},
-                        "is_valid": True,
-                    }
-                else:
-                    from .metrics import regression_metrics
-
-                    m = regression_metrics(np.array(all_true), np.array(all_pred))
-                    result = {
-                        "id": f"{prep}__{nc}",
-                        "prep": prep,
-                        "n_components": int(nc),
-                        "RMSECV": round(m.get("RMSE", 0.0), 6),
-                        "R2": round(m.get("R2", 0.0), 6),
-                        "validation": {"method": validation_method},
-                        "is_valid": True,
-                    }
-
-                grid_results.append(result)
-
-            except Exception as ex:
-                log_info(f"[grid] skip prep={prep} n_comp={nc}: {type(ex).__name__}: {ex}")
-
-            finally:
-                done += cv_splits
-                if progress_callback:
-                    progress_callback(int(done), int(max(1, total_steps)))
-
-    if classification:
-        grid_sorted = sorted(
-            grid_results,
-            key=lambda r: (r.get("F1") or 0.0, r.get("Accuracy") or 0.0),
-            reverse=True,
-        )
-    else:
-        grid_sorted = sorted(grid_results, key=lambda r: r.get("RMSECV", float("inf")))
-
-    for rank, r in enumerate(grid_sorted, start=1):
-        r["rank"] = rank
-
-    best = grid_sorted[0] if grid_sorted else None
-    return {"results": grid_sorted, "best": best}
+    return {
+        "results": results,
+        "best": best,
+        "curves": curves,
+        "validation_used": cv_meta["validation"],
+        "range_used": list(wavelength_range) if wavelength_range else None,
+        "labels_all": labels_all,
+    }
 
