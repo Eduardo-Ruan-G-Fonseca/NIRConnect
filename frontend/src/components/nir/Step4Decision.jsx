@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-dist-min";
-import { postOptimize, getOptimizeStatus, postTrainForm } from "../../services/api";
+import { postOptimize, getOptimizeStatus, postTrain } from "../../services/api";
 
 /* ===== Helpers ===== */
 function joinList(xs){ if(!xs || !xs.length) return "-"; return xs.join(", "); }
@@ -83,13 +83,15 @@ function orderedEntries(obj, isClass){
   return [...prior, ...rest].map(k => [LABEL[k] || k, obj[k]]);
 }
 
-export default function Step4Decision({ file, step2, result, onBack, onContinue }) {
+export default function Step4Decision({ step2, result, onBack, onContinue }) {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const pollRef = useRef(null);
+  const [optData, setOptData] = useState(null);
   const [optResults, setOptResults] = useState(null);
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
   // Refs para gráficos Plotly (evita IDs globais)
   const vipRef = useRef(null);
@@ -181,7 +183,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
 
   /* ===== Otimização ===== */
   async function startOptimize() {
-    setError(""); setRunning(true); setProgress(0); setOptResults(null); setSelected(null);
+    setError(""); setRunning(true); setProgress(0); setOptResults(null); setOptData(null); setSelected(null);
 
     // polling progress
     pollRef.current = setInterval(async () => {
@@ -199,23 +201,22 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
 
     try {
       const payload = {
-        target: step2.target,
+        mode: isClass ? "classification" : "regression",
         validation_method: step2.validation_method,
-        n_components: Number.parseInt(step2.n_components, 10),
-        n_bootstrap: Number.parseInt(step2.n_bootstrap || 0, 10),
-        folds: step2.validation_method === "KFold" ? (step2.validation_params?.n_splits || 5) : undefined,
-        analysis_mode: step2.classification ? "PLS-DA" : "PLS-R",
-        spectral_range: spectralRange || undefined,
-        preprocessing_methods: preprocessingList?.length ? preprocessingList : ["none"],
+        n_splits: step2.validation_params?.n_splits,
+        wavelength_range: spectralRange || undefined,
+        preprocessors: preprocessingList?.length ? preprocessingList : ["none"],
+        n_components_max: Number(step2.n_components) || undefined,
       };
-      const res = await postOptimize(file, payload);
+      const res = await postOptimize(payload);
+      setOptData(res);
       const arr = sortResults(res?.results || []);
       setOptResults(arr);
       if (arr.length === 0) {
         setError("Nenhuma combinação válida encontrada. Revise n_components, pré-processos ou validação.");
       } else {
-        if (res?.best?.id) {
-          const idx = arr.findIndex(r => r.id === res.best.id);
+        if (res?.best?.preprocess) {
+          const idx = arr.findIndex(r => r.preprocess === res.best.preprocess && r.n_components === res.best.n_components);
           setSelected(idx >= 0 ? idx : 0);
         } else {
           setSelected(0);
@@ -227,7 +228,6 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
     } catch (e) {
       setError(typeof e === "string" ? e : (e?.message || "Falha na otimização."));
     } finally {
-      // failsafe: se algo deu certo/errado, garante parada do polling
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
       setRunning(false);
     }
@@ -258,7 +258,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
               <th>Pré-processamento</th>
               <th className="text-right">n_comp.</th>
               <th className="text-right">{metricLabel}</th>
-              <th className="text-right">R²</th>
+              <th className="text-right">{isClass ? "MacroF1" : "R2CV"}</th>
               <th>Validação</th>
               <th>Faixa usada</th>
             </tr>
@@ -269,8 +269,8 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
               const prep = PREP_LABEL[prepRaw] || prepRaw || "-";
               const acc = Number(r?.Accuracy ?? r?.val_metrics?.Accuracy ?? 0);
               const metric = isClass ? acc.toFixed(3) : Number(r?.RMSECV ?? r?.val_metrics?.RMSECV ?? 0).toFixed(3);
-              const r2raw = r?.R2 ?? r?.val_metrics?.R2;
-              const r2 = r2raw !== undefined && Number.isFinite(Number(r2raw)) ? Number(r2raw).toFixed(3) : "-";
+              const secRaw = isClass ? (r?.MacroF1 ?? r?.val_metrics?.MacroF1) : (r?.R2CV ?? r?.val_metrics?.R2CV);
+              const sec = secRaw !== undefined && Number.isFinite(Number(secRaw)) ? Number(secRaw).toFixed(3) : "-";
               const valMethod = r?.validation?.method || r?.validation || "-";
               const range = r?.range || (r?.wl_used?.length ? `${r.wl_used[0]}-${r.wl_used[r.wl_used.length-1]}` : "-");
               const active = selected === i;
@@ -284,7 +284,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
                   <td>{prep}</td>
                   <td className="text-right tabular-nums">{r.n_components}</td>
                   <td className="text-right tabular-nums font-semibold">{metric}</td>
-                  <td className="text-right tabular-nums">{r2}</td>
+                  <td className="text-right tabular-nums">{sec}</td>
                   <td>{valMethod}</td>
                   <td>{range}</td>
                 </tr>
@@ -298,24 +298,17 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
 
   /* ===== Curvas ===== */
   useEffect(() => {
-    if (!optResults?.length || !decisionRef.current) return;
-    const grouped = {};
-    optResults.forEach(r=>{
-      const keyRaw = r.preprocess ?? r.prep;
-      const key = PREP_LABEL[keyRaw] || keyRaw || "Nenhum";
-      const val = isClass
-        ? ((r?.Accuracy ?? r?.val_metrics?.Accuracy) ?? 0)
-        : ((r?.RMSECV  ?? r?.val_metrics?.RMSECV)   ?? 0);
-      (grouped[key] ||= []).push({ nc:r.n_components, val });
-    });
-    const traces = Object.keys(grouped).map(k=>{
-      const arr = grouped[k].sort((a,b)=>a.nc-b.nc);
-      return { x: arr.map(a=>a.nc), y: arr.map(a=>a.val), mode:"lines+markers", name:k, type:"scatter" };
+    if (!optData?.curves || !decisionRef.current) return;
+    const titleMetric = isClass ? "MacroF1" : "RMSECV";
+    const traces = (optData.curves || []).map(c => {
+      const xs = c.points.map(p => p.n_components);
+      const ys = c.points.map(p => isClass ? p.MacroF1 : p.RMSECV);
+      return { x: xs, y: ys, mode: "lines+markers", name: c.preprocess, type: "scatter" };
     });
     Plotly.newPlot(
       decisionRef.current,
       traces,
-      { title:`${metricLabel} x n_components`, xaxis:{ title:"n_components" }, yaxis:{ title:metricLabel } },
+      { title:`Variáveis Latentes × ${titleMetric}`, xaxis:{ title:"VL" }, yaxis:{ title:titleMetric } },
       { responsive:true }
     );
 
@@ -325,38 +318,27 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
       window.removeEventListener("resize", handleResize);
       if (decisionRef.current) Plotly.purge(decisionRef.current);
     };
-  }, [optResults, isClass, metricLabel]);
+  }, [optData, isClass]);
 
   /* ===== Continuar ===== */
   async function continueWithSelection(){
-    if(selected == null) return; setError("");
+    if(selected == null || !optData) return; setError("");
     const choice = optResults?.[selected];
     if (!choice) return;
-
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("target", step2.target ?? "");
-    fd.append("n_components", String(choice.n_components));
-    fd.append("classification", step2.classification ? "true" : "false");
-    if (step2.threshold !== undefined) fd.append("threshold", String(step2.threshold));
-    fd.append("n_bootstrap", String(step2.n_bootstrap || 0));
-    fd.append("validation_method", step2.validation_method ?? "");
-    if (step2.validation_method === "KFold") {
-      fd.append("validation_params", JSON.stringify({ n_splits: step2?.validation_params?.n_splits || 5, shuffle:true, random_state:42 }));
-    } else if (step2.validation_method === "Holdout") {
-      fd.append("validation_params", JSON.stringify({ test_size: step2?.validation_params?.test_size || 0.3 }));
-    }
-    if (result?.params?.ranges) fd.append("spectral_ranges", result.params.ranges);
-
-    const steps = choice.preprocess === "none" ? [] : [{ method:choice.preprocess }];
-    if (steps.length) fd.append("preprocess", JSON.stringify(steps));
-
+    setSaving(true);
     try {
-      const data = await postTrainForm(fd);
-      const fullParams = { ...result?.params, n_components:choice.n_components, preprocess:choice.preprocess, preprocess_steps:steps };
-      onContinue?.(data, fullParams);
+      await postTrain({
+        mode: isClass ? "classification" : "regression",
+        preprocess: choice.preprocess,
+        n_components: choice.n_components,
+        wavelength_range: optData.range_used,
+        validation_method: optData.validation_used,
+      });
+      onContinue?.(optData, { ...result?.params, n_components: choice.n_components, preprocess: choice.preprocess });
     } catch (e) {
-      setError(typeof e === "string" ? e : "Erro ao executar modelagem final.");
+      setError(typeof e === "string" ? e : (e?.message || "Erro ao executar modelagem final."));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -504,6 +486,70 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
       {optResults && (
         optResults.length > 0 ? (
           <>
+            {optData && (
+              <div className="nir-card mb-4">
+                <div className="nir-kv nir-params">
+                  <div>Validação</div> <b>{optData.validation_used}</b>
+                  {optData.range_used && (
+                    <>
+                      <div>Faixa usada</div>
+                      <b>{optData.range_used[0]}–{optData.range_used[1]} nm</b>
+                    </>
+                  )}
+                </div>
+                {optData.best?.val_metrics && (
+                  <div className="nir-table-wrap mt-2">
+                    <table className="nir-table compact full">
+                      <colgroup>
+                        <col style={{ width: "50%" }} />
+                        <col style={{ width: "50%" }} />
+                      </colgroup>
+                      <thead>
+                        <tr><th>Métrica</th><th className="text-right">Valor</th></tr>
+                      </thead>
+                      <tbody>
+                        {isClass ? (
+                          <>
+                            <tr><td>Accuracy</td><td className="text-right">{fmt(optData.best.val_metrics.Accuracy)}</td></tr>
+                            <tr><td>MacroF1</td><td className="text-right">{fmt(optData.best.val_metrics.MacroF1)}</td></tr>
+                          </>
+                        ) : (
+                          <>
+                            <tr><td>RMSECV</td><td className="text-right">{fmt(optData.best.val_metrics.RMSECV)}</td></tr>
+                            <tr><td>R2CV</td><td className="text-right">{fmt(optData.best.val_metrics.R2CV)}</td></tr>
+                          </>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {isClass && optData.best?.val_metrics?.per_class && (
+                  <div className="nir-table-wrap mt-4">
+                    <table className="nir-table compact full">
+                      <thead>
+                        <tr>
+                          <th>Classe</th><th className="text-right">Precisão</th><th className="text-right">Revocação</th><th className="text-right">F1</th><th className="text-right">Suporte</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(optData.labels_all || Object.keys(optData.best.val_metrics.per_class)).map(lbl => {
+                          const d = optData.best.val_metrics.per_class[String(lbl)] || {};
+                          return (
+                            <tr key={lbl}>
+                              <td>{lbl}</td>
+                              <td className="text-right">{fmt(d.precision)}</td>
+                              <td className="text-right">{fmt(d.recall)}</td>
+                              <td className="text-right">{fmt(d.f1)}</td>
+                              <td className="text-right">{fmt(d.support)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="nir-card">{renderTable(optResults)}</div>
             <div ref={decisionRef} className="w-full h-96 mt-6" />
           </>
@@ -520,7 +566,7 @@ export default function Step4Decision({ file, step2, result, onBack, onContinue 
         <button
           className="bg-[#2e5339] hover:bg-[#305e6b] text-white px-5 py-2 rounded-lg disabled:opacity-50"
           onClick={continueWithSelection}
-          disabled={running || (selected == null && (!optResults || optResults.length === 0))}
+          disabled={running || saving || selected == null || !optResults || optResults.length === 0}
         >
           Continuar com seleção
         </button>

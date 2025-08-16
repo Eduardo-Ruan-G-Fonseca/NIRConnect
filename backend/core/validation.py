@@ -1,62 +1,52 @@
-import warnings
-from collections.abc import Iterator
 import numpy as np
-from sklearn.model_selection import (
-    LeaveOneOut, KFold, ShuffleSplit,
-    StratifiedKFold, StratifiedShuffleSplit,
-    train_test_split,
-)
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+from collections.abc import Iterator
 from typing import Callable, Dict, Any, List, Optional
+from sklearn.model_selection import StratifiedKFold, LeaveOneOut, KFold, ShuffleSplit, StratifiedShuffleSplit, train_test_split
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 
-def make_cv(
-    method: str,
-    params: dict | None,
-    n_samples: int,
-    task: str = "regression",
-    y: np.ndarray | None = None,
-):
+
+def make_cv(y, method: str | None, n_splits: int | None):
+    """Create a cross-validation splitter based on the target ``y``.
+
+    Parameters
+    ----------
+    y : array-like
+        Target values used only to infer class balance when ``method`` is not
+        Leave-One-Out.
+    method : str or None
+        Either ``"LOO"`` for Leave-One-Out or any other value/``None`` to use
+        ``StratifiedKFold``. The latter automatically caps ``n_splits`` by the
+        smallest class size to avoid empty folds.
+    n_splits : int or None
+        Desired number of splits for ``StratifiedKFold``. When ``None`` defaults
+        to 5. The value is always clamped to ``[2, min_class]``.
+
+    Returns
+    -------
+    cv : splitter instance
+        The configured cross-validation splitter.
+    meta : dict
+        Metadata describing the effective validation strategy and number of
+        splits, useful for including in API responses.
     """
-    Retorna o esquema de validação adequado:
-    - Classificação: usa versões estratificadas (KFold/Holdout)
-    - LOO em dataset grande: troca por KFold(5)
-    - Ajusta n_splits para não ultrapassar o mínimo de amostras por classe
-    """
-    params = params or {}
 
-    if method == "LeaveOneOut":
-        if n_samples >= 80:
-            warnings.warn("LOO trocado automaticamente por KFold(5) para acelerar.")
-            return (
-                StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-                if task == "classification"
-                else KFold(n_splits=5, shuffle=True, random_state=42)
-            )
-        return LeaveOneOut()
+    y = np.asarray(y)
 
-    if method == "KFold":
-        n = int(params.get("n_splits", 5))
-        if task == "classification" and y is not None:
-            _, counts = np.unique(y, return_counts=True)
-            max_splits = int(counts.min())
-            n = max(2, min(n, max_splits))
-            return StratifiedKFold(n_splits=n, shuffle=True, random_state=42)
-        return KFold(n_splits=max(2, n), shuffle=True, random_state=42)
+    if method == "LOO":
+        cv = LeaveOneOut()
+        return cv, {"validation": "LOO", "splits": len(y)}
 
-    if method == "Holdout":
-        test_size = float(params.get("test_size", 0.3))
-        if task == "classification" and y is not None:
-            return StratifiedShuffleSplit(
-                n_splits=1, test_size=test_size, random_state=42
-            )
-        return ShuffleSplit(n_splits=1, test_size=test_size, random_state=42)
-
-    # fallback
-    return (
-        StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        if task == "classification"
-        else KFold(n_splits=5, shuffle=True, random_state=42)
-    )
+    labels, counts = np.unique(y, return_counts=True)
+    min_class = int(counts.min()) if counts.size else 1
+    k = max(2, min(n_splits or 5, min_class))
+    try:
+        cv = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
+        next(cv.split(np.zeros_like(y), y))
+        val_name = "StratifiedKFold"
+    except Exception:
+        cv = KFold(n_splits=k, shuffle=True, random_state=42)
+        val_name = "KFold"
+    return cv, {"validation": val_name, "splits": k}
 
 
 def safe_n_components(n_req: int, n_samples: int, n_features: int) -> int:

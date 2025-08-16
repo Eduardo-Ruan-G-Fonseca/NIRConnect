@@ -37,7 +37,7 @@ from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from typing import Optional, Tuple, List, Literal, Any, Dict
 from core.saneamento import saneamento_global
 from core.io_utils import to_float_matrix, encode_labels_if_needed
-from core.optimization import optimize_model_grid
+from core.optimization import optimize_model_grid, preprocess as grid_preprocess, make_pls_da, make_pls_reg
 try:
     from ml.pipeline import (
         build_pls_pipeline,
@@ -59,6 +59,17 @@ import joblib
 
 # Progresso global para /optimize/status
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
+
+
+class _State:
+    """Simple container for keeping dataset and model between requests."""
+
+    last_X: np.ndarray | None = None
+    last_y: np.ndarray | None = None
+    last_model: Any | None = None
+
+
+state = _State()
 
 
 def _metrics_ok(m):
@@ -1189,9 +1200,7 @@ async def analisar_file(
 
 
 # Alias de treino que usam o MESMO handler de /analisar (FormData)
-app.add_api_route("/train-form", analisar_file, methods=["POST"], tags=["model"])
-app.add_api_route("/train", analisar_file, methods=["POST"], tags=["model"])
-app.add_api_route("/analyze", analisar_file, methods=["POST"], tags=["model"])
+# (removido na nova API)
 
 class OptimizeParams(BaseModel):
     """Parameters expected by the /optimize endpoint."""
@@ -1531,3 +1540,82 @@ async def history_data() -> list[dict]:
         # Se arquivo estiver corrompido, retorna vazio em vez de 500
         return []
     return []
+
+
+# ---------------------------------------------------------------------------
+# New simplified training endpoints
+# ---------------------------------------------------------------------------
+
+
+class TrainForm(BaseModel):
+    mode: str
+    validation_method: str | None = None
+    n_splits: int | None = None
+    wavelength_range: tuple[int, int] | None = None
+    preprocessors: list[str] | None = None
+    n_components_max: int | None = None
+
+
+@app.post("/train-form")
+def train_form(form: TrainForm):
+    X, y = state.last_X, state.last_y
+    labels, counts = np.unique(y, return_counts=True)
+    min_class = int(counts.min()) if counts.size else 1
+    folds_eff = max(2, min(form.n_splits or 5, min_class))
+    return {
+        "ok": True,
+        "classes_found": labels.tolist(),
+        "min_samples_per_class": min_class,
+        "n_splits_effective": folds_eff,
+        "preprocessors": form.preprocessors or ["none", "sg1"],
+        "wavelength_range": form.wavelength_range,
+        "mode": form.mode,
+        "validation_method": form.validation_method,
+        "n_components_max": form.n_components_max,
+    }
+
+
+@app.post("/optimize")
+def optimize(body: TrainForm):
+    try:
+        X, y = state.last_X, state.last_y
+        out = optimize_model_grid(
+            X,
+            y,
+            mode=body.mode,
+            preprocessors=body.preprocessors or [None],
+            n_components_max=body.n_components_max,
+            validation_method=body.validation_method,
+            n_splits=body.n_splits,
+            wavelength_range=body.wavelength_range,
+            logger=logger,
+            time_budget_s=None,
+        )
+        return {"ok": True, **out}
+    except Exception as e:
+        logger.exception("optimize failed")
+        raise HTTPException(400, str(e))
+
+
+class TrainBody(BaseModel):
+    mode: str
+    preprocess: str | None = None
+    n_components: int
+    wavelength_range: tuple[int, int] | None = None
+    validation_method: str | None = None
+
+
+@app.post("/train")
+def train(body: TrainBody):
+    try:
+        X, y = state.last_X, state.last_y
+        Xp = grid_preprocess(X, method=body.preprocess, range_nm=body.wavelength_range)
+        if body.mode == "classification":
+            est = make_pls_da(n_components=body.n_components).fit(Xp, y)
+        else:
+            est = make_pls_reg(n_components=body.n_components).fit(Xp, y)
+        state.last_model = est
+        return {"ok": True}
+    except Exception as e:
+        logger.exception("train failed")
+        raise HTTPException(400, str(e))

@@ -54,15 +54,15 @@ def test_apply_methods_order():
 
 def test_optimize_model_grid():
     X, y = generate_regression_data(n_samples=20, n_features=6)
-    wl = np.linspace(1100, 1500, X.shape[1])
     res = optimize_model_grid(
         X,
         y,
-        wl,
-        classification=False,
-        methods=["none"],
-        n_components_range=range(1, 3),
-        validation_method="KFold",
-        validation_params={"n_splits": 2},
+        mode="regression",
+        preprocessors=["none"],
+        n_components_max=2,
+        validation_method=None,
+        n_splits=2,
+        wavelength_range=None,
+        logger=None,
     )
-    assert res["results"] and {"id", "prep", "n_components"} <= res["results"][0].keys()
+    assert res["results"] and {"preprocess", "n_components"} <= res["results"][0].keys()
