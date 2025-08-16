@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-dist-min";
-import { postOptimize, getOptimizeStatus, postTrain } from "../../services/api";
+import { getOptimizeStatus } from "../../services/api";
+import { postJSON } from "../../lib/api";
 
 /* ===== Helpers ===== */
 function joinList(xs){ if(!xs || !xs.length) return "-"; return xs.join(", "); }
@@ -92,6 +93,7 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   // Refs para gráficos Plotly (evita IDs globais)
   const vipRef = useRef(null);
@@ -107,11 +109,6 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
     return m ? [parseFloat(m[1]), parseFloat(m[3])] : undefined;
   }, [result]);
 
-  const preprocessingList = useMemo(() => {
-    const steps = result?.params?.preprocess_steps || [];
-    const methods = steps.map(p=>p.method);
-    return methods.length ? methods : ["none"];
-  }, [result]);
 
   /* ===== Gráficos: VIPs e Confusion ===== */
   useEffect(() => {
@@ -182,8 +179,15 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
   }, []);
 
   /* ===== Otimização ===== */
-  async function startOptimize() {
-    setError(""); setRunning(true); setProgress(0); setOptResults(null); setOptData(null); setSelected(null);
+  const POLL_INTERVAL_MS = 1000;
+  async function handleOptimize() {
+    setError("");
+    setBusy(true);
+    setRunning(true);
+    setProgress(0);
+    setOptResults(null);
+    setOptData(null);
+    setSelected(null);
 
     // polling progress
     pollRef.current = setInterval(async () => {
@@ -196,19 +200,24 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
         if (total > 0 && current >= total) {
           if (pollRef.current) clearInterval(pollRef.current);
         }
-      } catch { /* ignora polling error */ }
-    }, 1000);
+      } catch {
+        /* ignora polling error */
+      }
+    }, POLL_INTERVAL_MS);
 
     try {
+      const rangeStr = result?.params?.ranges || (spectralRange ? `${spectralRange[0]}-${spectralRange[1]}` : undefined);
       const payload = {
-        mode: isClass ? "classification" : "regression",
+        target: step2.target,
+        n_components: step2.n_components,
+        classification: isClass,
+        threshold: step2.threshold,
+        n_bootstrap: 0,
         validation_method: step2.validation_method,
-        n_splits: step2.validation_params?.n_splits,
-        wavelength_range: spectralRange || undefined,
-        preprocessors: preprocessingList?.length ? preprocessingList : ["none"],
-        n_components_max: Number(step2.n_components) || undefined,
+        validation_params: step2.validation_params,
+        spectral_ranges: rangeStr
       };
-      const res = await postOptimize(payload);
+      const res = await postJSON("/optimize", payload);
       setOptData(res);
       const arr = sortResults(res?.results || []);
       setOptResults(arr);
@@ -216,7 +225,9 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
         setError("Nenhuma combinação válida encontrada. Revise n_components, pré-processos ou validação.");
       } else {
         if (res?.best?.preprocess) {
-          const idx = arr.findIndex(r => r.preprocess === res.best.preprocess && r.n_components === res.best.n_components);
+          const idx = arr.findIndex(
+            r => r.preprocess === res.best.preprocess && r.n_components === res.best.n_components
+          );
           setSelected(idx >= 0 ? idx : 0);
         } else {
           setSelected(0);
@@ -226,18 +237,26 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
       setProgress(100);
       if (pollRef.current) clearInterval(pollRef.current);
     } catch (e) {
-      setError(typeof e === "string" ? e : (e?.message || "Falha na otimização."));
+      setError(typeof e === "string" ? e : e?.message || "Falha na otimização.");
     } finally {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
       setRunning(false);
+      setBusy(false);
     }
   }
 
   function sortResults(rs){
     const arr = [...rs];
     return arr.sort((a,b)=>{
-      const aval = isClass ? -(a?.Accuracy ?? a?.val_metrics?.Accuracy ?? 0) : (a?.RMSECV ?? a?.val_metrics?.RMSECV ?? Number.POSITIVE_INFINITY);
-      const bval = isClass ? -(b?.Accuracy ?? b?.val_metrics?.Accuracy ?? 0) : (b?.RMSECV ?? b?.val_metrics?.RMSECV ?? Number.POSITIVE_INFINITY);
+      const aval = isClass
+        ? -((a?.Accuracy ?? a?.val_metrics?.Accuracy) || 0)
+        : ((a?.RMSECV ?? a?.val_metrics?.RMSECV) || Number.POSITIVE_INFINITY);
+      const bval = isClass
+        ? -((b?.Accuracy ?? b?.val_metrics?.Accuracy) || 0)
+        : ((b?.RMSECV ?? b?.val_metrics?.RMSECV) || Number.POSITIVE_INFINITY);
       return aval - bval;
     });
   }
@@ -267,8 +286,10 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
             {rs.map((r,i)=>{
               const prepRaw = r.preprocess ?? r.prep;
               const prep = PREP_LABEL[prepRaw] || prepRaw || "-";
-              const acc = Number(r?.Accuracy ?? r?.val_metrics?.Accuracy ?? 0);
-              const metric = isClass ? acc.toFixed(3) : Number(r?.RMSECV ?? r?.val_metrics?.RMSECV ?? 0).toFixed(3);
+              const val = isClass
+                ? ((r?.Accuracy ?? r?.val_metrics?.Accuracy) || 0)
+                : ((r?.RMSECV ?? r?.val_metrics?.RMSECV) || 0);
+              const metric = Number(val).toFixed(3);
               const secRaw = isClass ? (r?.MacroF1 ?? r?.val_metrics?.MacroF1) : (r?.R2CV ?? r?.val_metrics?.R2CV);
               const sec = secRaw !== undefined && Number.isFinite(Number(secRaw)) ? Number(secRaw).toFixed(3) : "-";
               const valMethod = r?.validation?.method || r?.validation || "-";
@@ -299,20 +320,26 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
   /* ===== Curvas ===== */
   useEffect(() => {
     if (!optData?.curves || !decisionRef.current) return;
-    const titleMetric = isClass ? "MacroF1" : "RMSECV";
     const traces = (optData.curves || []).map(c => {
       const xs = c.points.map(p => p.n_components);
-      const ys = c.points.map(p => isClass ? p.MacroF1 : p.RMSECV);
+      const ys = c.points.map(p => (isClass ? p.MacroF1 : p.RMSECV));
       return { x: xs, y: ys, mode: "lines+markers", name: c.preprocess, type: "scatter" };
     });
     Plotly.newPlot(
       decisionRef.current,
       traces,
-      { title:`Variáveis Latentes × ${titleMetric}`, xaxis:{ title:"VL" }, yaxis:{ title:titleMetric } },
-      { responsive:true }
+      {
+        title: "Variáveis Latentes × Métrica",
+        xaxis: { title: "VL (n_components)" },
+        yaxis: { title: isClass ? "MacroF1 / Acurácia" : "RMSECV" },
+        legend: { orientation: "h" }
+      },
+      { responsive: true, displaylogo: false }
     );
 
-    function handleResize(){ if (decisionRef.current) Plotly.Plots.resize(decisionRef.current); }
+    function handleResize() {
+      if (decisionRef.current) Plotly.Plots.resize(decisionRef.current);
+    }
     window.addEventListener("resize", handleResize);
     return () => {
       window.removeEventListener("resize", handleResize);
@@ -321,24 +348,29 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
   }, [optData, isClass]);
 
   /* ===== Continuar ===== */
-  async function continueWithSelection(){
+  async function handleTrainWithSelection(){
     if(selected == null || !optData) return; setError("");
     const choice = optResults?.[selected];
     if (!choice) return;
+    setBusy(true);
     setSaving(true);
     try {
-      await postTrain({
-        mode: isClass ? "classification" : "regression",
-        preprocess: choice.preprocess,
+      const rangeStr = result?.params?.ranges || (optData.range_used ? `${optData.range_used[0]}-${optData.range_used[1]}` : undefined);
+      await postJSON("/train", {
+        target: step2.target,
         n_components: choice.n_components,
-        wavelength_range: optData.range_used,
-        validation_method: optData.validation_used,
+        classification: isClass,
+        preprocess: choice.preprocess,
+        validation_method: step2.validation_method,
+        validation_params: step2.validation_params,
+        spectral_ranges: rangeStr
       });
       onContinue?.(optData, { ...result?.params, n_components: choice.n_components, preprocess: choice.preprocess });
     } catch (e) {
       setError(typeof e === "string" ? e : (e?.message || "Erro ao executar modelagem final."));
     } finally {
       setSaving(false);
+      setBusy(false);
     }
   }
 
@@ -463,9 +495,14 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
       )}
 
       {/* Ações de Otimização */}
-      {!optResults && !running && (
-        <button onClick={startOptimize} className="bg-blue-600 hover:bg-blue-700 text-white py-3 px-5 rounded-lg shadow-sm flex items-center">
-          <i className="fas fa-cogs mr-2"></i> Otimizar Modelo
+      {!optResults && (
+        <button
+          onClick={handleOptimize}
+          className="bg-blue-600 hover:bg-blue-700 text-white py-3 px-5 rounded-lg shadow-sm flex items-center disabled:opacity-50"
+          disabled={busy}
+        >
+          {busy ? <i className="fas fa-spinner fa-spin mr-2"></i> : <i className="fas fa-cogs mr-2"></i>}
+          Otimizar Modelo
         </button>
       )}
 
@@ -564,10 +601,11 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
       <div className="flex gap-3 pt-2">
         <button className="bg-gray-200 px-4 py-2 rounded-lg" onClick={onBack}>Voltar</button>
         <button
-          className="bg-[#2e5339] hover:bg-[#305e6b] text-white px-5 py-2 rounded-lg disabled:opacity-50"
-          onClick={continueWithSelection}
-          disabled={running || saving || selected == null || !optResults || optResults.length === 0}
+          className="bg-[#2e5339] hover:bg-[#305e6b] text-white px-5 py-2 rounded-lg disabled:opacity-50 flex items-center"
+          onClick={handleTrainWithSelection}
+          disabled={busy || saving || selected == null || !optResults || optResults.length === 0}
         >
+          {saving && <i className="fas fa-spinner fa-spin mr-2"></i>}
           Continuar com seleção
         </button>
       </div>
