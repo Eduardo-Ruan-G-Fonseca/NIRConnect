@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 import os, sys
@@ -12,6 +12,15 @@ import csv
 from starlette.formparsers import MultiPartParser
 from datetime import datetime
 from pydantic import BaseModel, validator, Field
+import logging
+
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(
+    filename="logs/nir_api.log",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+logger = logging.getLogger("nir")
 
 if os.path.dirname(__file__) not in sys.path:
     sys.path.append(os.path.dirname(__file__))
@@ -1466,91 +1475,11 @@ async def optimize_endpoint(
         raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/report")
-async def create_report(data: dict = Body(...)):
-    """Generate PDF report for given metrics and parameters."""
-    try:
-        metrics = data.get("metrics", {}) or {}
-        params = data.get("params", {}) or {}
-        y_real = data.get("y_real")
-        y_pred = data.get("y_pred")
-        vip = data.get("vip")
-        top_vips = data.get("top_vips")
-        interpretacao_vips = data.get("interpretacao_vips")
-        resumo_interpretativo = data.get("resumo_interpretativo")
-        scores = data.get("scores")
-        analysis_type = params.get("analysis_type", "PLS-R")
-
-        # Caminhos temporários para limpar ao final
-        temp_paths: list[str] = []
-        scatter = None
-        conf_path = None
-        class_report_path = None
-        vip_path = None
-
-        # Figuras específicas por tipo de análise
-        if analysis_type == "PLS-DA" and scores and y_real is not None and y_pred is not None:
-            scatter = _scores_plot(scores, y_real)  # retorna path
-            temp_paths.append(scatter)
-
-            if isinstance(params.get("class_mapping"), dict):
-                labels = [v for k, v in sorted(params["class_mapping"].items(), key=lambda x: int(x[0]))]
-            else:
-                labels = list(np.unique(y_real))
-            if y_real and y_pred:
-                conf_path = _cm_plot(y_real, y_pred, labels)
-                temp_paths.append(conf_path)
-
-            if metrics.get("ClassificationReport"):
-                class_report_path = _class_report_plot(metrics["ClassificationReport"])
-                temp_paths.append(class_report_path)
-        else:
-            # Regressão: scatter y_real vs y_pred
-            if y_real and y_pred:
-                scatter = _scatter_plot(y_real, y_pred)
-                temp_paths.append(scatter)
-
-        # VIP bar plot (se houver VIPs)
-        if vip:
-            vip_path = _vip_plot(vip)
-            temp_paths.append(vip_path)
-
-        # Monta PDF
-        pdf = PDFReport()
-        pdf.add_metrics(
-            metrics,
-            params=params,
-            scatter_path=scatter,
-            vip_path=vip_path,
-            conf_path=conf_path,
-            class_report_path=class_report_path,
-            user=params.get("user", ""),
-            top_vips=top_vips,
-            range_used=params.get("range_used", ""),
-            interpretacao_vips=interpretacao_vips,
-            resumo_interpretativo=resumo_interpretativo,
-        )
-
-        # Gera bytes do PDF
-        pdf_bytes = pdf.pdf.output(dest="S").encode("latin1")
-
-        return StreamingResponse(
-            io.BytesIO(pdf_bytes),
-            media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=report.pdf"},
-        )
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    finally:
-        # Limpeza dos arquivos temporários gerados para o relatório
-        for p in list(set([p for p in temp_paths if p])):
-            try:
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
+def report(job_id: str):
+    path = f"reports/relatorio_{job_id}.pdf"
+    if not os.path.exists(path):
+        raise HTTPException(404, "Relatório não encontrado")
+    return FileResponse(path, media_type="application/pdf", filename="relatorio_nir.pdf")
 
 
 @app.get("/metrics")
