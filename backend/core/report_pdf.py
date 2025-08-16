@@ -11,7 +11,6 @@ from .config import settings
 
 class _PDF(FPDF, HTMLMixin):
     """Extension that supports simple HTML rendering."""
-
     pass
 
 
@@ -19,24 +18,15 @@ class PDFReport:
     def __init__(
         self,
         title: str = "Relatório Técnico - Análise NIR",
-        template_path: str = "templates/report_template.html",
+        template_path: str | None = None,
         engine: str = "fpdf",
     ) -> None:
-        """Initialize the PDF report.
-
-        Parameters
-        ----------
-        title: str
-            Título do relatório.
-        template_path: str
-            Caminho para o template HTML.
-        engine: str
-            "fpdf" (padrão) para usar FPDF ou "wkhtml" para utilizar o
-            `wkhtmltopdf` caso esteja disponível.
-        """
-
+        """Initialize the PDF report."""
         self.title = title
-        self.template_path = template_path
+        default_template = os.path.join(
+            os.path.dirname(__file__), "templates", "report_template.html"
+        )
+        self.template_path = template_path or default_template
         self.engine = engine
         self.pdf = _PDF() if engine == "fpdf" else None
         self._html = ""
@@ -56,9 +46,11 @@ class PDFReport:
         resumo_interpretativo: str | None = None,
         opt_results: list | None = None,
         opt_plot_path: str | None = None,
+        result: dict | None = None,
     ) -> None:
         """Prepare HTML with metrics and optionally render using FPDF."""
         params = params or {}
+        result = result or {}
         scatter_valid = (
             scatter_path if scatter_path and os.path.exists(scatter_path) else ""
         )
@@ -80,23 +72,56 @@ class PDFReport:
             "date": datetime.now().strftime("%Y-%m-%d"),
             "preprocess_list": params.get("preprocess_list", []),
             "top_vips": top_vips,
-            "range_used": range_used,
+            "range_used": result.get("range_used", range_used),
             "conf_path": conf_valid,
             "class_report_path": class_valid,
             "interpretacao_vips": interpretacao_vips,
             "resumo_interpretativo": resumo_interpretativo,
             "opt_results": opt_results or [],
             "opt_plot": (
-                opt_plot_path if opt_plot_path and os.path.exists(opt_plot_path) else ""
+                opt_plot_path if opt_plot_path and os.path.exists(opt_plot_path) else "",
             ),
+            "validation_used": result.get("validation_used"),
+            "n_splits_effective": result.get("n_splits_effective"),
+            "best": result.get("best"),
+            "per_class": result.get("per_class"),
         }
+
+        curves = result.get("curves")
+        curves_plot = ""
+        if curves:
+            try:
+                import matplotlib.pyplot as plt
+
+                fig, ax = plt.subplots()
+                ylabel = None
+                for curve in curves:
+                    pts = curve.get("points", [])
+                    if not pts:
+                        continue
+                    xs = [p["n_components"] for p in pts]
+                    ys_key = "MacroF1" if "MacroF1" in pts[0] else "RMSECV"
+                    ys = [p.get(ys_key) for p in pts]
+                    ylabel = ys_key
+                    ax.plot(xs, ys, marker="o", label=curve.get("preprocess"))
+                ax.set_xlabel("VL")
+                if ylabel:
+                    ax.set_ylabel(ylabel)
+                ax.legend()
+                fig.tight_layout()
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                fig.savefig(tmp.name)
+                plt.close(fig)
+                curves_plot = tmp.name
+            except Exception:
+                curves_plot = ""
+        context["curves_plot"] = curves_plot
 
         if os.path.exists(self.template_path):
             with open(self.template_path, "r", encoding="utf-8") as fh:
                 template = jinja2.Template(fh.read())
             html = template.render(**context)
         else:
-            # Fallback HTML
             rows = "".join(
                 f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in metrics.items()
             )
@@ -119,7 +144,6 @@ class PDFReport:
             self.pdf.output(path)
             return
 
-        # Use wkhtmltopdf for a more faithful rendering
         if not shutil.which("wkhtmltopdf"):
             raise RuntimeError(
                 "wkhtmltopdf not found. Please install it to use this engine."

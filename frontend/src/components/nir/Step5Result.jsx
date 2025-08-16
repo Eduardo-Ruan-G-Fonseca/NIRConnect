@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { postReport } from "../../services/api";
+import { postReport, downloadReport } from "../../services/api";
 
 export default function Step5Result({ result, onBack, onNew }) {
   const data = result?.data || {};
@@ -18,6 +18,11 @@ export default function Step5Result({ result, onBack, onNew }) {
     range_used = "",
     interpretacao_vips = null,
     resumo_interpretativo = "",
+    validation_used = null,
+    n_splits_effective = null,
+    best = null,
+    per_class = null,
+    curves = null,
   } = data;
 
   const isClass = analysis_type === "PLS-DA";
@@ -177,7 +182,6 @@ export default function Step5Result({ result, onBack, onNew }) {
           ...params,
           analysis_type,
           class_mapping,
-          range_used,
         },
         y_real,
         y_pred,
@@ -186,8 +190,15 @@ export default function Step5Result({ result, onBack, onNew }) {
         scores,
         interpretacao_vips,
         resumo_interpretativo,
+        validation_used,
+        n_splits_effective,
+        range_used,
+        best,
+        per_class,
+        curves,
       };
-      const blob = await postReport(payload);
+      const { path } = await postReport(payload);
+      const blob = await downloadReport(path);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

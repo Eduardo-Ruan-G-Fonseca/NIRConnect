@@ -60,6 +60,22 @@ def test_cli_report_and_dashboard(tmp_path):
     assert html_path.exists()
 
 
+def test_report_endpoint(tmp_path):
+    payload = {
+        "metrics": {"R2": 0.9},
+        "validation_used": "KFold",
+        "n_splits_effective": 5,
+        "range_used": [400, 700],
+        "best": {"preprocess": "none", "n_components": 1, "val_metrics": {"R2CV": 0.9, "RMSECV": 0.1}},
+        "curves": [],
+    }
+    resp = client.post("/report", json=payload)
+    assert resp.status_code == 200
+    path = resp.json()["path"]
+    resp2 = client.get("/report/download", params={"path": path})
+    assert resp2.status_code == 200
+
+
 def test_process_file(tmp_path):
     import pandas as pd
     df = pd.DataFrame({"A": [1, 2, 3, 4], "B": [2, 4, 6, 8], "target": [1, 0, 1, 0]})
