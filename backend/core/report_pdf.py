@@ -9,6 +9,9 @@ import shutil
 from .config import settings
 
 
+REPORT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "reports")
+
+
 class _PDF(FPDF, HTMLMixin):
     """Extension that supports simple HTML rendering."""
     pass
@@ -89,6 +92,7 @@ class PDFReport:
 
         curves = result.get("curves")
         curves_plot = ""
+        curves_title = ""
         if curves:
             try:
                 import matplotlib.pyplot as plt
@@ -108,14 +112,20 @@ class PDFReport:
                 if ylabel:
                     ax.set_ylabel(ylabel)
                 ax.legend()
+                title = 'Variáveis Latentes × Accuracy/MacroF1 (Classificação)' if ylabel == 'MacroF1' else 'Variáveis Latentes × RMSECV/R²CV (Regressão)'
+                ax.set_title(title)
                 fig.tight_layout()
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                os.makedirs(REPORT_DIR, exist_ok=True)
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.png', dir=REPORT_DIR)
                 fig.savefig(tmp.name)
                 plt.close(fig)
                 curves_plot = tmp.name
+                curves_title = title
             except Exception:
                 curves_plot = ""
+                curves_title = ""
         context["curves_plot"] = curves_plot
+        context["curves_title"] = curves_title
 
         if os.path.exists(self.template_path):
             with open(self.template_path, "r", encoding="utf-8") as fh:
