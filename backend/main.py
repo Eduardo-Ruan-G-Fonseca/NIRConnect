@@ -264,6 +264,15 @@ app = FastAPI(title="NIR API v4.6")
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("multipart/"):
+        return JSONResponse(
+            status_code=415,
+            content={
+                "detail": "Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
+            },
+        )
+
     def scrub(x):
         if isinstance(x, (bytes, bytearray)):
             return f"<{len(x)} bytes>"
@@ -272,6 +281,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         if isinstance(x, list):
             return [scrub(v) for v in x]
         return x
+
     return JSONResponse(
         status_code=422,
         content={
@@ -1609,9 +1619,23 @@ class OptimizeRequest(BaseModel):
     validation_params: Dict = Field(default_factory=dict)
     spectral_ranges: Optional[Union[str, List[Tuple[float, float]]]] = None
 
+    @validator("validation_params", pre=True)
+    def _parse_validation_params(cls, v):
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except Exception:
+                return {}
+        return v or {}
+
 
 @app.post("/optimize")
-def optimize(req: OptimizeRequest):
+def optimize(req: OptimizeRequest, request: Request):
+    if not request.headers.get("content-type", "").startswith("application/json"):
+        raise HTTPException(
+            status_code=415,
+            detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
+        )
     try:
         X, y = state.last_X, state.last_y
 
@@ -1624,7 +1648,9 @@ def optimize(req: OptimizeRequest):
             if isinstance(first, (list, tuple)) and len(first) == 2:
                 start_nm, end_nm = float(first[0]), float(first[1])
 
-        cv, val_name, n_splits = build_cv_meta(y, req.validation_method, req.validation_params)
+        cv, cv_meta = build_cv_meta(req.validation_method, req.validation_params, y)
+        val_name = cv_meta["method"]
+        n_splits = cv_meta["splits"]
 
         out = optimize_model_grid(
             X,
@@ -1675,13 +1701,12 @@ def optimize(req: OptimizeRequest):
 
         return {
             "validation_used": val_name,
-            "n_splits_effective": n_splits,
+            "n_splits_effective": cv_meta["effective_splits"],
+            "validation": cv_meta,
             "range_used": out.get("range_used"),
             "curves": out.get("curves"),
             "best": best,
-            "per_class": best.get("val_metrics", {}).get("per_class")
-            if req.classification
-            else None,
+            "per_class": best.get("val_metrics", {}).get("per_class") if req.classification else None,
             "model_id": model_id,
             "model_path": model_path,
         }
@@ -1707,9 +1732,31 @@ class TrainRequest(BaseModel):
     validation_params: Dict = Field(default_factory=dict)
     spectral_ranges: Optional[Union[str, List[Tuple[float, float]]]] = None
 
+    @validator("validation_params", pre=True)
+    def _parse_validation_params(cls, v):
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except Exception:
+                return {}
+        return v or {}
+
+
+@app.post("/train-form")
+async def train_form_deprecated():
+    raise HTTPException(
+        status_code=410,
+        detail="Use /train com application/json. Upload de arquivo apenas em /optimize-upload.",
+    )
+
 
 @app.post("/train")
-def train(req: TrainRequest):
+def train(req: TrainRequest, request: Request):
+    if not request.headers.get("content-type", "").startswith("application/json"):
+        raise HTTPException(
+            status_code=415,
+            detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
+        )
     try:
         X, y = state.last_X, state.last_y
 
@@ -1722,7 +1769,9 @@ def train(req: TrainRequest):
             if isinstance(first, (list, tuple)) and len(first) == 2:
                 start_nm, end_nm = float(first[0]), float(first[1])
 
-        cv, val_name, n_splits = build_cv_meta(y, req.validation_method, req.validation_params)
+        cv, cv_meta = build_cv_meta(req.validation_method, req.validation_params, y)
+        val_name = cv_meta["method"]
+        n_splits = cv_meta["splits"]
 
         Xp = grid_preprocess(
             X,
@@ -1737,7 +1786,8 @@ def train(req: TrainRequest):
 
         return {
             "validation_used": val_name,
-            "n_splits_effective": n_splits,
+            "n_splits_effective": cv_meta["effective_splits"],
+            "validation": cv_meta,
             "range_used": [start_nm, end_nm] if start_nm is not None and end_nm is not None else None,
         }
     except Exception as e:

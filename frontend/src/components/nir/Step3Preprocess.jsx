@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-dist-min";
 
-import { postTrainForm } from "../../services/api";
+import { postTrain } from "../../services/api";
 
 export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed }) {
   const chartRef = useRef(null);
@@ -142,43 +142,35 @@ export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed 
 
     setRunning(true);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("target", step2.target);
-      fd.append("n_components", step2.n_components);
-      fd.append("classification", step2.classification ? "true" : "false");
-      if (step2.classification && step2.threshold != null) {
-        fd.append("threshold", step2.threshold);
-      }
-      fd.append("n_bootstrap", step2.n_bootstrap ?? 0);
-      fd.append("validation_method", step2.validation_method);
-      if (step2.validation_params) {
-        fd.append("validation_params", JSON.stringify(step2.validation_params));
-      }
-
-      const rangesStr = ranges.map(([a,b]) => `${a}-${b}`).join(",");
-      fd.append("spectral_ranges", rangesStr);
-
-      // pré-processamentos marcados
       const checked = Array.from(
         document.querySelectorAll('input[name="pp-method"]:checked')
-      ).map(i => i.value);
+      ).map((i) => i.value);
+      const method = checked[0] || null;
 
-      const methods = checked.map(m => ({ method: m }));
-      if (methods.length) {
-        fd.append("preprocess", JSON.stringify(methods));
-      }
+      const rangesStr = ranges.map(([a, b]) => `${a}-${b}`).join(",");
 
-      const data = await postTrainForm(fd);
+      const payload = {
+        target: step2.target,
+        n_components: step2.n_components,
+        classification: step2.classification,
+        threshold: step2.classification && step2.threshold != null ? step2.threshold : undefined,
+        n_bootstrap: step2.n_bootstrap ?? 0,
+        validation_method: step2.validation_method,
+        validation_params: step2.validation_params || {},
+        spectral_ranges: rangesStr,
+        preprocess: method,
+      };
+
+      const data = await postTrain(payload);
       console.debug('[Step3] rangesStr =', rangesStr);
-      console.debug('[Step3] methods =', methods);
+      console.debug('[Step3] method =', method);
       console.debug('[Step3] step2 =', step2);
       console.debug('[Step3] data.range_used =', data?.range_used);
 
       const fullParams = {
-        ...step2,               // <-- spread correto do objeto vindo do Step2
-        ranges: rangesStr,      // <-- nome que o Step4 e a otimização esperam
-        preprocess_steps: methods,
+        ...step2,
+        ranges: rangesStr,
+        preprocess_steps: method ? [{ method }] : [],
         range_used: data.range_used,
       };
 
