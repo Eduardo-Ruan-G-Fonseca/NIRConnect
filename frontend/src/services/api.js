@@ -149,27 +149,6 @@ export async function postPredict(payload) {
   return res.json();
 }
 
-// -------------------- FormData variant for /train --------------------
-export async function postTrainForm(fd) {
-
-  const urls = [
-    `${API_BASE}/train-form`,
-    `${API_BASE}/train`,
-    `${API_BASE}/analisar`,
-    `${API_BASE}/analyze`,
-  ];
-  let last;
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, { method: 'POST', body: fd });
-      if (res.ok) return res.json();
-      if (res.status !== 404) throw new Error(await res.text());
-      last = new Error(`404 em ${url}`);
-    } catch (e) { last = e; }
-  }
-  throw last || new Error('Nenhuma rota de treino encontrada.');
-}
-
 const api = {
   postColumns,
   postOptimize,
@@ -181,7 +160,6 @@ const api = {
   predict,
   postPreprocess,
   postPredict,
-  postTrainForm,
 };
 
 export default api;
