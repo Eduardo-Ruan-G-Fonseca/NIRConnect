@@ -3,7 +3,6 @@ from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-import os, sys
 import json
 import pickle
 import pandas as pd
@@ -18,15 +17,21 @@ import warnings
 import uuid
 import time
 
-from .logging_conf import *  # configure logging early
+
+import sys, os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # garante backend/ no sys.path
+
+from logging_conf import *  # importa direto
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.metrics")
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="sklearn.metrics")
 
 logger = logging.getLogger("nir")
 
-if os.path.dirname(__file__) not in sys.path:
-    sys.path.append(os.path.dirname(__file__))
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.metrics")
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="sklearn.metrics")
+
+logger = logging.getLogger("nir")
 
 from core.config import METRICS_FILE, settings
 from core.metrics import regression_metrics, classification_metrics
