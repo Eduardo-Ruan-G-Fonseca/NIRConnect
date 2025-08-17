@@ -1599,10 +1599,11 @@ class OptimizeRequest(BaseModel):
 
 @app.post("/optimize")
 def optimize(req: OptimizeRequest, request: Request):
-    if not request.headers.get("content-type", "").startswith("application/json"):
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type != "application/json":
         raise HTTPException(
             status_code=415,
-            detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
+            detail="Use Content-Type: application/json",
         )
     try:
         X, y = state.last_X, state.last_y
@@ -1683,17 +1684,46 @@ def optimize(req: OptimizeRequest, request: Request):
                 indent=2,
             )
 
-        return {
+        classes_map = None
+        if req.classification:
+            try:
+                le = getattr(getattr(best_estimator, "model_", None), "label_encoder", None)
+                if le is not None:
+                    classes_map = {int(i): str(c) for i, c in enumerate(le.classes_)}
+            except Exception:
+                classes_map = None
+
+        best_model = {
+            "preprocess": best_prep,
+            "n_components": best_nc,
+            "metrics": best.get("metrics"),
+            "val_metrics": best.get("metrics"),
+            "classes": classes_map,
+            "model_id": model_id,
+        }
+
+        response = {
             "validation": cv_meta,
-            "validation_results": out.get("validation"),
-            "spectral_range": spectral_range_str,
-            "spectral_ranges_applied": spectral_ranges_applied,
+            "spectral": {
+                "spectral_range": spectral_range_str,
+                "spectral_ranges_applied": spectral_ranges_applied,
+            },
             "results": out.get("results"),
             "curves": out.get("curves"),
-            "best": out.get("best"),
-            "model_id": model_id,
-            "model_path": model_path,
+            "best_model": best_model,
+            "labels_all": out.get("labels_all"),
         }
+
+        # compat legacy fields
+        response["validation_used"] = cv_meta.get("method")
+        response["range_used"] = [start_nm, end_nm] if start_nm is not None and end_nm is not None else None
+        response["spectral_range"] = spectral_range_str
+        response["spectral_ranges_applied"] = spectral_ranges_applied
+        response["best"] = best_model
+        response["model_id"] = model_id
+        response["model_path"] = model_path
+
+        return response
     except Exception as e:
         logger.exception("optimize failed")
         raise HTTPException(400, str(e))
@@ -1720,19 +1750,18 @@ class TrainRequest(BaseModel):
 
 @app.post("/train-form")
 async def train_form_deprecated():
+    """Deprecated legacy endpoint kept only for backward compatibility."""
     raise HTTPException(
         status_code=410,
-        detail="Use /train com application/json. Upload de arquivo apenas em /optimize-upload.",
+        detail="Rota descontinuada. Use POST /train com application/json.",
     )
 
 
 @app.post("/train")
 def train(req: TrainRequest, request: Request):
-    if not request.headers.get("content-type", "").startswith("application/json"):
-        raise HTTPException(
-            status_code=415,
-            detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
-        )
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type != "application/json":
+        raise HTTPException(status_code=415, detail="Use Content-Type: application/json")
     try:
         X, y = state.last_X, state.last_y
         y = np.asarray(y).ravel()
@@ -1747,15 +1776,18 @@ def train(req: TrainRequest, request: Request):
 
         start_nm, end_nm = None, None
         spectral_ranges_clean = None
+        spectral_range_str = ""
         if isinstance(req.spectral_ranges, str) and "-" in req.spectral_ranges:
             s, e = req.spectral_ranges.split("-")
             start_nm, end_nm = float(s), float(e)
             spectral_ranges_clean = [(start_nm, end_nm)]
+            spectral_range_str = req.spectral_ranges
         elif isinstance(req.spectral_ranges, list) and req.spectral_ranges:
             try:
                 spectral_ranges_clean = [(float(a), float(b)) for a, b in req.spectral_ranges]
                 if spectral_ranges_clean:
                     start_nm, end_nm = spectral_ranges_clean[0]
+                    spectral_range_str = ",".join(f"{a}-{b}" for a, b in spectral_ranges_clean)
             except Exception:
                 spectral_ranges_clean = None
 
@@ -1769,15 +1801,13 @@ def train(req: TrainRequest, request: Request):
             range_nm=(start_nm, end_nm) if start_nm is not None and end_nm is not None else None,
         )
         if req.classification:
-            est = make_pls_da(n_components=req.n_components).fit(Xp, y)
-        else:
-            est = make_pls_reg(n_components=req.n_components).fit(Xp, y)
-        state.last_model = est
-
-        class_mapping = None
-        if req.classification:
-            classes = np.unique(y)
+            est, metrics, extra = train_plsda(Xp, y, n_components=req.n_components)
+            classes = extra.get("classes", [])
             class_mapping = {int(i): str(c) for i, c in enumerate(classes)}
+        else:
+            est, metrics, extra = train_plsr(Xp, y, n_components=req.n_components)
+            class_mapping = None
+        state.last_model = est
 
         os.makedirs(MODEL_DIR, exist_ok=True)
         model_id = uuid.uuid4().hex
@@ -1790,16 +1820,41 @@ def train(req: TrainRequest, request: Request):
             "class_mapping": class_mapping,
             "spectral_ranges": spectral_ranges_clean,
             "validation": cv_meta,
-            "created_at": datetime.utcnow().isoformat()+"Z"
+            "created_at": datetime.utcnow().isoformat()+"Z",
         }, model_path)
 
-        return {
-            "validation_used": val_name,
-            "n_splits_effective": cv_meta["effective_splits"],
-            "validation": cv_meta,
-            "range_used": [start_nm, end_nm] if start_nm is not None and end_nm is not None else None,
+        best_model = {
+            "preprocess": req.preprocess,
+            "n_components": req.n_components,
+            "metrics": metrics,
+            "val_metrics": metrics,
+            "classes": class_mapping,
             "model_id": model_id,
         }
+
+        response = {
+            "validation": cv_meta,
+            "spectral": {
+                "spectral_range": spectral_range_str,
+                "spectral_ranges_applied": spectral_ranges_clean,
+            },
+            "metrics": metrics,
+            "vip": extra.get("vip"),
+            "scores": extra.get("scores"),
+            "class_mapping": class_mapping,
+            "best_model": best_model,
+        }
+
+        # legacy fields for compatibility
+        response["validation_used"] = val_name
+        response["n_splits_effective"] = cv_meta.get("effective_splits")
+        response["range_used"] = [start_nm, end_nm] if start_nm is not None and end_nm is not None else None
+        response["model_id"] = model_id
+        response["best"] = best_model
+        response["spectral_range"] = spectral_range_str
+        response["spectral_ranges_applied"] = spectral_ranges_clean
+
+        return response
     except Exception as e:
         logger.exception("train failed")
         raise HTTPException(400, str(e))
