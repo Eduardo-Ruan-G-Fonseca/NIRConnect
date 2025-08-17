@@ -175,11 +175,33 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
   }, [result?.data]);
 
   useEffect(() => {
-    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+    return () => { if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; } };
   }, []);
 
   /* ===== Otimização ===== */
-  const POLL_INTERVAL_MS = 1000;
+  const MIN_POLL_MS = 800;
+  const MAX_POLL_MS = 1200;
+
+  function schedulePoll() {
+    const delay = MIN_POLL_MS + Math.random() * (MAX_POLL_MS - MIN_POLL_MS);
+    pollRef.current = setTimeout(async () => {
+      try {
+        const s = await getOptimizeStatus();
+        const current = Number(s?.current ?? 0);
+        const total = Number(s?.total ?? 0);
+        const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+        setProgress(Math.max(0, Math.min(100, pct)));
+        if (s?.done || (total > 0 && current >= total)) {
+          pollRef.current = null;
+          return;
+        }
+      } catch {
+        /* ignora polling error */
+      }
+      schedulePoll();
+    }, delay);
+  }
+
   async function handleOptimize() {
     setError("");
     setBusy(true);
@@ -190,20 +212,7 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
     setSelected(null);
 
     // polling progress
-    pollRef.current = setInterval(async () => {
-      try {
-        const s = await getOptimizeStatus();
-        const current = Number(s?.current ?? 0);
-        const total = Number(s?.total ?? 0);
-        const pct = total > 0 ? Math.round((current / total) * 100) : 0;
-        setProgress(Math.max(0, Math.min(100, pct)));
-        if (total > 0 && current >= total) {
-          if (pollRef.current) clearInterval(pollRef.current);
-        }
-      } catch {
-        /* ignora polling error */
-      }
-    }, POLL_INTERVAL_MS);
+    schedulePoll();
 
     try {
       const rangeStr = result?.params?.ranges || (spectralRange ? `${spectralRange[0]}-${spectralRange[1]}` : undefined);
@@ -235,12 +244,12 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
       }
       setRunning(false);
       setProgress(100);
-      if (pollRef.current) clearInterval(pollRef.current);
+      if (pollRef.current) clearTimeout(pollRef.current);
     } catch (e) {
       setError(typeof e === "string" ? e : e?.message || "Falha na otimização.");
     } finally {
       if (pollRef.current) {
-        clearInterval(pollRef.current);
+        clearTimeout(pollRef.current);
         pollRef.current = null;
       }
       setRunning(false);

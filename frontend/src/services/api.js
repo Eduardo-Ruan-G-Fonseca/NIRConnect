@@ -56,6 +56,12 @@ export async function postReport(payload) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function downloadReport(path) {
+  const res = await fetch(`${API_BASE}/report/download?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error(await res.text());
   return res.blob();
 }
 
@@ -169,6 +175,7 @@ const api = {
   postOptimize,
   getOptimizeStatus,
   postReport,
+  downloadReport,
   preprocess,
   train,
   predict,

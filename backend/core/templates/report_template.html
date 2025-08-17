@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8" />
+<title>{{ title }}</title>
+</head>
+<body>
+<h1>{{ title }}</h1>
+
+{% if validation_used %}
+<h2>Validação</h2>
+<p>Validação: {{ validation_used }} (splits: {{ n_splits_effective }})</p>
+{% endif %}
+
+{% if range_used %}
+<h2>Faixa usada</h2>
+<p>{{ range_used[0] }}–{{ range_used[1] }} nm</p>
+{% endif %}
+
+{% if best %}
+<h2>Melhor modelo</h2>
+<p>Pré-processo: {{ best.preprocess }}, VL: {{ best.n_components }}</p>
+{% if best.val_metrics %}
+<ul>
+{% for k, v in best.val_metrics.items() %}
+<li>{{ k }}: {{ v }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+
+{% if per_class %}
+<h3>Métricas por classe</h3>
+<table border="1" cellspacing="0" cellpadding="3">
+<tr><th>Classe</th><th>Precisão</th><th>Revocação</th><th>F1</th><th>Suporte</th></tr>
+{% for cls, met in per_class.items() %}
+<tr><td>{{ cls }}</td><td>{{ met.precision }}</td><td>{{ met.recall }}</td><td>{{ met.f1 }}</td><td>{{ met.support }}</td></tr>
+{% endfor %}
+</table>
+{% endif %}
+
+{% if curves_plot %}
+<h2>Curvas VL×métrica</h2>
+<img src="{{ curves_plot }}" alt="Curvas" />
+{% endif %}
+
+</body>
+</html>

@@ -3,7 +3,6 @@ from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-import os, sys
 import json
 import pickle
 import pandas as pd
@@ -14,17 +13,19 @@ from starlette.formparsers import MultiPartParser
 from datetime import datetime
 from pydantic import BaseModel, validator, Field
 import logging
+import warnings
+import uuid
+import time
 
-os.makedirs("logs", exist_ok=True)
-logging.basicConfig(
-    filename="logs/nir_api.log",
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
+import sys, os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # garante backend/ no sys.path
+
+from logging_conf import *  # importa direto
+
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.metrics")
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="sklearn.metrics")
+
 logger = logging.getLogger("nir")
-
-if os.path.dirname(__file__) not in sys.path:
-    sys.path.append(os.path.dirname(__file__))
 
 from core.config import METRICS_FILE, settings
 from core.metrics import regression_metrics, classification_metrics
@@ -1504,12 +1505,36 @@ async def optimize_endpoint(
         OPTIMIZE_PROGRESS["total"] = 0
         raise HTTPException(status_code=400, detail=str(exc))
 
+def generate_report(payload: dict) -> str:
+    os.makedirs("reports", exist_ok=True)
+    pdf = PDFReport()
+    result = {
+        "validation_used": payload.get("validation_used"),
+        "n_splits_effective": payload.get("n_splits_effective"),
+        "range_used": payload.get("range_used"),
+        "best": payload.get("best"),
+        "per_class": payload.get("per_class"),
+        "curves": payload.get("curves"),
+    }
+    pdf.add_metrics(payload.get("metrics", {}), params=payload.get("params"), result=result)
+    path = os.path.join("reports", f"relatorio_{uuid.uuid4().hex}.pdf")
+    pdf.output(path)
+    return path
+
+
 @app.post("/report")
-def report(job_id: str):
-    path = f"reports/relatorio_{job_id}.pdf"
+def report_endpoint(payload: dict):
+    pdf_path = generate_report(payload)
+    if not os.path.exists(pdf_path):
+        raise HTTPException(500, "Falha ao gerar relatório.")
+    return {"path": pdf_path}
+
+
+@app.get("/report/download")
+def report_download(path: str):
     if not os.path.exists(path):
-        raise HTTPException(404, "Relatório não encontrado")
-    return FileResponse(path, media_type="application/pdf", filename="relatorio_nir.pdf")
+        raise HTTPException(404, "Arquivo não encontrado.")
+    return FileResponse(path, media_type="application/pdf", filename=os.path.basename(path))
 
 
 @app.get("/metrics")
@@ -1608,19 +1633,63 @@ def optimize(req: OptimizeRequest):
             time_budget_s=None,
         )
 
+        best = out.get("best", {})
+        best_prep = best.get("preprocess")
+        best_nc = best.get("n_components")
+        Xp = grid_preprocess(
+            X,
+            method=best_prep,
+            range_nm=(start_nm, end_nm) if start_nm is not None and end_nm is not None else None,
+        )
+        if req.classification:
+            best_estimator = make_pls_da(n_components=best_nc).fit(Xp, y)
+        else:
+            best_estimator = make_pls_reg(n_components=best_nc).fit(Xp, y)
+
+        os.makedirs("models", exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        model_id = f"{stamp}_{uuid.uuid4().hex[:8]}"
+        model_path = f"models/{model_id}.joblib"
+        joblib.dump(best_estimator, model_path)
+        with open(f"models/{model_id}.meta.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "target": req.target,
+                    "classification": req.classification,
+                    "preprocess": best_prep,
+                    "n_components": best_nc,
+                    "validation_used": val_name,
+                    "range_used": out.get("range_used"),
+                    "metrics": best.get("val_metrics"),
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+
         return {
             "validation_used": val_name,
             "n_splits_effective": n_splits,
             "range_used": out.get("range_used"),
             "curves": out.get("curves"),
-            "best": out.get("best"),
-            "per_class": out.get("best", {}).get("val_metrics", {}).get("per_class")
+            "best": best,
+            "per_class": best.get("val_metrics", {}).get("per_class")
             if req.classification
             else None,
+            "model_id": model_id,
+            "model_path": model_path,
         }
     except Exception as e:
         logger.exception("optimize failed")
         raise HTTPException(400, str(e))
+
+
+@app.get("/model/download/{model_id}")
+def model_download(model_id: str):
+    path = f"models/{model_id}.joblib"
+    if not os.path.exists(path):
+        raise HTTPException(404, "Modelo não encontrado.")
+    return FileResponse(path, media_type="application/octet-stream", filename=os.path.basename(path))
 
 
 class TrainRequest(BaseModel):
