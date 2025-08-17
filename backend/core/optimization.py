@@ -11,6 +11,7 @@ from sklearn.metrics import (
     f1_score,
     mean_squared_error,
     r2_score,
+    cohen_kappa_score,
 )
 from sklearn.model_selection import cross_val_predict
 
@@ -154,7 +155,11 @@ def optimize_model_grid(
                 est = make_pls_da(n_components=nc)
                 y_pred = cross_val_predict(est, Xp, y, cv=cv)
                 acc = float(accuracy_score(y, y_pred))
-                f1m = float(f1_score(y, y_pred, average="macro", zero_division=0))
+                f1m = float(
+                    f1_score(
+                        y, y_pred, average="macro", labels=labels_all, zero_division=0
+                    )
+                )
                 rep = classification_report(
                     y,
                     y_pred,
@@ -173,26 +178,40 @@ def optimize_model_grid(
                         "support": int(d.get("support", (y == lbl).sum())),
                     }
                 cm = confusion_matrix(y, y_pred, labels=labels_all).tolist()
-                met = {
+                kappa = float(cohen_kappa_score(y, y_pred, labels=labels_all)) if len(labels_all) > 1 else 0.0
+                met_full = {
                     "Accuracy": round(acc, 4),
                     "MacroF1": round(f1m, 4),
+                    "Kappa": round(kappa, 4),
                     "per_class": per_class,
                     "confusion_matrix": cm,
                 }
-                curve_val = met["MacroF1"]
+                curve_val = met_full["MacroF1"]
+                met_curve = {"Accuracy": met_full["Accuracy"], "MacroF1": met_full["MacroF1"]}
             else:
                 est = make_pls_reg(n_components=nc)
                 y_cv = cross_val_predict(est, Xp, y, cv=cv)
                 rmse = float(np.sqrt(mean_squared_error(y, y_cv)))
+                mae = float(np.mean(np.abs(y - y_cv)))
                 r2 = float(r2_score(y, y_cv))
-                met = {"RMSECV": round(rmse, 6), "R2CV": round(r2, 6)}
-                curve_val = met["RMSECV"]
+                met_full = {
+                    "RMSECV": round(rmse, 6),
+                    "R2CV": round(r2, 6),
+                    "MAECV": round(mae, 6),
+                }
+                curve_val = met_full["RMSECV"]
+                met_curve = {
+                    "RMSECV": met_full["RMSECV"],
+                    "R2CV": met_full["R2CV"],
+                    "MAECV": met_full["MAECV"],
+                }
 
             results.append(
                 {
                     "preprocess": prep or "none",
                     "n_components": nc,
-                    "val_metrics": met,
+                    "metrics": met_full,
+                    **met_curve,
                 }
             )
             curves_map.setdefault(prep or "none", []).append(
@@ -202,16 +221,16 @@ def optimize_model_grid(
                 }
             )
             if logger:
-                logger.info(f"[grid] prep={prep or 'none'} nc={nc} metrics={met}")
+                logger.info(f"[grid] prep={prep or 'none'} nc={nc} metrics={met_full}")
             if time_budget_s and time.time() - t0 > time_budget_s:
                 break
         if time_budget_s and time.time() - t0 > time_budget_s:
             break
 
     best = (
-        max(results, key=lambda r: r["val_metrics"]["MacroF1"])
+        max(results, key=lambda r: r["MacroF1"])
         if mode == "classification"
-        else min(results, key=lambda r: r["val_metrics"]["RMSECV"])
+        else min(results, key=lambda r: r["RMSECV"])
     )
 
     curves = []
@@ -220,9 +239,13 @@ def optimize_model_grid(
 
     return {
         "results": results,
-        "best": best,
+        "best": {
+            "preprocess": best["preprocess"],
+            "n_components": best["n_components"],
+            "metrics": best["metrics"],
+        },
         "curves": curves,
-        "validation_used": cv_meta["validation"],
+        "validation": cv_meta,
         "range_used": list(wavelength_range) if wavelength_range else None,
         "labels_all": labels_all,
     }

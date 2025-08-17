@@ -16,6 +16,7 @@ import logging
 import warnings
 import uuid
 import time
+import re
 
 
 import sys, os
@@ -579,31 +580,21 @@ def _cross_val_metrics(
 
 
 
-def _parse_ranges(ranges: str, columns: list[str]) -> list[str]:
-    """Return column names within specified wavelength ranges."""
-    if not ranges:
-        return columns
-    selected: list[str] = []
-    numeric_cols = []
-    for c in columns:
-        try:
-            numeric_cols.append((float(c), c))
-        except Exception:
-            pass
-    for part in ranges.split(','):
-        part = part.strip()
-        if not part or '-' not in part:
+def parse_ranges(ranges_str: str):
+    parts = re.split(r"[;,]", ranges_str)
+    clean = []
+    for p in parts:
+        p = p.strip()
+        if not p:
             continue
-        start, end = part.split('-', 1)
-        try:
-            start_f = float(start)
-            end_f = float(end)
-        except ValueError:
+        m = re.match(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*-\s*([0-9]+(?:\.[0-9]+)?)\s*$", p)
+        if not m:
             continue
-        for val, name in numeric_cols:
-            if start_f <= val <= end_f and name not in selected:
-                selected.append(name)
-    return selected if selected else columns
+        lo, hi = float(m.group(1)), float(m.group(2))
+        if lo > hi:
+            lo, hi = hi, lo
+        clean.append((lo, hi))
+    return clean
 
 
 def _is_number(val: str) -> bool:
@@ -1000,21 +991,9 @@ async def analisar_file(
                 wl_vals.append(np.nan)
         wl_arr = np.array(wl_vals, dtype=float)
 
-        ranges_list = []
-        if spectral_ranges:
-            for part in spectral_ranges.split(','):
-                part = part.strip()
-                if not part or '-' not in part:
-                    continue
-                start, end = part.split('-', 1)
-                try:
-                    ranges_list.append((float(start), float(end)))
-                except Exception:
-                    continue
-        else:
-            ranges_list = None
+        ranges_list = parse_ranges(spectral_ranges) if spectral_ranges else []
 
-        mask = build_spectral_mask(wl_arr, ranges_list)
+        mask = build_spectral_mask(wl_arr, ranges_list or None)
         X = X[:, mask]
         wl_arr = wl_arr[mask]
         features = [f for i, f in enumerate(features) if mask[i]]
@@ -1371,14 +1350,9 @@ async def optimize_endpoint(
         X = X_df.values
         wl = np.array(wls_sorted, dtype=float)
 
-        sr = parsed.get("spectral_range")
-        if sr:
-            if isinstance(sr, dict):
-                ranges = [(sr.get("start"), sr.get("end"))]
-            elif isinstance(sr, (list, tuple)) and len(sr) >= 2:
-                ranges = [(sr[0], sr[1])]
-            else:
-                ranges = None
+        sr = parsed.get("spectral_range") or parsed.get("spectral_ranges") or spectral_ranges
+        ranges = parse_ranges(sr) if sr else []
+        if ranges:
             mask = build_spectral_mask(wl, ranges)
             X = X[:, mask]
             wl = wl[mask]
@@ -1639,14 +1613,20 @@ def optimize(req: OptimizeRequest, request: Request):
     try:
         X, y = state.last_X, state.last_y
 
-        start_nm, end_nm = None, None
-        if isinstance(req.spectral_ranges, str) and "-" in req.spectral_ranges:
-            s, e = req.spectral_ranges.split("-")
-            start_nm, end_nm = float(s), float(e)
-        elif isinstance(req.spectral_ranges, list) and req.spectral_ranges:
-            first = req.spectral_ranges[0]
-            if isinstance(first, (list, tuple)) and len(first) == 2:
-                start_nm, end_nm = float(first[0]), float(first[1])
+        ranges_list = []
+        if req.spectral_ranges:
+            if isinstance(req.spectral_ranges, str):
+                ranges_list = parse_ranges(req.spectral_ranges)
+            elif isinstance(req.spectral_ranges, list):
+                try:
+                    ranges_list = [(float(a), float(b)) for a, b in req.spectral_ranges]
+                except Exception:
+                    ranges_list = []
+        spectral_range_str = (
+            req.spectral_ranges if isinstance(req.spectral_ranges, str) else ",".join(f"{a}-{b}" for a, b in ranges_list)
+        )
+        spectral_ranges_applied = ranges_list
+        start_nm, end_nm = (ranges_list[0] if ranges_list else (None, None))
 
         cv, cv_meta = build_cv_meta(req.validation_method, req.validation_params, y)
         val_name = cv_meta["method"]
@@ -1691,8 +1671,9 @@ def optimize(req: OptimizeRequest, request: Request):
                     "preprocess": best_prep,
                     "n_components": best_nc,
                     "validation_used": val_name,
-                    "range_used": out.get("range_used"),
-                    "metrics": best.get("val_metrics"),
+                    "spectral_range": spectral_range_str,
+                    "spectral_ranges_applied": spectral_ranges_applied,
+                    "metrics": best.get("metrics"),
                 },
                 f,
                 ensure_ascii=False,
@@ -1700,13 +1681,12 @@ def optimize(req: OptimizeRequest, request: Request):
             )
 
         return {
-            "validation_used": val_name,
-            "n_splits_effective": cv_meta["effective_splits"],
-            "validation": cv_meta,
-            "range_used": out.get("range_used"),
+            "validation": out.get("validation"),
+            "spectral_range": spectral_range_str,
+            "spectral_ranges_applied": spectral_ranges_applied,
+            "results": out.get("results"),
             "curves": out.get("curves"),
-            "best": best,
-            "per_class": best.get("val_metrics", {}).get("per_class") if req.classification else None,
+            "best": out.get("best"),
             "model_id": model_id,
             "model_path": model_path,
         }
