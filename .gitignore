@@ -8,7 +8,9 @@ venv/
 
 # Backend generated files
 backend/logs/
-backend/models/
+backend/models/*
+!backend/models/.gitkeep
+
 *.log
 *.pkl
 *.xlsx

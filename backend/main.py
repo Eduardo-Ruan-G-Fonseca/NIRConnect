@@ -81,6 +81,9 @@ class _State:
 
 state = _State()
 
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+REPORT_DIR = os.path.join(os.path.dirname(__file__), "reports")
+
 
 def _metrics_ok(m):
     if m is None:
@@ -1496,7 +1499,7 @@ async def optimize_endpoint(
         raise HTTPException(status_code=400, detail=str(exc))
 
 def generate_report(payload: dict) -> str:
-    os.makedirs("reports", exist_ok=True)
+    os.makedirs(REPORT_DIR, exist_ok=True)
     pdf = PDFReport()
     result = {
         "validation_used": payload.get("validation_used"),
@@ -1507,7 +1510,7 @@ def generate_report(payload: dict) -> str:
         "curves": payload.get("curves"),
     }
     pdf.add_metrics(payload.get("metrics", {}), params=payload.get("params"), result=result)
-    path = os.path.join("reports", f"relatorio_{uuid.uuid4().hex}.pdf")
+    path = os.path.join(REPORT_DIR, f"relatorio_{uuid.uuid4().hex}.pdf")
     pdf.output(path)
     return path
 
@@ -1658,10 +1661,10 @@ def optimize(req: OptimizeRequest, request: Request):
         else:
             best_estimator = make_pls_reg(n_components=best_nc).fit(Xp, y)
 
-        os.makedirs("models", exist_ok=True)
+        os.makedirs(MODEL_DIR, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
         model_id = f"{stamp}_{uuid.uuid4().hex[:8]}"
-        model_path = f"models/{model_id}.joblib"
+        model_path = os.path.join(MODEL_DIR, f"{model_id}.joblib")
         joblib.dump(best_estimator, model_path)
         with open(f"models/{model_id}.meta.json", "w", encoding="utf-8") as f:
             json.dump(
@@ -1697,13 +1700,14 @@ def optimize(req: OptimizeRequest, request: Request):
 
 @app.get("/model/download/{model_id}")
 def model_download(model_id: str):
-    path = f"models/{model_id}.joblib"
+    path = os.path.join(MODEL_DIR, f"{model_id}.joblib")
     if not os.path.exists(path):
         raise HTTPException(404, "Modelo não encontrado.")
-    return FileResponse(path, media_type="application/octet-stream", filename=os.path.basename(path))
+    return FileResponse(path, filename=f"nir_model_{model_id}.joblib", media_type="application/octet-stream")
 
 
 class TrainRequest(BaseModel):
+    target: str
     preprocess: Optional[str] = None
     n_components: int
     classification: bool = True
@@ -1741,13 +1745,18 @@ def train(req: TrainRequest, request: Request):
         X, y = state.last_X, state.last_y
 
         start_nm, end_nm = None, None
+        spectral_ranges_clean = None
         if isinstance(req.spectral_ranges, str) and "-" in req.spectral_ranges:
             s, e = req.spectral_ranges.split("-")
             start_nm, end_nm = float(s), float(e)
+            spectral_ranges_clean = [(start_nm, end_nm)]
         elif isinstance(req.spectral_ranges, list) and req.spectral_ranges:
-            first = req.spectral_ranges[0]
-            if isinstance(first, (list, tuple)) and len(first) == 2:
-                start_nm, end_nm = float(first[0]), float(first[1])
+            try:
+                spectral_ranges_clean = [(float(a), float(b)) for a, b in req.spectral_ranges]
+                if spectral_ranges_clean:
+                    start_nm, end_nm = spectral_ranges_clean[0]
+            except Exception:
+                spectral_ranges_clean = None
 
         cv, cv_meta = build_cv_meta(req.validation_method, req.validation_params, y)
         val_name = cv_meta["method"]
@@ -1764,11 +1773,31 @@ def train(req: TrainRequest, request: Request):
             est = make_pls_reg(n_components=req.n_components).fit(Xp, y)
         state.last_model = est
 
+        class_mapping = None
+        if req.classification:
+            classes = np.unique(y)
+            class_mapping = {int(i): str(c) for i, c in enumerate(classes)}
+
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        model_id = uuid.uuid4().hex
+        model_path = os.path.join(MODEL_DIR, f"{model_id}.joblib")
+        joblib.dump({
+            "pipeline": est,
+            "prep": req.preprocess,
+            "n_components": req.n_components,
+            "target": req.target,
+            "class_mapping": class_mapping,
+            "spectral_ranges": spectral_ranges_clean,
+            "validation": cv_meta,
+            "created_at": datetime.utcnow().isoformat()+"Z"
+        }, model_path)
+
         return {
             "validation_used": val_name,
             "n_splits_effective": cv_meta["effective_splits"],
             "validation": cv_meta,
             "range_used": [start_nm, end_nm] if start_nm is not None and end_nm is not None else None,
+            "model_id": model_id,
         }
     except Exception as e:
         logger.exception("train failed")

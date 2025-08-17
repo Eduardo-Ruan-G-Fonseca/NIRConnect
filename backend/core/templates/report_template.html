@@ -9,24 +9,29 @@
 
 {% if validation_used %}
 <h2>Validação</h2>
-<p>Validação: {{ validation_used }} (splits: {{ n_splits_effective }})</p>
+<p>Validação: {{ validation_used }} {% if validation_used == "LOO" %}(N={{ n_splits_effective }}){% else %}(splits={{ n_splits_effective }}){% endif %}</p>
 {% endif %}
 
 {% if range_used %}
 <h2>Faixa usada</h2>
-<p>{{ range_used[0] }}–{{ range_used[1] }} nm</p>
+<p>{{ "%.2f"|format(range_used[0]) }}–{{ "%.2f"|format(range_used[1]) }} nm</p>
+{% endif %}
+
+{% if preprocess_list %}
+<h2>Pré-processadores testados</h2>
+<ul>{% for p in preprocess_list %}<li>{{ p }}</li>{% endfor %}</ul>
 {% endif %}
 
 {% if best %}
 <h2>Melhor modelo</h2>
-<p>Pré-processo: {{ best.preprocess }}, VL: {{ best.n_components }}</p>
+<table border="1" cellspacing="0" cellpadding="3">
+<tr><th>Pré-processo</th><th>VL</th><th>Métrica</th><th>Valor</th></tr>
 {% if best.val_metrics %}
-<ul>
 {% for k, v in best.val_metrics.items() %}
-<li>{{ k }}: {{ v }}</li>
+<tr><td>{{ best.preprocess }}</td><td>{{ best.n_components }}</td><td>{{ k }}</td><td>{{ v }}</td></tr>
 {% endfor %}
-</ul>
 {% endif %}
+</table>
 {% endif %}
 
 {% if per_class %}
@@ -40,7 +45,7 @@
 {% endif %}
 
 {% if curves_plot %}
-<h2>Curvas VL×métrica</h2>
+<h2>{{ curves_title }}</h2>
 <img src="{{ curves_plot }}" alt="Curvas" />
 {% endif %}
 
