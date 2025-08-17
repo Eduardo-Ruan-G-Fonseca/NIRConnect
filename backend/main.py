@@ -17,10 +17,16 @@ import warnings
 import uuid
 import time
 
+
 import sys, os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # garante backend/ no sys.path
 
 from logging_conf import *  # importa direto
+
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.metrics")
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="sklearn.metrics")
+
+logger = logging.getLogger("nir")
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.metrics")
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="sklearn.metrics")
