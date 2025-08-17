@@ -47,7 +47,7 @@ from typing import Optional, Tuple, List, Literal, Any, Dict, Union
 from core.saneamento import saneamento_global
 from core.io_utils import to_float_matrix, encode_labels_if_needed
 from core.optimization import optimize_model_grid, preprocess as grid_preprocess, make_pls_da, make_pls_reg
-from ml.validation import build_cv as build_cv_meta
+from ml.validation import build_cv_meta
 try:
     from ml.pipeline import (
         build_pls_pipeline,
@@ -1593,17 +1593,8 @@ class OptimizeRequest(BaseModel):
     threshold: float = 0.5
     n_bootstrap: int = 0
     validation_method: str = "StratifiedKFold"
-    validation_params: Dict = Field(default_factory=dict)
+    validation_params: Dict[str, Any] = Field(default_factory=dict)
     spectral_ranges: Optional[Union[str, List[Tuple[float, float]]]] = None
-
-    @validator("validation_params", pre=True)
-    def _parse_validation_params(cls, v):
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except Exception:
-                return {}
-        return v or {}
 
 
 @app.post("/optimize")
@@ -1615,6 +1606,15 @@ def optimize(req: OptimizeRequest, request: Request):
         )
     try:
         X, y = state.last_X, state.last_y
+        y = np.asarray(y).ravel()
+
+        vp = req.validation_params
+        if isinstance(vp, str):
+            try:
+                vp = json.loads(vp) or {}
+            except Exception:
+                vp = {}
+        req.validation_params = vp
 
         ranges_list = []
         if req.spectral_ranges:
@@ -1684,7 +1684,8 @@ def optimize(req: OptimizeRequest, request: Request):
             )
 
         return {
-            "validation": out.get("validation"),
+            "validation": cv_meta,
+            "validation_results": out.get("validation"),
             "spectral_range": spectral_range_str,
             "spectral_ranges_applied": spectral_ranges_applied,
             "results": out.get("results"),
@@ -1713,17 +1714,8 @@ class TrainRequest(BaseModel):
     classification: bool = True
     threshold: float = 0.5
     validation_method: str = "StratifiedKFold"
-    validation_params: Dict = Field(default_factory=dict)
+    validation_params: Dict[str, Any] = Field(default_factory=dict)
     spectral_ranges: Optional[Union[str, List[Tuple[float, float]]]] = None
-
-    @validator("validation_params", pre=True)
-    def _parse_validation_params(cls, v):
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except Exception:
-                return {}
-        return v or {}
 
 
 @app.post("/train-form")
@@ -1743,6 +1735,15 @@ def train(req: TrainRequest, request: Request):
         )
     try:
         X, y = state.last_X, state.last_y
+        y = np.asarray(y).ravel()
+
+        vp = req.validation_params
+        if isinstance(vp, str):
+            try:
+                vp = json.loads(vp) or {}
+            except Exception:
+                vp = {}
+        req.validation_params = vp
 
         start_nm, end_nm = None, None
         spectral_ranges_clean = None
