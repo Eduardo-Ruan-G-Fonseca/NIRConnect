@@ -216,6 +216,7 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
 
     try {
       const rangeStr = result?.params?.ranges || (spectralRange ? `${spectralRange[0]}-${spectralRange[1]}` : undefined);
+      const vp = step2.validation_params && typeof step2.validation_params === "object" ? step2.validation_params : {};
       const payload = {
         target: step2.target,
         n_components: step2.n_components,
@@ -223,7 +224,7 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
         threshold: step2.threshold,
         n_bootstrap: 0,
         validation_method: step2.validation_method,
-        validation_params: step2.validation_params,
+        validation_params: vp,
         spectral_ranges: rangeStr
       };
       const res = await postJSON("/optimize", payload);
@@ -365,13 +366,14 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
     setSaving(true);
     try {
       const rangeStr = result?.params?.ranges || (optData.range_used ? `${optData.range_used[0]}-${optData.range_used[1]}` : undefined);
+      const vp = step2.validation_params && typeof step2.validation_params === "object" ? step2.validation_params : {};
       await postJSON("/train", {
         target: step2.target,
         n_components: choice.n_components,
         classification: isClass,
         preprocess: choice.preprocess,
         validation_method: step2.validation_method,
-        validation_params: step2.validation_params,
+        validation_params: vp,
         spectral_ranges: rangeStr
       });
       onContinue?.(optData, { ...result?.params, n_components: choice.n_components, preprocess: choice.preprocess });
