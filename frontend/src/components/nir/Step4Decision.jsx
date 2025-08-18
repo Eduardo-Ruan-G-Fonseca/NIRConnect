@@ -205,7 +205,7 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
 
   async function handleOptimize() {
     if (!getDatasetId()) {
-      alert("Nenhum dataset carregado. Faça o upload antes de otimizar.");
+      alert("Dataset não encontrado — volte ao passo 1 e faça o upload.");
       return;
     }
     setError("");
@@ -252,10 +252,10 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
       if (pollRef.current) clearTimeout(pollRef.current);
     } catch (e) {
       const msg = e?.message || String(e);
-      if (msg.includes("Nenhum dataset carregado")) {
-        alert("Suba o arquivo na etapa 1 (Upload) e tente novamente.");
+      if (msg.includes("Nenhum dataset") || msg.includes("dataset_id")) {
+        alert("Dataset não encontrado. Volte ao passo 1 e faça o upload.");
       } else if (msg.includes("415")) {
-        alert("Esta etapa usa JSON; o upload de arquivo é só no Upload.");
+        alert("Requisição inválida. Envie JSON (Content-Type: application/json).");
       } else {
         setError(typeof e === "string" ? e : msg || "Falha na otimização.");
       }
@@ -371,7 +371,7 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
   /* ===== Continuar ===== */
   async function handleTrainWithSelection(){
     if (!getDatasetId()) {
-      alert("Nenhum dataset carregado. Faça o upload antes de treinar.");
+      alert("Dataset não encontrado — volte ao passo 1 e faça o upload.");
       return;
     }
     if(selected == null || !optData) return; setError("");
@@ -393,10 +393,10 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
       onContinue?.(optData, { ...result?.params, n_components: choice.n_components, preprocess: choice.preprocess });
     } catch (e) {
       const msg = e?.message || String(e);
-      if (msg.includes("Nenhum dataset carregado")) {
-        alert("Suba o arquivo na etapa 1 (Upload) e tente novamente.");
+      if (msg.includes("Nenhum dataset") || msg.includes("dataset_id")) {
+        alert("Dataset não encontrado. Volte ao passo 1 e faça o upload.");
       } else if (msg.includes("415")) {
-        alert("Esta etapa usa JSON; o upload de arquivo é só no Upload.");
+        alert("Requisição inválida. Envie JSON (Content-Type: application/json).");
       } else {
         setError(typeof e === "string" ? e : (msg || "Erro ao executar modelagem final."));
       }

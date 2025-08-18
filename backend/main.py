@@ -912,13 +912,43 @@ async def columns(file: UploadFile = File(...)):
 
     import pandas as pd
 
+    def _is_number(val: str) -> bool:
+        try:
+            float(str(val).strip())
+            return True
+        except Exception:
+            return False
+
     num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
     cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
-    few_level_nums = [c for c in num_cols if df[c].nunique(dropna=True) <= 30]
+    few_level_nums = [c for c in num_cols if df[c].nunique(dropna=True) <= 30 and not _is_number(c)]
     targets = list(dict.fromkeys(cat_cols + few_level_nums))
 
-    dsid = STORE.put(df, None, {"columns": list(df.columns), "targets": targets})
-    return {"dataset_id": dsid, "targets": targets, "columns": list(df.columns)}
+    X_df = df.drop(columns=targets, errors="ignore")
+    y_df = df[targets].copy()
+
+    def _parse_wl(name: str):
+        s = str(name).strip().lower()
+        if s.startswith("wl_"):
+            s = s[3:]
+        s = s.replace(",", ".")
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+    wl_vals = [w for w in (_parse_wl(c) for c in X_df.columns) if w is not None]
+    meta = {
+        "columns": list(X_df.columns),
+        "targets": targets,
+        "n_samples": int(len(df)),
+        "n_wavelengths": int(len(X_df.columns)),
+        "wl_min": float(min(wl_vals)) if wl_vals else None,
+        "wl_max": float(max(wl_vals)) if wl_vals else None,
+    }
+
+    dsid = STORE.put(X_df, y_df, meta)
+    return {"dataset_id": dsid, **meta}
 
 
 @app.get("/columns/meta")
@@ -931,6 +961,10 @@ def columns_meta(dataset_id: str = Query(...)):
         "dataset_id": dataset_id,
         "columns": meta.get("columns", []),
         "targets": meta.get("targets", []),
+        "n_samples": meta.get("n_samples"),
+        "n_wavelengths": meta.get("n_wavelengths"),
+        "wl_min": meta.get("wl_min"),
+        "wl_max": meta.get("wl_max"),
     }
 
 
@@ -948,12 +982,11 @@ def preprocess_dataset(req: PreprocessPayload):
     if not got:
         raise HTTPException(400, "Dataset não encontrado. Faça o upload novamente.")
 
-    df, _, _ = got
-    if req.target not in df.columns:
+    X_df, y_df, _ = got
+    if req.target not in y_df.columns:
         raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
     ranges_list = parse_ranges(req.spectral_ranges) if req.spectral_ranges else []
-    X_df = df.drop(columns=[req.target], errors="ignore")
     _, cols = _parse_ranges(X_df, ranges_list)
     return {"columns": cols, "target": req.target}
 from starlette.concurrency import run_in_threadpool
@@ -1640,16 +1673,15 @@ def optimize(req: OptimizeParams, request: Request):
                 status_code=409,
                 detail="Nenhum dataset carregado para este dataset_id. Refaça o upload em /columns.",
             )
-        df, _, _ = got
-        logger.info(f"optimize using dataset_id={req.dataset_id} shape={df.shape}")
-        if req.target not in df.columns:
+        X_df, y_df, _ = got
+        logger.info(f"optimize using dataset_id={req.dataset_id} shape={X_df.shape}")
+        if req.target not in y_df.columns:
             raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
         ranges_list = parse_ranges(req.spectral_ranges) if req.spectral_ranges else []
-        X_df = df.drop(columns=[req.target], errors="ignore")
         X_df, features = _parse_ranges(X_df, ranges_list)
         X = to_float_matrix(X_df.values)
-        y_raw = df[req.target].tolist()
+        y_raw = y_df[req.target].tolist()
         classification = req.analysis_mode == "PLS-DA"
         if classification:
             y, class_mapping, _ = encode_labels_if_needed(y_raw)
@@ -1777,16 +1809,15 @@ def train(req: TrainParams, request: Request):
                 status_code=409,
                 detail="Nenhum dataset carregado para este dataset_id. Refaça o upload em /columns.",
             )
-        df, _, _ = got
-        logger.info(f"train using dataset_id={req.dataset_id} shape={df.shape}")
-        if req.target not in df.columns:
+        X_df, y_df, _ = got
+        logger.info(f"train using dataset_id={req.dataset_id} shape={X_df.shape}")
+        if req.target not in y_df.columns:
             raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
         ranges_list = parse_ranges(req.spectral_ranges) if req.spectral_ranges else []
-        X_df = df.drop(columns=[req.target], errors="ignore")
         X_df, features = _parse_ranges(X_df, ranges_list)
         X = to_float_matrix(X_df.values)
-        y_raw = df[req.target].tolist()
+        y_raw = y_df[req.target].tolist()
         classification = req.analysis_mode == "PLS-DA"
         if classification:
             y, class_mapping, _ = encode_labels_if_needed(y_raw)
