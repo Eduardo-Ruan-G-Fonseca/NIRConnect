@@ -1,5 +1,6 @@
 // src/components/nir/Step2Parameters.jsx
 import { useEffect, useState } from "react";
+import { postJSON } from "../../api/http";
 
 /** Controle inteiro com ±, input e slider */
 function NumberChooser({
@@ -141,11 +142,12 @@ function DecimalChooser({
   );
 }
 
-export default function Step2Parameters({ meta, onBack, onNext }) {
-  // targets vindos do backend (/columns)
-  const targets = Array.isArray(meta?.targets) ? meta.targets : [];
+export default function Step2Parameters({ onBack, onNext }) {
+  const [targets, setTargets] = useState([]);
+  const [features, setFeatures] = useState([]);
+  const [error, setError] = useState("");
 
-  const [target, setTarget] = useState(targets[0] || "");
+  const [target, setTarget] = useState("");
   const [nComponents, setNComponents] = useState(5);
   const [classification, setClassification] = useState(false);
   const [threshold, setThreshold] = useState(0.5);
@@ -155,8 +157,21 @@ export default function Step2Parameters({ meta, onBack, onNext }) {
   const [testSize, setTestSize] = useState(0.3);
 
   useEffect(() => {
-    if (targets.length && !target) setTarget(targets[0]);
-  }, [targets]); // eslint-disable-line
+    (async () => {
+      try {
+        const resp = await postJSON("/columns");
+        setTargets(resp.targets || []);
+        setFeatures(resp.features || []);
+        if (!target && (resp.targets || []).length) {
+          setTarget(resp.targets[0]);
+        }
+      } catch (e) {
+        setError(e.message || "Falha ao buscar colunas");
+        setTargets([]);
+        setFeatures([]);
+      }
+    })();
+  }, []);
 
   function handleSubmit(e) {
     e.preventDefault();
@@ -185,11 +200,7 @@ export default function Step2Parameters({ meta, onBack, onNext }) {
     <div className="bg-white rounded-lg shadow p-6 space-y-6">
       <h2 className="text-lg font-semibold">2. Parâmetros</h2>
 
-      {!targets.length ? (
-        <div className="text-sm text-red-600">
-          Não recebi a lista de targets do backend. Verifique a resposta de <code>/columns</code>.
-        </div>
-      ) : null}
+      {error && <div className="text-sm text-red-600">{error}</div>}
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* alvo + modo de análise */}

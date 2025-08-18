@@ -1,5 +1,5 @@
 // --- dataset id helpers ---
-const DS_KEY = "nir.dataset_id";
+const DS_KEY = "dataset_id";
 
 export function setDatasetId(id) {
   try {
