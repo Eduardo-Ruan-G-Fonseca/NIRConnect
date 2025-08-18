@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import { setDatasetId } from "../../api/http";
 
 export default function Step1Upload({ onSuccess }) {
   const [progress, setProgress] = useState(0);
@@ -66,6 +67,7 @@ export default function Step1Upload({ onSuccess }) {
           setError("Não foi possível interpretar a resposta do servidor.");
           return;
         }
+        if (meta?.dataset_id) setDatasetId(meta.dataset_id);
         onSuccess({ file, meta });
       } else {
         const msg =
@@ -84,7 +86,7 @@ export default function Step1Upload({ onSuccess }) {
       setStatus("");
     };
 
-    xhr.open("POST", `${API_BASE}/columns`);
+    xhr.open("POST", `${API_BASE}/dataset/upload`);
     xhr.send(fd);
   }
 

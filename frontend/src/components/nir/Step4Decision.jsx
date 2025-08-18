@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-dist-min";
 import { getOptimizeStatus } from "../../services/api";
-import { postJSON } from "../../api/http";
+import { postJSON, getDatasetId, clearDatasetId } from "../../api/http";
 
 /* ===== Helpers ===== */
 function joinList(xs){ if(!xs || !xs.length) return "-"; return xs.join(", "); }
@@ -84,7 +84,7 @@ function orderedEntries(obj, isClass){
   return [...prior, ...rest].map(k => [LABEL[k] || k, obj[k]]);
 }
 
-export default function Step4Decision({ step2, result, dataId, onBack, onContinue }) {
+export default function Step4Decision({ step2, result, onBack, onContinue }) {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const pollRef = useRef(null);
@@ -102,6 +102,7 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
 
   const isClass = !!step2?.classification;
   const metricLabel = isClass ? "Accuracy" : "RMSECV";
+  const ds = getDatasetId();
 
   const spectralRange = useMemo(() => {
     const s = result?.params?.ranges || "";
@@ -203,6 +204,10 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
   }
 
   async function handleOptimize() {
+    if (!getDatasetId()) {
+      alert("Nenhum dataset carregado. Faça o upload antes de otimizar.");
+      return;
+    }
     setError("");
     setBusy(true);
     setRunning(true);
@@ -217,7 +222,6 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
     try {
       const rangeStr = result?.params?.ranges || (spectralRange ? `${spectralRange[0]}-${spectralRange[1]}` : undefined);
       const payload = {
-        data_id: dataId,
         target: step2.target,
         n_components: step2.n_components,
         classification: isClass,
@@ -250,8 +254,6 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
       const msg = e?.message || String(e);
       if (msg.includes("415")) {
         alert("Envie JSON: problema de Content-Type. Tente novamente.");
-      } else if (msg.includes("409")) {
-        alert("Nenhum dataset carregado. Execute a etapa de preparação para obter o data_id.");
       } else {
         setError(typeof e === "string" ? e : msg || "Falha na otimização.");
       }
@@ -366,6 +368,10 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
 
   /* ===== Continuar ===== */
   async function handleTrainWithSelection(){
+    if (!getDatasetId()) {
+      alert("Nenhum dataset carregado. Faça o upload antes de treinar.");
+      return;
+    }
     if(selected == null || !optData) return; setError("");
     const choice = optResults?.[selected];
     if (!choice) return;
@@ -374,7 +380,6 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
     try {
       const rangeStr = result?.params?.ranges || (optData.range_used ? `${optData.range_used[0]}-${optData.range_used[1]}` : undefined);
       await postJSON("/train", {
-        data_id: dataId,
         target: step2.target,
         n_components: choice.n_components,
         classification: isClass,
@@ -388,8 +393,6 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
       const msg = e?.message || String(e);
       if (msg.includes("415")) {
         alert("Envie JSON: problema de Content-Type. Tente novamente.");
-      } else if (msg.includes("409")) {
-        alert("Nenhum dataset carregado. Execute a etapa de preparação para obter o data_id.");
       } else {
         setError(typeof e === "string" ? e : (msg || "Erro ao executar modelagem final."));
       }
@@ -411,6 +414,20 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
       <h2 className="text-2xl font-semibold text-[#305e6b] flex items-center">
         <i className="fas fa-balance-scale mr-2"></i>Tomada de Decisão
       </h2>
+      <div className="text-xs text-gray-500 mb-2">
+        Dataset ativo: {ds ? <code>{ds}</code> : "nenhum"}
+        {ds && (
+          <button
+            className="ml-2 underline"
+            onClick={() => {
+              clearDatasetId();
+              window.location.reload();
+            }}
+          >
+            trocar
+          </button>
+        )}
+      </div>
 
       {error && <div className="text-base text-red-700 bg-red-50 border border-red-200 rounded p-3">{error}</div>}
 
