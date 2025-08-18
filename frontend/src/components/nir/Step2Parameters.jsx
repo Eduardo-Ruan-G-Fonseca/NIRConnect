@@ -1,6 +1,6 @@
 // src/components/nir/Step2Parameters.jsx
 import { useEffect, useState } from "react";
-import { postJSON } from "../../api/http";
+import { getJSON } from "../../api/http";
 
 /** Controle inteiro com ±, input e slider */
 function NumberChooser({
@@ -159,11 +159,18 @@ export default function Step2Parameters({ onBack, onNext }) {
   useEffect(() => {
     (async () => {
       try {
-        const resp = await postJSON("/columns");
-        setTargets(resp.targets || []);
-        setFeatures(resp.features || []);
-        if (!target && (resp.targets || []).length) {
-          setTarget(resp.targets[0]);
+        let ts = JSON.parse(localStorage.getItem("nir.targets") || "[]");
+        let cols = JSON.parse(localStorage.getItem("nir.columns") || "[]");
+        const dsid = localStorage.getItem("nir.datasetId");
+        if ((!ts || ts.length === 0) && dsid) {
+          const meta = await getJSON(`/columns/meta?dataset_id=${encodeURIComponent(dsid)}`);
+          ts = meta.targets || [];
+          cols = meta.columns || cols;
+        }
+        setTargets(ts || []);
+        setFeatures(cols || []);
+        if (!target && (ts || []).length) {
+          setTarget(ts[0]);
         }
       } catch (e) {
         setError(e.message || "Falha ao buscar colunas");

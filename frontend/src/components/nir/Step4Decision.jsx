@@ -252,8 +252,10 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
       if (pollRef.current) clearTimeout(pollRef.current);
     } catch (e) {
       const msg = e?.message || String(e);
-      if (msg.includes("415")) {
-        alert("Envie JSON: problema de Content-Type. Tente novamente.");
+      if (msg.includes("Nenhum dataset carregado")) {
+        alert("Suba o arquivo na etapa 1 (Upload) e tente novamente.");
+      } else if (msg.includes("415")) {
+        alert("Esta etapa usa JSON; o upload de arquivo é só no Upload.");
       } else {
         setError(typeof e === "string" ? e : msg || "Falha na otimização.");
       }
@@ -341,16 +343,16 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
     if (!optData?.curves || !decisionRef.current) return;
     const traces = (optData.curves || []).map(c => {
       const xs = c.points.map(p => p.n_components);
-      const ys = c.points.map(p => (isClass ? p.MacroF1 : p.RMSECV));
+      const ys = c.points.map(p => (isClass ? p.Accuracy : p.RMSECV));
       return { x: xs, y: ys, mode: "lines+markers", name: c.preprocess, type: "scatter" };
     });
     Plotly.newPlot(
       decisionRef.current,
       traces,
       {
-        title: "Variáveis Latentes × Métrica",
-        xaxis: { title: "VL (n_components)" },
-        yaxis: { title: isClass ? "MacroF1 / Acurácia" : "RMSECV" },
+        title: `Variáveis Latentes × Métrica (${metricLabel})`,
+        xaxis: { title: "Componentes (PLS)" },
+        yaxis: { title: metricLabel },
         legend: { orientation: "h" }
       },
       { responsive: true, displaylogo: false }
@@ -391,8 +393,10 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
       onContinue?.(optData, { ...result?.params, n_components: choice.n_components, preprocess: choice.preprocess });
     } catch (e) {
       const msg = e?.message || String(e);
-      if (msg.includes("415")) {
-        alert("Envie JSON: problema de Content-Type. Tente novamente.");
+      if (msg.includes("Nenhum dataset carregado")) {
+        alert("Suba o arquivo na etapa 1 (Upload) e tente novamente.");
+      } else if (msg.includes("415")) {
+        alert("Esta etapa usa JSON; o upload de arquivo é só no Upload.");
       } else {
         setError(typeof e === "string" ? e : (msg || "Erro ao executar modelagem final."));
       }
