@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Request, Query
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.exceptions import RequestValidationError
@@ -50,7 +50,7 @@ from core.io_utils import to_float_matrix, encode_labels_if_needed
 from core.optimization import optimize_model_grid, preprocess as grid_preprocess, make_pls_da, make_pls_reg
 from ml.validation import build_cv_meta
 from core.datasets import store_dataset, resolve_dataset
-from core.dataset_store import DatasetStore
+from core.dataset_store import STORE
 try:
     from ml.pipeline import (
         build_pls_pipeline,
@@ -89,14 +89,14 @@ REPORT_DIR = os.path.join(os.path.dirname(__file__), "reports")
 
 
 def _get_df_or_400(dataset_id: str | None):
-    df = DatasetStore.inst().get(dataset_id)
-    if df is None:
+    got = STORE.get(dataset_id or "")
+    if not got:
         raise HTTPException(
             status_code=400,
-            detail=
-            "Nenhum dataset está carregado. Faça upload do arquivo e chame /columns novamente.",
+            detail="Nenhum dataset está carregado. Faça upload do arquivo e chame /columns novamente.",
         )
-    return df
+    X, _, _ = got
+    return X
 
 
 def _metrics_ok(m):
@@ -901,50 +901,8 @@ async def process_file(
         raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/columns")
-def columns(payload: dict | None = None, dataset_id: str | None = None):
-    # aceitar dataset_id em JSON ou querystring
-    if payload is None:
-        payload = {}
-    did = payload.get("dataset_id") or dataset_id
-
-    df = _get_df_or_400(did)
-
-    # heurística de candidatos a target
-    import numpy as np
-    import pandas as pd
-
-    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
-
-    # numéricas com poucos níveis (classificação)
-    few_level_nums = [c for c in num_cols if df[c].nunique(dropna=True) <= 30]
-
-    targets = list(dict.fromkeys(cat_cols + few_level_nums))  # remove duplicados mantendo ordem
-    features = [c for c in num_cols if c not in targets]
-
-    return {
-        "dataset_id": did or DatasetStore.inst()._last_id,
-        "targets": targets,
-        "features": features,
-        "n_rows": int(df.shape[0]),
-        "n_cols": int(df.shape[1]),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Dataset upload & preparation
-# ---------------------------------------------------------------------------
-
-
-@app.post("/dataset/upload")
-async def dataset_upload(file: UploadFile = File(...)):
-    """Upload a dataset file and store it in-memory.
-
-    Returns a ``dataset_id`` token that can be used in subsequent requests
-    (``/preprocess``, ``/optimize`` and ``/train``).  The response also includes
-    the list of column names present in the uploaded file so the client can
-    allow the user to pick the target column.
-    """
+async def columns(file: UploadFile = File(...)):
+    """Upload dataset file, store it and return targets/metadata."""
 
     content = await file.read()
     try:
@@ -952,8 +910,28 @@ async def dataset_upload(file: UploadFile = File(...)):
     except Exception:
         raise HTTPException(status_code=400, detail="Erro ao ler o dataset.")
 
-    did = DatasetStore.inst().put(df)
-    return {"dataset_id": did, "columns": df.columns.tolist()}
+    import pandas as pd
+
+    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
+    few_level_nums = [c for c in num_cols if df[c].nunique(dropna=True) <= 30]
+    targets = list(dict.fromkeys(cat_cols + few_level_nums))
+
+    dsid = STORE.put(df, None, {"columns": list(df.columns), "targets": targets})
+    return {"dataset_id": dsid, "targets": targets, "columns": list(df.columns)}
+
+
+@app.get("/columns/meta")
+def columns_meta(dataset_id: str = Query(...)):
+    got = STORE.get(dataset_id)
+    if not got:
+        raise HTTPException(status_code=404, detail="dataset_id desconhecido")
+    _, _, meta = got
+    return {
+        "dataset_id": dataset_id,
+        "columns": meta.get("columns", []),
+        "targets": meta.get("targets", []),
+    }
 
 
 class PreprocessPayload(BaseModel):
@@ -966,10 +944,11 @@ class PreprocessPayload(BaseModel):
 def preprocess_dataset(req: PreprocessPayload):
     """Validate dataset/target and return columns after spectral selection."""
 
-    df = DatasetStore.inst().get(req.dataset_id)
-    if df is None:
+    got = STORE.get(req.dataset_id)
+    if not got:
         raise HTTPException(400, "Dataset não encontrado. Faça o upload novamente.")
 
+    df, _, _ = got
     if req.target not in df.columns:
         raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
@@ -1649,16 +1628,20 @@ class OptimizeParams(BaseModel):
 
 @app.post("/optimize")
 def optimize(req: OptimizeParams, request: Request):
-    if "application/json" not in request.headers.get("content-type", "").lower():
-        raise HTTPException(
-            status_code=415,
-            detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
-        )
+    if request.headers.get("content-type", "").split(";")[0] != "application/json":
+        raise HTTPException(status_code=415, detail="Esta rota aceita apenas application/json.")
+    if not req.dataset_id:
+        raise HTTPException(status_code=422, detail="dataset_id é obrigatório. Faça upload em /columns primeiro.")
+
     try:
-        df = _get_df_or_400(getattr(req, "dataset_id", None))
-        logger.info(
-            f"optimize using dataset_id={getattr(req, 'dataset_id', 'last')} shape={df.shape}"
-        )
+        got = STORE.get(req.dataset_id)
+        if not got:
+            raise HTTPException(
+                status_code=409,
+                detail="Nenhum dataset carregado para este dataset_id. Refaça o upload em /columns.",
+            )
+        df, _, _ = got
+        logger.info(f"optimize using dataset_id={req.dataset_id} shape={df.shape}")
         if req.target not in df.columns:
             raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
@@ -1682,9 +1665,9 @@ def optimize(req: OptimizeParams, request: Request):
         start_nm, end_nm = (ranges_list[0] if ranges_list else (None, None))
 
         vp = req.validation_params or {}
-        cv, cv_meta = build_cv_meta(req.validation_method, vp, y, classification)
-        val_name = cv_meta["method"]
-        n_splits = cv_meta["splits"]
+        cv, cv_meta = build_cv_meta(req.validation_method, vp, y)
+        val_name = cv_meta["validation"]["method"]
+        n_splits = cv_meta["validation"]["splits"]
 
         out = optimize_model_grid(
             X,
@@ -1734,11 +1717,8 @@ def optimize(req: OptimizeParams, request: Request):
                 indent=2,
             )
 
-        return {
-            "validation_meta": cv_meta,
+        resp = {
             "validation_results": out.get("validation"),
-            "spectral_range": spectral_range_str,
-            "spectral_ranges_applied": spectral_ranges_applied,
             "preprocess_applied": best_prep or [],
             "results": out.get("results"),
             "curves": out.get("curves"),
@@ -1747,6 +1727,10 @@ def optimize(req: OptimizeParams, request: Request):
             "model_path": model_path,
             "dataset_id": req.dataset_id,
         }
+        resp["spectral_range"] = spectral_range_str
+        resp["spectral_ranges_applied"] = spectral_ranges_applied
+        resp.update(cv_meta)
+        return resp
     except HTTPException:
         raise
     except Exception as e:
@@ -1776,25 +1760,25 @@ class TrainParams(BaseModel):
 
 
 @app.post("/train-form")
-async def train_form_deprecated():
-    raise HTTPException(
-        status_code=410,
-        detail="Use /train com application/json. Upload de arquivo apenas em /optimize-upload.",
-    )
+def deprecated_train_form():
+    raise HTTPException(status_code=410, detail="Rota obsoleta. Use POST /train com JSON.")
 
 
 @app.post("/train")
 def train(req: TrainParams, request: Request):
-    if "application/json" not in request.headers.get("content-type", "").lower():
-        raise HTTPException(
-            status_code=415,
-            detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
-        )
+    if request.headers.get("content-type", "").split(";")[0] != "application/json":
+        raise HTTPException(status_code=415, detail="Esta rota aceita apenas application/json.")
+    if not req.dataset_id:
+        raise HTTPException(status_code=422, detail="dataset_id é obrigatório. Faça upload em /columns primeiro.")
     try:
-        df = _get_df_or_400(getattr(req, "dataset_id", None))
-        logger.info(
-            f"train using dataset_id={getattr(req, 'dataset_id', 'last')} shape={df.shape}"
-        )
+        got = STORE.get(req.dataset_id)
+        if not got:
+            raise HTTPException(
+                status_code=409,
+                detail="Nenhum dataset carregado para este dataset_id. Refaça o upload em /columns.",
+            )
+        df, _, _ = got
+        logger.info(f"train using dataset_id={req.dataset_id} shape={df.shape}")
         if req.target not in df.columns:
             raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
@@ -1814,7 +1798,7 @@ def train(req: TrainParams, request: Request):
         y = np.asarray(y).ravel()
 
         vp = req.validation_params or {}
-        cv, cv_meta = build_cv_meta(req.validation_method, vp, y, classification)
+        cv, cv_meta = build_cv_meta(req.validation_method, vp, y)
         start_nm, end_nm = (ranges_list[0] if ranges_list else (None, None))
 
         methods = req.preprocess or []
@@ -1840,7 +1824,7 @@ def train(req: TrainParams, request: Request):
                 "target": req.target,
                 "class_mapping": class_mapping,
                 "spectral_ranges": ranges_list if ranges_list else None,
-                "validation": cv_meta,
+                "validation": cv_meta["validation"],
                 "decision_mode": req.decision_mode,
                 "threshold": req.threshold,
                 "created_at": datetime.utcnow().isoformat() + "Z",
@@ -1848,14 +1832,15 @@ def train(req: TrainParams, request: Request):
             model_path,
         )
 
-        return {
-            "validation_meta": cv_meta,
-            "range_used": [start_nm, end_nm] if start_nm is not None and end_nm is not None else None,
+        resp = {
             "model_id": model_id,
             "dataset_id": req.dataset_id,
-            "spectral_ranges_applied": ranges_list,
             "preprocess_applied": methods,
         }
+        resp["spectral_range"] = req.spectral_ranges
+        resp["spectral_ranges_applied"] = ranges_list
+        resp.update(cv_meta)
+        return resp
     except HTTPException:
         raise
     except Exception as e:

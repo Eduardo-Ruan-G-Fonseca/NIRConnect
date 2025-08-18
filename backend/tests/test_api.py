@@ -94,17 +94,6 @@ def test_process_file(tmp_path):
     assert "top_vips" in data and isinstance(data["top_vips"], list)
 
 
-def test_columns_requires_dataset():
-    from backend.core.dataset_store import DatasetStore
-
-    store = DatasetStore.inst()
-    store._by_id.clear()
-    store._last_id = None
-    resp = client.post("/columns")
-    assert resp.status_code == 400
-    assert "Nenhum dataset" in resp.json()["detail"]
-
-
 def test_columns_targets_features(tmp_path):
     import pandas as pd
 
@@ -117,25 +106,16 @@ def test_columns_targets_features(tmp_path):
     df.to_csv(path, index=False)
     with open(path, "rb") as fh:
         resp = client.post(
-            "/dataset/upload",
+            "/columns",
             files={"file": ("data.csv", fh.read(), "text/csv")},
         )
     assert resp.status_code == 200
-    did = resp.json()["dataset_id"]
-
-    resp = client.post("/columns", json={"dataset_id": did})
-    assert resp.status_code == 200
     data = resp.json()
-    assert data["dataset_id"] == did
+    did = data["dataset_id"]
+    assert did
     assert "cat" in data["targets"]
     assert "numcat" in data["targets"]
-    assert "feat" in data["features"]
-
-    # fallback to last dataset
-    resp2 = client.post("/columns")
-    assert resp2.status_code == 200
-    data2 = resp2.json()
-    assert data2["dataset_id"] == did
+    assert "feat" in data["columns"]
 
 
 def test_analisar_ranges_and_history(tmp_path):

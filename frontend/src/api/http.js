@@ -1,5 +1,5 @@
 // --- dataset id helpers ---
-const DS_KEY = "dataset_id";
+const DS_KEY = "nir.datasetId";
 
 export function setDatasetId(id) {
   try {
@@ -53,4 +53,13 @@ export async function postJSON(url, body = {}, opts = {}) {
     throw new Error(`${msg}${hint}`);
   }
   return json;
+}
+
+export async function getJSON(url, opts = {}) {
+  const res = await fetch(url, { method: "GET", ...opts });
+  if (!res.ok) {
+    const msg = await res.text();
+    throw new Error(msg || `Erro ${res.status}`);
+  }
+  return res.json();
 }

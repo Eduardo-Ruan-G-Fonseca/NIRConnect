@@ -16,7 +16,7 @@ def test_upload_preprocess_and_train(tmp_path):
     path = tmp_path / "data.csv"
     df.to_csv(path, index=False)
     with open(path, "rb") as fh:
-        resp = client.post("/dataset/upload", files={"file": ("data.csv", fh.read(), "text/csv")})
+        resp = client.post("/columns", files={"file": ("data.csv", fh.read(), "text/csv")})
     assert resp.status_code == 200
     dataset_id = resp.json()["dataset_id"]
     assert dataset_id
