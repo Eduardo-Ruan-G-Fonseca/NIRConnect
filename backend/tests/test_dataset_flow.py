@@ -18,8 +18,20 @@ def test_upload_preprocess_and_train(tmp_path):
     with open(path, "rb") as fh:
         resp = client.post("/columns", files={"file": ("data.csv", fh.read(), "text/csv")})
     assert resp.status_code == 200
-    dataset_id = resp.json()["dataset_id"]
+    data = resp.json()
+    dataset_id = data["dataset_id"]
     assert dataset_id
+    assert "spectra_matrix" not in data
+    assert data["n_samples"] == 4
+    assert data["n_wavelengths"] == 2
+    assert data["wl_min"] == 1100.0
+    assert data["wl_max"] == 1200.0
+
+    meta_resp = client.get(f"/columns/meta?dataset_id={dataset_id}")
+    assert meta_resp.status_code == 200
+    meta = meta_resp.json()
+    assert meta["columns"] == ["1100", "1200"]
+    assert meta["targets"] == ["target"]
 
     resp = client.post(
         "/preprocess",

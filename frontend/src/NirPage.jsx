@@ -8,7 +8,6 @@ import Step5Result from "./components/nir/Step5Result.jsx";
 
 export default function NirPage() {
   const [step, setStep] = useState(1);
-  const [file, setFile] = useState(null);
   const [meta, setMeta] = useState(null);
   const [step2, setStep2] = useState(null);
   const [result, setResult] = useState(null);
@@ -16,7 +15,6 @@ export default function NirPage() {
 
   function resetAll() {
     setStep(1);
-    setFile(null);
     setMeta(null);
     setStep2(null);
     setResult(null);
@@ -52,8 +50,7 @@ export default function NirPage() {
         {/* Steps */}
         {step === 1 && (
           <Step1Upload
-            onSuccess={({ file, meta }) => {
-              setFile(file);
+            onSuccess={({ meta }) => {
               setMeta(meta);
               setStep(2);
             }}
@@ -62,7 +59,6 @@ export default function NirPage() {
 
         {step === 2 && (
           <Step2Parameters
-            meta={meta}
             onBack={() => setStep(1)}
             onNext={(params) => {
               setStep2(params);
@@ -73,7 +69,6 @@ export default function NirPage() {
 
         {step === 3 && (
           <Step3Preprocess
-            file={file}
             meta={meta}
             step2={step2}
             onBack={() => setStep(2)}

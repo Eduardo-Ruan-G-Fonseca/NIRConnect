@@ -157,27 +157,45 @@ export default function Step2Parameters({ onBack, onNext }) {
   const [testSize, setTestSize] = useState(0.3);
 
   useEffect(() => {
-    (async () => {
-      try {
-        let ts = JSON.parse(localStorage.getItem("nir.targets") || "[]");
-        let cols = JSON.parse(localStorage.getItem("nir.columns") || "[]");
-        const dsid = localStorage.getItem("nir.datasetId");
-        if ((!ts || ts.length === 0) && dsid) {
-          const meta = await getJSON(`/columns/meta?dataset_id=${encodeURIComponent(dsid)}`);
-          ts = meta.targets || [];
-          cols = meta.columns || cols;
+    const ds = localStorage.getItem("nir.datasetId");
+    if (!ds) {
+      setError("Dataset não encontrado. Volte ao passo 1 e faça o upload.");
+      return;
+    }
+    const cachedTargets = JSON.parse(localStorage.getItem("nir.targets") || "[]");
+    const cachedCols = JSON.parse(localStorage.getItem("nir.columns") || "[]");
+    if (cachedTargets.length && cachedCols.length) {
+      setTargets(cachedTargets);
+      setFeatures(cachedCols);
+      setTarget((t) => t || cachedTargets[0] || "");
+      return;
+    }
+    getJSON(`/columns/meta?dataset_id=${encodeURIComponent(ds)}`)
+      .then((meta) => {
+        if (!meta?.targets?.length || !meta?.columns?.length) {
+          throw new Error("invalid");
         }
-        setTargets(ts || []);
-        setFeatures(cols || []);
-        if (!target && (ts || []).length) {
-          setTarget(ts[0]);
-        }
-      } catch (e) {
-        setError(e.message || "Falha ao buscar colunas");
+        localStorage.setItem("nir.targets", JSON.stringify(meta.targets));
+        localStorage.setItem("nir.columns", JSON.stringify(meta.columns));
+        localStorage.setItem(
+          "nir.meta",
+          JSON.stringify({
+            n_samples: meta.n_samples,
+            n_wavelengths: meta.n_wavelengths,
+            wl_min: meta.wl_min,
+            wl_max: meta.wl_max,
+          })
+        );
+        setTargets(meta.targets);
+        setFeatures(meta.columns);
+        setTarget(meta.targets[0] || "");
+        setError(null);
+      })
+      .catch(() => {
+        setError("Erro ao recuperar metadados. Refaça o upload no passo 1.");
         setTargets([]);
         setFeatures([]);
-      }
-    })();
+      });
   }, []);
 
   function handleSubmit(e) {

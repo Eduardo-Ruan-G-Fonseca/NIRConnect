@@ -67,12 +67,23 @@ export default function Step1Upload({ onSuccess }) {
           setError("Não foi possível interpretar a resposta do servidor.");
           return;
         }
-        if (meta?.dataset_id) {
-          localStorage.setItem("nir.datasetId", meta.dataset_id);
-          localStorage.setItem("nir.columns", JSON.stringify(meta.columns || []));
-          localStorage.setItem("nir.targets", JSON.stringify(meta.targets || []));
-          setDatasetId(meta.dataset_id);
+        if (!meta?.dataset_id || !meta?.columns?.length || !meta?.targets?.length) {
+          setError("Resposta de /columns inválida. Tente reenviar o arquivo.");
+          return;
         }
+        localStorage.setItem("nir.datasetId", meta.dataset_id);
+        localStorage.setItem("nir.columns", JSON.stringify(meta.columns || []));
+        localStorage.setItem("nir.targets", JSON.stringify(meta.targets || []));
+        localStorage.setItem(
+          "nir.meta",
+          JSON.stringify({
+            n_samples: meta.n_samples,
+            n_wavelengths: meta.n_wavelengths,
+            wl_min: meta.wl_min,
+            wl_max: meta.wl_max,
+          })
+        );
+        setDatasetId(meta.dataset_id);
         onSuccess({ file, meta });
       } else {
         const msg =

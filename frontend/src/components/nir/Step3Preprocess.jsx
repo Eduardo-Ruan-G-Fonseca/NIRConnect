@@ -3,16 +3,27 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-dist-min";
 
 import { postTrain } from "../../services/api";
+import { getDatasetId } from "../../api/http";
 
-export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed }) {
+export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
   const chartRef = useRef(null);
   const preselectedOnce = useRef(false); // garante que a seleção total só acontece 1x
 
   // dados vindos do /columns
-  const wavelengths = useMemo(
-    () => meta?.spectra_matrix?.wavelengths || meta?.mean_spectra?.wavelengths || [],
-    [meta]
-  );
+  const wavelengths = useMemo(() => {
+    if (meta?.spectra_matrix?.wavelengths) return meta.spectra_matrix.wavelengths;
+    if (meta?.mean_spectra?.wavelengths) return meta.mean_spectra.wavelengths;
+    if (meta?.columns) {
+      return meta.columns
+        .map((c) => {
+          const s = String(c).replace(/^wl_/, "").replace(",", ".");
+          const n = parseFloat(s);
+          return Number.isFinite(n) ? n : null;
+        })
+        .filter((n) => n != null);
+    }
+    return [];
+  }, [meta]);
   const allSpectraValues = meta?.spectra_matrix?.values || [];
   const meanWl   = meta?.mean_spectra?.wavelengths || [];
   const meanVals = meta?.mean_spectra?.values || [];
@@ -137,7 +148,8 @@ export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed 
 
   async function runAnalysis(e) {
     e.preventDefault();
-    if (!file) return alert("Envie um arquivo no passo 1.");
+    const ds = getDatasetId();
+    if (!ds) return alert("Dataset não encontrado — volte ao passo 1 e faça o upload.");
     if (!ranges.length) return alert("Selecione ao menos uma faixa.");
 
     setRunning(true);
@@ -177,7 +189,12 @@ export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed 
       onAnalyzed?.(data, fullParams);
     } catch (err) {
       console.error(err);
-      alert("Erro ao executar calibração.\n" + (err?.message || err));
+      const msg = err?.message || String(err);
+      if (msg.includes("415")) {
+        alert("Requisição inválida. Envie JSON (Content-Type: application/json).");
+      } else {
+        alert("Erro ao executar calibração.\n" + msg);
+      }
     } finally {
       setRunning(false);
     }
@@ -188,7 +205,7 @@ export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed 
       <div className="bg-white rounded-lg shadow p-6 space-y-3">
         <h2 className="text-lg font-semibold">3. Faixas & Pré-processamento</h2>
         <p className="text-sm text-red-600">
-          Não recebi <code>spectra_matrix</code> de <code>/columns</code>. Verifique o backend.
+          Metadados indisponíveis. Refaça o upload no passo 1.
         </p>
         <div className="flex gap-2">
           <button type="button" className="bg-gray-200 px-4 py-2 rounded" onClick={onBack}>
