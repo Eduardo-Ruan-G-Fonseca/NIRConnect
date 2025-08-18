@@ -9,3 +9,9 @@ venv/
 *.swp
 
 .pytest_cache/
+data/
+logs/
+models/*
+!models/.gitkeep
+reports/*
+!reports/.gitkeep

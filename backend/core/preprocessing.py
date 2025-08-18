@@ -108,9 +108,17 @@ def vn(X: np.ndarray) -> np.ndarray:
     return X / np.where(norm == 0, 1, norm)
 
 
-def apply_methods(X: np.ndarray, methods: list, wl: np.ndarray | None = None) -> np.ndarray:
+def apply_methods(X: np.ndarray | None,
+                  methods: list | None = None,
+                  wl: np.ndarray | None = None) -> np.ndarray:
     """Apply preprocessing methods in sequence."""
 
+    if X is None:
+        raise ValueError(
+            "Matriz X não carregada. Execute o passo de processamento (/process ou equivalente) antes do treino/otimização."
+        )
+
+    methods = methods or []
     Xp = X.copy()
     for method in methods:
         if isinstance(method, dict):

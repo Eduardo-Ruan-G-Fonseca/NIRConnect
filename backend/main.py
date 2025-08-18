@@ -17,6 +17,7 @@ import warnings
 import uuid
 import time
 import re
+from pathlib import Path
 
 
 import sys, os
@@ -83,6 +84,24 @@ state = _State()
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
 REPORT_DIR = os.path.join(os.path.dirname(__file__), "reports")
+
+DATA_DIR = Path(os.path.join(os.path.dirname(__file__), "data"))
+
+
+def save_data(X: np.ndarray, y: np.ndarray, meta: dict | None = None) -> str:
+    """Persist dataset to disk and return a unique identifier."""
+    DATA_DIR.mkdir(exist_ok=True)
+    data_id = uuid.uuid4().hex
+    joblib.dump((X, y, meta or {}), DATA_DIR / f"{data_id}.joblib")
+    return data_id
+
+
+def load_data_by_id(data_id: str) -> tuple[np.ndarray | None, np.ndarray | None, dict | None]:
+    """Load dataset triple (X, y, meta) by identifier."""
+    path = DATA_DIR / f"{data_id}.joblib"
+    if not path.exists():
+        return None, None, None
+    return joblib.load(path)
 
 
 def _metrics_ok(m):
@@ -842,13 +861,17 @@ async def process_file(
             [float(f) if str(f).replace('.', '', 1).isdigit() else None for f in features],
         )
 
+        state.last_X, state.last_y = X, y
+        data_id = save_data(X, y, {"features": features})
+
         # resposta segura para JSON
         return jsonable_encoder({
             "metrics": metrics,
             "vip": vip_list,
             "top_vips": top_vips,
             "range_used": "",
-            "interpretacao_vips": interpretacao
+            "interpretacao_vips": interpretacao,
+            "data_id": data_id,
         })
 
     except HTTPException:
@@ -1018,6 +1041,9 @@ async def analisar_file(
             class_mapping = {}
             X, y_arr, features = saneamento_global(X, y_arr, features)
             y_series = pd.Series(y_arr)
+
+        state.last_X, state.last_y = X, y_arr
+        data_id = save_data(X, y_arr, {"features": features})
 
         scores = None
         model = None
@@ -1210,6 +1236,7 @@ async def analisar_file(
             "resumo_interpretativo": resumo,
             "class_mapping": class_mapping,
             "decision_mode": decision_mode,
+            "data_id": data_id,
         })
 
     except HTTPException:
@@ -1595,6 +1622,7 @@ class OptimizeRequest(BaseModel):
     validation_method: str = "StratifiedKFold"
     validation_params: Dict[str, Any] = Field(default_factory=dict)
     spectral_ranges: Optional[Union[str, List[Tuple[float, float]]]] = None
+    data_id: Optional[str] = None
 
 
 @app.post("/optimize")
@@ -1605,7 +1633,15 @@ def optimize(req: OptimizeRequest, request: Request):
             detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
         )
     try:
-        X, y = state.last_X, state.last_y
+        if req.data_id:
+            X, y, _ = load_data_by_id(req.data_id)
+        else:
+            X, y = state.last_X, state.last_y
+        if X is None or y is None:
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "Dataset ausente. Forneça data_id válido ou execute o processamento de dados."},
+            )
         y = np.asarray(y).ravel()
 
         vp = req.validation_params
@@ -1716,6 +1752,7 @@ class TrainRequest(BaseModel):
     validation_method: str = "StratifiedKFold"
     validation_params: Dict[str, Any] = Field(default_factory=dict)
     spectral_ranges: Optional[Union[str, List[Tuple[float, float]]]] = None
+    data_id: Optional[str] = None
 
 
 @app.post("/train-form")
@@ -1734,7 +1771,17 @@ def train(req: TrainRequest, request: Request):
             detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
         )
     try:
-        X, y = state.last_X, state.last_y
+        if req.data_id:
+            X, y, _ = load_data_by_id(req.data_id)
+        else:
+            X, y = state.last_X, state.last_y
+        if X is None or y is None:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "Nenhum dataset está carregado nesta sessão. Suba/prepare os dados (Executar calibração) antes de treinar."
+                },
+            )
         y = np.asarray(y).ravel()
 
         vp = req.validation_params
