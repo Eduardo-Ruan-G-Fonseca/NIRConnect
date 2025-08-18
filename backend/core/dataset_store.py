@@ -1,33 +1,23 @@
-from typing import Optional
-from threading import Lock
-import pandas as pd
+from typing import Any, Dict, Tuple
 import uuid
 
 
 class DatasetStore:
-    _instance = None
-    _lock = Lock()
+    """Simple in-memory store for temporary dataset objects."""
 
-    def __init__(self):
-        self._by_id: dict[str, pd.DataFrame] = {}
-        self._last_id: Optional[str] = None
+    def __init__(self) -> None:
+        self._mem: Dict[str, Tuple[Any, Any, dict]] = {}
 
-    @classmethod
-    def inst(cls):
-        with cls._lock:
-            if not cls._instance:
-                cls._instance = DatasetStore()
-            return cls._instance
+    def put(self, X, y, meta: dict | None) -> str:
+        dsid = uuid.uuid4().hex
+        self._mem[dsid] = (X, y, meta or {})
+        return dsid
 
-    def put(self, df: pd.DataFrame) -> str:
-        did = str(uuid.uuid4())
-        self._by_id[did] = df
-        self._last_id = did
-        return did
+    def get(self, dsid: str):
+        return self._mem.get(dsid)
 
-    def get(self, did: Optional[str]) -> Optional[pd.DataFrame]:
-        if did and did in self._by_id:
-            return self._by_id[did]
-        if self._last_id:
-            return self._by_id.get(self._last_id)
-        return None
+    def has(self, dsid: str) -> bool:
+        return dsid in self._mem
+
+
+STORE = DatasetStore()
