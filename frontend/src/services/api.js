@@ -1,4 +1,6 @@
 
+import { postJSON } from "../api/http";
+
 const DEFAULT_API_BASE =
   typeof location !== 'undefined'
     ? `${location.protocol}//${location.hostname}:8000`
@@ -24,18 +26,7 @@ export async function postAnalisar(fd) {
 }
 
 export async function postOptimize(payload) {
-  const res = await fetch(`${API_BASE}/optimize`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    let msg;
-    try { const j = await res.json(); msg = j.detail || JSON.stringify(j); }
-    catch { msg = await res.text(); }
-    throw new Error(msg || 'Erro ao otimizar.');
-  }
-  return res.json();
+  return postJSON(`${API_BASE}/optimize`, payload);
 }
 
 export async function getOptimizeStatus() {
@@ -129,13 +120,7 @@ export async function postPreprocess(payload) {
 
 
 export async function postTrain(payload) {
-  const res = await fetch(`${API_BASE}/train`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  return postJSON(`${API_BASE}/train`, payload);
 }
 
 
