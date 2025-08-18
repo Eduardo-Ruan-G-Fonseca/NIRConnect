@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-dist-min";
 import { getOptimizeStatus } from "../../services/api";
-import { postJSON } from "../../lib/api";
+import { postJSON } from "../../api/http";
 
 /* ===== Helpers ===== */
 function joinList(xs){ if(!xs || !xs.length) return "-"; return xs.join(", "); }
@@ -84,7 +84,7 @@ function orderedEntries(obj, isClass){
   return [...prior, ...rest].map(k => [LABEL[k] || k, obj[k]]);
 }
 
-export default function Step4Decision({ step2, result, onBack, onContinue }) {
+export default function Step4Decision({ step2, result, dataId, onBack, onContinue }) {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const pollRef = useRef(null);
@@ -217,13 +217,14 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
     try {
       const rangeStr = result?.params?.ranges || (spectralRange ? `${spectralRange[0]}-${spectralRange[1]}` : undefined);
       const payload = {
+        data_id: dataId,
         target: step2.target,
         n_components: step2.n_components,
         classification: isClass,
         threshold: step2.threshold,
-        n_bootstrap: 0,
+        preprocess: result?.params?.preprocess_steps || [],
         validation_method: step2.validation_method,
-        validation_params: step2.validation_params,
+        validation_params: step2.validation_params || {},
         spectral_ranges: rangeStr
       };
       const res = await postJSON("/optimize", payload);
@@ -246,7 +247,14 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
       setProgress(100);
       if (pollRef.current) clearTimeout(pollRef.current);
     } catch (e) {
-      setError(typeof e === "string" ? e : e?.message || "Falha na otimização.");
+      const msg = e?.message || String(e);
+      if (msg.includes("415")) {
+        alert("Envie JSON: problema de Content-Type. Tente novamente.");
+      } else if (msg.includes("409")) {
+        alert("Nenhum dataset carregado. Execute a etapa de preparação para obter o data_id.");
+      } else {
+        setError(typeof e === "string" ? e : msg || "Falha na otimização.");
+      }
     } finally {
       if (pollRef.current) {
         clearTimeout(pollRef.current);
@@ -366,17 +374,25 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
     try {
       const rangeStr = result?.params?.ranges || (optData.range_used ? `${optData.range_used[0]}-${optData.range_used[1]}` : undefined);
       await postJSON("/train", {
+        data_id: dataId,
         target: step2.target,
         n_components: choice.n_components,
         classification: isClass,
-        preprocess: choice.preprocess,
+        preprocess: choice.preprocess ? [choice.preprocess] : [],
         validation_method: step2.validation_method,
-        validation_params: step2.validation_params,
+        validation_params: step2.validation_params || {},
         spectral_ranges: rangeStr
       });
       onContinue?.(optData, { ...result?.params, n_components: choice.n_components, preprocess: choice.preprocess });
     } catch (e) {
-      setError(typeof e === "string" ? e : (e?.message || "Erro ao executar modelagem final."));
+      const msg = e?.message || String(e);
+      if (msg.includes("415")) {
+        alert("Envie JSON: problema de Content-Type. Tente novamente.");
+      } else if (msg.includes("409")) {
+        alert("Nenhum dataset carregado. Execute a etapa de preparação para obter o data_id.");
+      } else {
+        setError(typeof e === "string" ? e : (msg || "Erro ao executar modelagem final."));
+      }
     } finally {
       setSaving(false);
       setBusy(false);

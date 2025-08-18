@@ -158,7 +158,7 @@ export default function Step3Preprocess({ file, meta, step2, onBack, onAnalyzed 
         validation_method: step2.validation_method,
         validation_params: step2.validation_params || {},
         spectral_ranges: rangesStr,
-        preprocess: method,
+        preprocess: method ? [method] : [],
       };
 
       const data = await postTrain(payload);

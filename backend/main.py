@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Request
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 import json
@@ -17,7 +18,6 @@ import warnings
 import uuid
 import time
 import re
-from pathlib import Path
 
 
 import sys, os
@@ -49,6 +49,7 @@ from core.saneamento import saneamento_global
 from core.io_utils import to_float_matrix, encode_labels_if_needed
 from core.optimization import optimize_model_grid, preprocess as grid_preprocess, make_pls_da, make_pls_reg
 from ml.validation import build_cv_meta
+from core.datasets import store_dataset, resolve_dataset
 try:
     from ml.pipeline import (
         build_pls_pipeline,
@@ -84,26 +85,6 @@ state = _State()
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
 REPORT_DIR = os.path.join(os.path.dirname(__file__), "reports")
-
-DATA_DIR = Path(os.path.join(os.path.dirname(__file__), "data"))
-
-
-def save_data(X: np.ndarray, y: np.ndarray, meta: dict | None = None) -> str:
-    """Persist dataset to disk and return a unique identifier."""
-    DATA_DIR.mkdir(exist_ok=True)
-    data_id = uuid.uuid4().hex
-    joblib.dump((X, y, meta or {}), DATA_DIR / f"{data_id}.joblib")
-    return data_id
-
-
-def load_data_by_id(data_id: str) -> tuple[np.ndarray | None, np.ndarray | None, dict | None]:
-    """Load dataset triple (X, y, meta) by identifier."""
-    path = DATA_DIR / f"{data_id}.joblib"
-    if not path.exists():
-        return None, None, None
-    return joblib.load(path)
-
-
 def _metrics_ok(m):
     if m is None:
         return False
@@ -283,6 +264,17 @@ def optimize_handler(X: np.ndarray, y: np.ndarray, params: dict, progress_callba
 
     return {"results": results, "errors_summary": dict(errors)}
 app = FastAPI(title="NIR API v4.6")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    ctype = request.headers.get("content-type", "").lower()
+    if "multipart/form-data" in ctype:
+        return JSONResponse(
+            status_code=415,
+            content={"detail": "Este endpoint aceita apenas JSON (application/json). Reenvie o corpo como JSON."},
+        )
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 @app.exception_handler(RequestValidationError)
@@ -861,8 +853,7 @@ async def process_file(
             [float(f) if str(f).replace('.', '', 1).isdigit() else None for f in features],
         )
 
-        state.last_X, state.last_y = X, y
-        data_id = save_data(X, y, {"features": features})
+        data_id = store_dataset(X, y, {"target": target, "features": features})
 
         # resposta segura para JSON
         return jsonable_encoder({
@@ -872,6 +863,7 @@ async def process_file(
             "range_used": "",
             "interpretacao_vips": interpretacao,
             "data_id": data_id,
+            "meta": {"target": target},
         })
 
     except HTTPException:
@@ -1042,8 +1034,7 @@ async def analisar_file(
             X, y_arr, features = saneamento_global(X, y_arr, features)
             y_series = pd.Series(y_arr)
 
-        state.last_X, state.last_y = X, y_arr
-        data_id = save_data(X, y_arr, {"features": features})
+        data_id = store_dataset(X, y_arr, {"target": target, "features": features})
 
         scores = None
         model = None
@@ -1237,6 +1228,7 @@ async def analisar_file(
             "class_mapping": class_mapping,
             "decision_mode": decision_mode,
             "data_id": data_id,
+            "meta": {"target": target},
         })
 
     except HTTPException:
@@ -1623,34 +1615,24 @@ class OptimizeRequest(BaseModel):
     validation_params: Dict[str, Any] = Field(default_factory=dict)
     spectral_ranges: Optional[Union[str, List[Tuple[float, float]]]] = None
     data_id: Optional[str] = None
+    preprocess: Optional[Union[str, List[str]]] = None
 
 
 @app.post("/optimize")
 def optimize(req: OptimizeRequest, request: Request):
-    if not request.headers.get("content-type", "").startswith("application/json"):
+    if "application/json" not in request.headers.get("content-type", "").lower():
         raise HTTPException(
             status_code=415,
             detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
         )
     try:
-        if req.data_id:
-            X, y, _ = load_data_by_id(req.data_id)
-        else:
-            X, y = state.last_X, state.last_y
-        if X is None or y is None:
-            return JSONResponse(
-                status_code=409,
-                content={"detail": "Dataset ausente. Forneça data_id válido ou execute o processamento de dados."},
-            )
+        try:
+            X, y, meta, resolved_id = resolve_dataset(req.data_id)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
         y = np.asarray(y).ravel()
 
-        vp = req.validation_params
-        if isinstance(vp, str):
-            try:
-                vp = json.loads(vp) or {}
-            except Exception:
-                vp = {}
-        req.validation_params = vp
+        vp = req.validation_params or {}
 
         ranges_list = []
         if req.spectral_ranges:
@@ -1667,7 +1649,7 @@ def optimize(req: OptimizeRequest, request: Request):
         spectral_ranges_applied = ranges_list
         start_nm, end_nm = (ranges_list[0] if ranges_list else (None, None))
 
-        cv, cv_meta = build_cv_meta(req.validation_method, req.validation_params, y)
+        cv, cv_meta = build_cv_meta((req.validation_method or "LOO").upper(), vp, y)
         val_name = cv_meta["method"]
         n_splits = cv_meta["splits"]
 
@@ -1729,10 +1711,14 @@ def optimize(req: OptimizeRequest, request: Request):
             "best": out.get("best"),
             "model_id": model_id,
             "model_path": model_path,
+            "data_id": resolved_id,
+            "spectral_ranges_applied": meta.get("spectral_ranges_applied") if isinstance(meta, dict) else None,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("optimize failed")
-        raise HTTPException(400, str(e))
+        raise HTTPException(status_code=400, detail=f"Falha no processamento: {e}")
 
 
 @app.get("/model/download/{model_id}")
@@ -1745,7 +1731,7 @@ def model_download(model_id: str):
 
 class TrainRequest(BaseModel):
     target: str
-    preprocess: Optional[str] = None
+    preprocess: Optional[Union[str, List[str]]] = None
     n_components: int
     classification: bool = True
     threshold: float = 0.5
@@ -1765,32 +1751,19 @@ async def train_form_deprecated():
 
 @app.post("/train")
 def train(req: TrainRequest, request: Request):
-    if not request.headers.get("content-type", "").startswith("application/json"):
+    if "application/json" not in request.headers.get("content-type", "").lower():
         raise HTTPException(
             status_code=415,
             detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
         )
     try:
-        if req.data_id:
-            X, y, _ = load_data_by_id(req.data_id)
-        else:
-            X, y = state.last_X, state.last_y
-        if X is None or y is None:
-            return JSONResponse(
-                status_code=409,
-                content={
-                    "detail": "Nenhum dataset está carregado nesta sessão. Suba/prepare os dados (Executar calibração) antes de treinar."
-                },
-            )
+        try:
+            X, y, meta, resolved_id = resolve_dataset(req.data_id)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
         y = np.asarray(y).ravel()
 
-        vp = req.validation_params
-        if isinstance(vp, str):
-            try:
-                vp = json.loads(vp) or {}
-            except Exception:
-                vp = {}
-        req.validation_params = vp
+        vp = req.validation_params or {}
 
         start_nm, end_nm = None, None
         spectral_ranges_clean = None
@@ -1806,15 +1779,16 @@ def train(req: TrainRequest, request: Request):
             except Exception:
                 spectral_ranges_clean = None
 
-        cv, cv_meta = build_cv_meta(req.validation_method, req.validation_params, y)
+        cv, cv_meta = build_cv_meta((req.validation_method or "LOO").upper(), vp, y)
         val_name = cv_meta["method"]
         n_splits = cv_meta["splits"]
 
-        Xp = grid_preprocess(
-            X,
-            method=req.preprocess,
-            range_nm=(start_nm, end_nm) if start_nm is not None and end_nm is not None else None,
-        )
+        methods = req.preprocess or []
+        if isinstance(methods, str):
+            methods = [methods]
+        if X is None:
+            raise HTTPException(status_code=400, detail="Dataset inválido (X é None). Refaça a etapa de preparação.")
+        Xp = apply_methods(X, methods=methods)
         if req.classification:
             est = make_pls_da(n_components=req.n_components).fit(Xp, y)
         else:
@@ -1846,7 +1820,11 @@ def train(req: TrainRequest, request: Request):
             "validation": cv_meta,
             "range_used": [start_nm, end_nm] if start_nm is not None and end_nm is not None else None,
             "model_id": model_id,
+            "data_id": resolved_id,
+            "spectral_ranges_applied": meta.get("spectral_ranges_applied") if isinstance(meta, dict) else None,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("train failed")
-        raise HTTPException(400, str(e))
+        raise HTTPException(status_code=400, detail=f"Falha no processamento: {e}")

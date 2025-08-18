@@ -12,6 +12,7 @@ export default function NirPage() {
   const [meta, setMeta] = useState(null);
   const [step2, setStep2] = useState(null);
   const [result, setResult] = useState(null);
+  const [dataId, setDataId] = useState(null);
 
   function resetAll() {
     setStep(1);
@@ -19,6 +20,7 @@ export default function NirPage() {
     setMeta(null);
     setStep2(null);
     setResult(null);
+    setDataId(null);
     window.scrollTo(0, 0);
   }
 
@@ -77,6 +79,7 @@ export default function NirPage() {
             onBack={() => setStep(2)}
             onAnalyzed={(data, fullParams) => {
               setResult({ data, params: fullParams });
+              setDataId(data?.data_id);
               setStep(4);
             }}
           />
@@ -84,9 +87,9 @@ export default function NirPage() {
 
         {step === 4 && result && (
           <Step4Decision
-            file={file}
             step2={step2}
             result={result}
+            dataId={dataId}
             onBack={() => setStep(3)}
             onContinue={(finalData, finalParams) => {
               setResult({ data: finalData, params: finalParams });

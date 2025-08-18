@@ -115,11 +115,11 @@ def apply_methods(X: np.ndarray | None,
 
     if X is None:
         raise ValueError(
-            "Matriz X não carregada. Execute o passo de processamento (/process ou equivalente) antes do treino/otimização."
+            "Entrada X é None. Certifique-se de executar a preparação dos dados antes do pré-processamento."
         )
 
     methods = methods or []
-    Xp = X.copy()
+    Xp = X.copy() if hasattr(X, "copy") else X
     for method in methods:
         if isinstance(method, dict):
             m = str(method.get("method", "")).lower()
