@@ -86,6 +86,18 @@ state = _State()
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
 REPORT_DIR = os.path.join(os.path.dirname(__file__), "reports")
+
+
+def _get_df_or_400(dataset_id: str | None):
+    df = DatasetStore.inst().get(dataset_id)
+    if df is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Nenhum dataset está carregado. Faça upload antes de calibrar/treinar.",
+        )
+    return df
+
+
 def _metrics_ok(m):
     if m is None:
         return False
@@ -983,9 +995,8 @@ async def dataset_upload(file: UploadFile = File(...)):
     except Exception:
         raise HTTPException(status_code=400, detail="Erro ao ler o dataset.")
 
-    ds = DatasetStore()
-    dataset_id = ds.put(df)
-    return {"dataset_id": dataset_id, "columns": df.columns.tolist()}
+    did = DatasetStore.inst().put(df)
+    return {"dataset_id": did, "columns": df.columns.tolist()}
 
 
 class PreprocessPayload(BaseModel):
@@ -998,7 +1009,7 @@ class PreprocessPayload(BaseModel):
 def preprocess_dataset(req: PreprocessPayload):
     """Validate dataset/target and return columns after spectral selection."""
 
-    df = DatasetStore().get(req.dataset_id)
+    df = DatasetStore.inst().get(req.dataset_id)
     if df is None:
         raise HTTPException(400, "Dataset não encontrado. Faça o upload novamente.")
 
@@ -1668,7 +1679,7 @@ async def history_data() -> list[dict]:
 
 
 class OptimizeParams(BaseModel):
-    dataset_id: str
+    dataset_id: Optional[str] = None
     target: str
     analysis_mode: Literal["PLS-R", "PLS-DA"] = "PLS-R"
     n_components: Optional[int] = None
@@ -1687,9 +1698,7 @@ def optimize(req: OptimizeParams, request: Request):
             detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
         )
     try:
-        df = DatasetStore().get(req.dataset_id)
-        if df is None:
-            raise HTTPException(400, "Dataset inexistente. Faça o upload novamente.")
+        df = _get_df_or_400(getattr(req, "dataset_id", None))
         if req.target not in df.columns:
             raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
@@ -1794,7 +1803,7 @@ def model_download(model_id: str):
 
 
 class TrainParams(BaseModel):
-    dataset_id: str
+    dataset_id: Optional[str] = None
     target: str
     analysis_mode: Literal["PLS-R", "PLS-DA"] = "PLS-R"
     n_components: int
@@ -1822,9 +1831,7 @@ def train(req: TrainParams, request: Request):
             detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
         )
     try:
-        df = DatasetStore().get(req.dataset_id)
-        if df is None:
-            raise HTTPException(400, "Dataset inexistente. Faça o upload novamente.")
+        df = _get_df_or_400(getattr(req, "dataset_id", None))
         if req.target not in df.columns:
             raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
