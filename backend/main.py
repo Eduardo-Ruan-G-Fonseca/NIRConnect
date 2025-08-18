@@ -50,6 +50,7 @@ from core.io_utils import to_float_matrix, encode_labels_if_needed
 from core.optimization import optimize_model_grid, preprocess as grid_preprocess, make_pls_da, make_pls_reg
 from ml.validation import build_cv_meta
 from core.datasets import store_dataset, resolve_dataset
+from core.dataset_store import DatasetStore
 try:
     from ml.pipeline import (
         build_pls_pipeline,
@@ -361,34 +362,6 @@ class Metrics(BaseModel):
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "pls_pipeline.joblib")
 
 
-class PreprocessRequest(BaseModel):
-    X: List[List[float]]
-    y: Optional[List[float]] = None
-    features: Optional[List[str]] = None
-    methods: Optional[List] = None
-
-
-@app.post("/preprocess", tags=["Model"])
-def preprocess(req: PreprocessRequest):
-    X = np.asarray(req.X, dtype=float)
-    nan_before = int(np.isnan(X).sum())
-    if req.methods:
-        from core.preprocessing import apply_methods
-        X = apply_methods(X, req.methods)
-    X_clean, y_clean, features = saneamento_global(X, req.y, req.features)
-    nan_after = int(np.isnan(X_clean).sum())
-    preview = X_clean[:5].tolist()
-    return {
-        "shape_before": list(np.asarray(req.X).shape),
-        "shape_after": list(X_clean.shape),
-        "nans_before": nan_before,
-        "nans_after": nan_after,
-        "preview": preview,
-        "features": features,
-        "y": y_clean.tolist() if y_clean is not None else None,
-    }
-
-
 
 class PredictRequest(BaseModel):
     X: List[List[Any]]
@@ -609,6 +582,46 @@ def parse_ranges(ranges_str: str):
             lo, hi = hi, lo
         clean.append((lo, hi))
     return clean
+
+
+def _parse_ranges(df: pd.DataFrame, ranges: List[Tuple[float, float]] | None) -> tuple[pd.DataFrame, List[str]]:
+    """Select spectral columns according to ``ranges``.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing only spectral columns (i.e. numeric names).
+    ranges : list of (float, float) or ``None``
+        Wavelength intervals to keep.
+
+    Returns
+    -------
+    tuple
+        ``(X_df, columns)`` where ``X_df`` contains only the selected
+        spectral columns and ``columns`` is the list of column names actually
+        used.
+
+    Raises
+    ------
+    HTTPException(400)
+        If no columns match the requested ranges.
+    """
+
+    spectral_cols = [c for c in df.columns if _is_number(str(c))]
+    if not spectral_cols:
+        raise HTTPException(400, "Nenhuma coluna espectral numérica encontrada.")
+
+    if ranges:
+        wl = np.array([float(c) for c in spectral_cols])
+        mask = build_spectral_mask(wl, ranges)
+        spectral_cols = [spectral_cols[i] for i, m in enumerate(mask) if m]
+
+    if not spectral_cols:
+        raise HTTPException(
+            400, "Faixa espectral não bate com as colunas disponíveis."
+        )
+
+    return df[spectral_cols], spectral_cols
 
 
 def _is_number(val: str) -> bool:
@@ -947,6 +960,55 @@ async def get_columns(file: UploadFile = File(...)) -> dict:
         "spectra_matrix": spectra_matrix,  # usado no front
         "warnings": warnings,          # extra
     }
+
+
+# ---------------------------------------------------------------------------
+# Dataset upload & preparation
+# ---------------------------------------------------------------------------
+
+
+@app.post("/dataset/upload")
+async def dataset_upload(file: UploadFile = File(...)):
+    """Upload a dataset file and store it in-memory.
+
+    Returns a ``dataset_id`` token that can be used in subsequent requests
+    (``/preprocess``, ``/optimize`` and ``/train``).  The response also includes
+    the list of column names present in the uploaded file so the client can
+    allow the user to pick the target column.
+    """
+
+    content = await file.read()
+    try:
+        df = _read_dataframe(file.filename, content)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Erro ao ler o dataset.")
+
+    ds = DatasetStore()
+    dataset_id = ds.put(df)
+    return {"dataset_id": dataset_id, "columns": df.columns.tolist()}
+
+
+class PreprocessPayload(BaseModel):
+    dataset_id: str
+    target: str
+    spectral_ranges: Optional[str] = None
+
+
+@app.post("/preprocess")
+def preprocess_dataset(req: PreprocessPayload):
+    """Validate dataset/target and return columns after spectral selection."""
+
+    df = DatasetStore().get(req.dataset_id)
+    if df is None:
+        raise HTTPException(400, "Dataset não encontrado. Faça o upload novamente.")
+
+    if req.target not in df.columns:
+        raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
+
+    ranges_list = parse_ranges(req.spectral_ranges) if req.spectral_ranges else []
+    X_df = df.drop(columns=[req.target], errors="ignore")
+    _, cols = _parse_ranges(X_df, ranges_list)
+    return {"columns": cols, "target": req.target}
 from starlette.concurrency import run_in_threadpool
 
 @app.post("/analisar")
@@ -1605,59 +1667,61 @@ async def history_data() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-class OptimizeRequest(BaseModel):
+class OptimizeParams(BaseModel):
+    dataset_id: str
     target: str
+    analysis_mode: Literal["PLS-R", "PLS-DA"] = "PLS-R"
     n_components: Optional[int] = None
-    classification: bool = True
-    threshold: float = 0.5
     n_bootstrap: int = 0
-    validation_method: str = "StratifiedKFold"
+    preprocess: List[str] = []
+    spectral_ranges: Optional[str] = None
+    validation_method: Literal["LOO", "KFold", "StratifiedKFold"] = "LOO"
     validation_params: Dict[str, Any] = Field(default_factory=dict)
-    spectral_ranges: Optional[Union[str, List[Tuple[float, float]]]] = None
-    data_id: Optional[str] = None
-    preprocess: Optional[Union[str, List[str]]] = None
 
 
 @app.post("/optimize")
-def optimize(req: OptimizeRequest, request: Request):
+def optimize(req: OptimizeParams, request: Request):
     if "application/json" not in request.headers.get("content-type", "").lower():
         raise HTTPException(
             status_code=415,
             detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
         )
     try:
-        try:
-            X, y, meta, resolved_id = resolve_dataset(req.data_id)
-        except ValueError as e:
-            raise HTTPException(status_code=409, detail=str(e))
+        df = DatasetStore().get(req.dataset_id)
+        if df is None:
+            raise HTTPException(400, "Dataset inexistente. Faça o upload novamente.")
+        if req.target not in df.columns:
+            raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
+
+        ranges_list = parse_ranges(req.spectral_ranges) if req.spectral_ranges else []
+        X_df = df.drop(columns=[req.target], errors="ignore")
+        X_df, features = _parse_ranges(X_df, ranges_list)
+        X = to_float_matrix(X_df.values)
+        y_raw = df[req.target].tolist()
+        classification = req.analysis_mode == "PLS-DA"
+        if classification:
+            y, class_mapping, _ = encode_labels_if_needed(y_raw)
+            X, y, features = saneamento_global(X, y, features)
+        else:
+            y = pd.to_numeric(pd.Series(y_raw), errors="coerce").to_numpy(dtype=float)
+            class_mapping = {}
+            X, y, features = saneamento_global(X, y, features)
         y = np.asarray(y).ravel()
 
-        vp = req.validation_params or {}
-
-        ranges_list = []
-        if req.spectral_ranges:
-            if isinstance(req.spectral_ranges, str):
-                ranges_list = parse_ranges(req.spectral_ranges)
-            elif isinstance(req.spectral_ranges, list):
-                try:
-                    ranges_list = [(float(a), float(b)) for a, b in req.spectral_ranges]
-                except Exception:
-                    ranges_list = []
-        spectral_range_str = (
-            req.spectral_ranges if isinstance(req.spectral_ranges, str) else ",".join(f"{a}-{b}" for a, b in ranges_list)
-        )
+        spectral_range_str = req.spectral_ranges or ""
         spectral_ranges_applied = ranges_list
         start_nm, end_nm = (ranges_list[0] if ranges_list else (None, None))
 
-        cv, cv_meta = build_cv_meta((req.validation_method or "LOO").upper(), vp, y)
+        vp = req.validation_params or {}
+        cv, cv_meta = build_cv_meta(req.validation_method, vp, y, classification)
         val_name = cv_meta["method"]
         n_splits = cv_meta["splits"]
 
         out = optimize_model_grid(
             X,
             y,
-            mode="classification" if req.classification else "regression",
-            preprocessors=None,
+            mode="classification" if classification else "regression",
+            preprocessors=req.preprocess or None,
             n_components_max=req.n_components,
             validation_method=val_name,
             n_splits=n_splits,
@@ -1674,7 +1738,7 @@ def optimize(req: OptimizeRequest, request: Request):
             method=best_prep,
             range_nm=(start_nm, end_nm) if start_nm is not None and end_nm is not None else None,
         )
-        if req.classification:
+        if classification:
             best_estimator = make_pls_da(n_components=best_nc).fit(Xp, y)
         else:
             best_estimator = make_pls_reg(n_components=best_nc).fit(Xp, y)
@@ -1702,17 +1766,17 @@ def optimize(req: OptimizeRequest, request: Request):
             )
 
         return {
-            "validation": cv_meta,
+            "validation_meta": cv_meta,
             "validation_results": out.get("validation"),
             "spectral_range": spectral_range_str,
             "spectral_ranges_applied": spectral_ranges_applied,
+            "preprocess_applied": best_prep or [],
             "results": out.get("results"),
             "curves": out.get("curves"),
             "best": out.get("best"),
             "model_id": model_id,
             "model_path": model_path,
-            "data_id": resolved_id,
-            "spectral_ranges_applied": meta.get("spectral_ranges_applied") if isinstance(meta, dict) else None,
+            "dataset_id": req.dataset_id,
         }
     except HTTPException:
         raise
@@ -1729,16 +1793,17 @@ def model_download(model_id: str):
     return FileResponse(path, filename=f"nir_model_{model_id}.joblib", media_type="application/octet-stream")
 
 
-class TrainRequest(BaseModel):
+class TrainParams(BaseModel):
+    dataset_id: str
     target: str
-    preprocess: Optional[Union[str, List[str]]] = None
+    analysis_mode: Literal["PLS-R", "PLS-DA"] = "PLS-R"
     n_components: int
-    classification: bool = True
-    threshold: float = 0.5
-    validation_method: str = "StratifiedKFold"
+    preprocess: List[str] = []
+    spectral_ranges: Optional[str] = None
+    validation_method: Literal["LOO", "KFold", "StratifiedKFold"] = "LOO"
     validation_params: Dict[str, Any] = Field(default_factory=dict)
-    spectral_ranges: Optional[Union[str, List[Tuple[float, float]]]] = None
-    data_id: Optional[str] = None
+    decision_mode: str = "argmax"
+    threshold: float = 0.5
 
 
 @app.post("/train-form")
@@ -1750,78 +1815,76 @@ async def train_form_deprecated():
 
 
 @app.post("/train")
-def train(req: TrainRequest, request: Request):
+def train(req: TrainParams, request: Request):
     if "application/json" not in request.headers.get("content-type", "").lower():
         raise HTTPException(
             status_code=415,
             detail="Use application/json neste endpoint. Se precisar enviar arquivo, use /optimize-upload.",
         )
     try:
-        try:
-            X, y, meta, resolved_id = resolve_dataset(req.data_id)
-        except ValueError as e:
-            raise HTTPException(status_code=409, detail=str(e))
+        df = DatasetStore().get(req.dataset_id)
+        if df is None:
+            raise HTTPException(400, "Dataset inexistente. Faça o upload novamente.")
+        if req.target not in df.columns:
+            raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
+
+        ranges_list = parse_ranges(req.spectral_ranges) if req.spectral_ranges else []
+        X_df = df.drop(columns=[req.target], errors="ignore")
+        X_df, features = _parse_ranges(X_df, ranges_list)
+        X = to_float_matrix(X_df.values)
+        y_raw = df[req.target].tolist()
+        classification = req.analysis_mode == "PLS-DA"
+        if classification:
+            y, class_mapping, _ = encode_labels_if_needed(y_raw)
+            X, y, features = saneamento_global(X, y, features)
+        else:
+            y = pd.to_numeric(pd.Series(y_raw), errors="coerce").to_numpy(dtype=float)
+            class_mapping = None
+            X, y, features = saneamento_global(X, y, features)
         y = np.asarray(y).ravel()
 
         vp = req.validation_params or {}
-
-        start_nm, end_nm = None, None
-        spectral_ranges_clean = None
-        if isinstance(req.spectral_ranges, str) and "-" in req.spectral_ranges:
-            s, e = req.spectral_ranges.split("-")
-            start_nm, end_nm = float(s), float(e)
-            spectral_ranges_clean = [(start_nm, end_nm)]
-        elif isinstance(req.spectral_ranges, list) and req.spectral_ranges:
-            try:
-                spectral_ranges_clean = [(float(a), float(b)) for a, b in req.spectral_ranges]
-                if spectral_ranges_clean:
-                    start_nm, end_nm = spectral_ranges_clean[0]
-            except Exception:
-                spectral_ranges_clean = None
-
-        cv, cv_meta = build_cv_meta((req.validation_method or "LOO").upper(), vp, y)
-        val_name = cv_meta["method"]
-        n_splits = cv_meta["splits"]
+        cv, cv_meta = build_cv_meta(req.validation_method, vp, y, classification)
+        start_nm, end_nm = (ranges_list[0] if ranges_list else (None, None))
 
         methods = req.preprocess or []
-        if isinstance(methods, str):
-            methods = [methods]
-        if X is None:
-            raise HTTPException(status_code=400, detail="Dataset inválido (X é None). Refaça a etapa de preparação.")
         Xp = apply_methods(X, methods=methods)
-        if req.classification:
+        if classification:
             est = make_pls_da(n_components=req.n_components).fit(Xp, y)
         else:
             est = make_pls_reg(n_components=req.n_components).fit(Xp, y)
         state.last_model = est
 
-        class_mapping = None
-        if req.classification:
+        if classification and class_mapping is None:
             classes = np.unique(y)
             class_mapping = {int(i): str(c) for i, c in enumerate(classes)}
 
         os.makedirs(MODEL_DIR, exist_ok=True)
         model_id = uuid.uuid4().hex
         model_path = os.path.join(MODEL_DIR, f"{model_id}.joblib")
-        joblib.dump({
-            "pipeline": est,
-            "prep": req.preprocess,
-            "n_components": req.n_components,
-            "target": req.target,
-            "class_mapping": class_mapping,
-            "spectral_ranges": spectral_ranges_clean,
-            "validation": cv_meta,
-            "created_at": datetime.utcnow().isoformat()+"Z"
-        }, model_path)
+        joblib.dump(
+            {
+                "pipeline": est,
+                "prep": req.preprocess,
+                "n_components": req.n_components,
+                "target": req.target,
+                "class_mapping": class_mapping,
+                "spectral_ranges": ranges_list if ranges_list else None,
+                "validation": cv_meta,
+                "decision_mode": req.decision_mode,
+                "threshold": req.threshold,
+                "created_at": datetime.utcnow().isoformat() + "Z",
+            },
+            model_path,
+        )
 
         return {
-            "validation_used": val_name,
-            "n_splits_effective": cv_meta["effective_splits"],
-            "validation": cv_meta,
+            "validation_meta": cv_meta,
             "range_used": [start_nm, end_nm] if start_nm is not None and end_nm is not None else None,
             "model_id": model_id,
-            "data_id": resolved_id,
-            "spectral_ranges_applied": meta.get("spectral_ranges_applied") if isinstance(meta, dict) else None,
+            "dataset_id": req.dataset_id,
+            "spectral_ranges_applied": ranges_list,
+            "preprocess_applied": methods,
         }
     except HTTPException:
         raise
