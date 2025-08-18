@@ -94,110 +94,48 @@ def test_process_file(tmp_path):
     assert "top_vips" in data and isinstance(data["top_vips"], list)
 
 
-def test_columns_return_mean(tmp_path):
+def test_columns_requires_dataset():
+    from backend.core.dataset_store import DatasetStore
+
+    store = DatasetStore.inst()
+    store._by_id.clear()
+    store._last_id = None
+    resp = client.post("/columns")
+    assert resp.status_code == 400
+    assert "Nenhum dataset" in resp.json()["detail"]
+
+
+def test_columns_targets_features(tmp_path):
     import pandas as pd
-    df = pd.DataFrame({"1100": [1.0, 2.0], "1200": [2.0, 4.0], "target": [1, 0]})
-    path = tmp_path / "spectra.csv"
-    df.to_csv(path, index=False)
-    with open(path, "rb") as fh:
-        resp = client.post(
-            "/columns",
-            files={"file": ("spectra.csv", fh.read(), "text/csv")},
-        )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "mean_spectra" in data
-    ms = data["mean_spectra"]
-    assert ms["wavelengths"] == [1100.0, 1200.0]
-    assert len(ms["values"]) == 2
-    assert "spectra_matrix" in data
-    sm = data["spectra_matrix"]
-    assert sm["wavelengths"] == [1100.0, 1200.0]
-    assert len(sm["values"]) == 2
 
-
-def test_columns_ignore_textual(tmp_path):
-    import pandas as pd
-    df = pd.DataFrame(
-        {
-            "NOM. POPULAR": ["a", "b"],
-            "1100": [1.0, 2.0],
-            "1450.5": [2.5, 3.5],
-            "Valor": [10, 20],
-        }
-    )
-    path = tmp_path / "mix.csv"
-    df.to_csv(path, index=False)
-    with open(path, "rb") as fh:
-        resp = client.post(
-            "/columns",
-            files={"file": ("mix.csv", fh.read(), "text/csv")},
-        )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert set(data["spectra"]) == {"1100", "1450.5"}
-    ms = data["mean_spectra"]
-    assert ms["wavelengths"] == [1100.0, 1450.5]
-    sm = data["spectra_matrix"]
-    assert sm["wavelengths"] == [1100.0, 1450.5]
-    assert len(sm["values"]) == 2
-
-
-def test_columns_blank_lines_and_excel_first_sheet(tmp_path):
-    import pandas as pd
-    df = pd.DataFrame({"A": [1, 2], "B": [2, 3], "target": [0, 1]})
-    csv_path = tmp_path / "blank.csv"
-    df.to_csv(csv_path, index=False)
-    text = csv_path.read_text()
-    csv_path.write_text("\n" + text)
-    with open(csv_path, "rb") as fh:
-        resp = client.post("/columns", files={"file": ("blank.csv", fh.read(), "text/csv")})
-    assert resp.status_code == 200
-    cols = [c["name"] for c in resp.json()["columns"]]
-    assert "A" in cols and "B" in cols
-
-    x1 = pd.DataFrame({"X": [1], "target": [0]})
-    x2 = pd.DataFrame({"Y": [2], "target": [1]})
-    xl_path = tmp_path / "multi.xlsx"
-    with pd.ExcelWriter(xl_path) as writer:
-        x1.to_excel(writer, index=False, sheet_name="S1")
-        x2.to_excel(writer, index=False, sheet_name="S2")
-    with open(xl_path, "rb") as fh:
-        resp = client.post(
-            "/columns",
-            files={"file": ("multi.xlsx", fh.read(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-        )
-    assert resp.status_code == 200
-    cols = [c["name"] for c in resp.json()["columns"]]
-    assert "X" in cols and "Y" not in cols
-
-
-def test_columns_decimal_comma_and_invalid(tmp_path):
-    import pandas as pd
     df = pd.DataFrame({
-        "908,1": [0.1, 0.2],
-        "920,4": [0.3, 0.4],
-        "sample": [1, 2],
-        "1100a": [5, 6],
+        "feat": list(range(40)),
+        "cat": ["a", "b"] * 20,
+        "numcat": [1, 2] * 20,
     })
-    xl_path = tmp_path / "comma.xlsx"
-    df.to_excel(xl_path, index=False)
-    with open(xl_path, "rb") as fh:
+    path = tmp_path / "data.csv"
+    df.to_csv(path, index=False)
+    with open(path, "rb") as fh:
         resp = client.post(
-            "/columns",
-            files={
-                "file": (
-                    "comma.xlsx",
-                    fh.read(),
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            },
+            "/dataset/upload",
+            files={"file": ("data.csv", fh.read(), "text/csv")},
         )
     assert resp.status_code == 200
+    did = resp.json()["dataset_id"]
+
+    resp = client.post("/columns", json={"dataset_id": did})
+    assert resp.status_code == 200
     data = resp.json()
-    assert set(data["spectra"]) == {"908,1", "920,4"}
-    assert set(data["targets"]) == {"sample", "1100a"}
-    assert any("1100a" in w for w in data.get("warnings", []))
+    assert data["dataset_id"] == did
+    assert "cat" in data["targets"]
+    assert "numcat" in data["targets"]
+    assert "feat" in data["features"]
+
+    # fallback to last dataset
+    resp2 = client.post("/columns")
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2["dataset_id"] == did
 
 
 def test_analisar_ranges_and_history(tmp_path):

@@ -93,7 +93,8 @@ def _get_df_or_400(dataset_id: str | None):
     if df is None:
         raise HTTPException(
             status_code=400,
-            detail="Nenhum dataset está carregado. Faça upload antes de calibrar/treinar.",
+            detail=
+            "Nenhum dataset está carregado. Faça upload do arquivo e chame /columns novamente.",
         )
     return df
 
@@ -314,7 +315,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         status_code=422,
         content={
             "detail": scrub(exc.errors()),
-            "hint": "Esta rota espera application/json. O upload de arquivo é apenas na etapa de importação.",
+            "hint": (
+                "Esta rota espera application/json e requer dataset_id. "
+                "Faça upload do dataset (passo 1) e chame /columns (passo 2)."
+            ),
         },
     )
 
@@ -897,80 +901,33 @@ async def process_file(
         raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/columns")
-async def get_columns(file: UploadFile = File(...)) -> dict:
-    """Return column metadata from uploaded file."""
-    content = await file.read()
-    try:
-        df = _read_dataframe(file.filename, content)
-    except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail=("Erro ao ler as colunas da planilha. "
-                    "Verifique se o arquivo contém um cabeçalho válido na primeira linha."),
-        )
+def columns(payload: dict | None = None, dataset_id: str | None = None):
+    # aceitar dataset_id em JSON ou querystring
+    if payload is None:
+        payload = {}
+    did = payload.get("dataset_id") or dataset_id
 
-    if df.shape[1] == 0:
-        raise HTTPException(
-            status_code=400,
-            detail=("Erro ao ler as colunas da planilha. "
-                    "Verifique se o arquivo contém um cabeçalho válido na primeira linha."),
-        )
+    df = _get_df_or_400(did)
 
-    columns = [{"name": c, "dtype": str(df[c].dtype)} for c in df.columns]
+    # heurística de candidatos a target
+    import numpy as np
+    import pandas as pd
 
-    # Detecta colunas espectrais (cabeçalho numérico)
-    spectra: list[str] = []
-    wls: list[float] = []
-    warnings: list[str] = []
-    for name in df.columns:
-        s = str(name).strip()
-        try:
-            wl = float(s.replace(",", "."))
-        except Exception:
-            # tem dígito mas não é número puro -> avisar
-            if any(ch.isdigit() for ch in s):
-                warnings.append(f"Coluna '{s}' ignorada como espectro devido a formato inválido")
-            continue
-        spectra.append(s)
-        wls.append(wl)
+    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
 
-    # Alvo(s) possíveis: tudo que não é espectro
-    targets = [c for c in df.columns if c not in spectra]
+    # numéricas com poucos níveis (classificação)
+    few_level_nums = [c for c in num_cols if df[c].nunique(dropna=True) <= 30]
 
-    mean_spec = {"wavelengths": [], "values": []}
-    spectra_matrix = {"wavelengths": [], "values": []}
+    targets = list(dict.fromkeys(cat_cols + few_level_nums))  # remove duplicados mantendo ordem
+    features = [c for c in num_cols if c not in targets]
 
-    if spectra:
-        # DataFrame numérico com coerção
-        numeric_df = df[spectra].apply(pd.to_numeric, errors="coerce")
-
-        # 1) Ordena por comprimento de onda crescente e reordena colunas
-        order = np.argsort(wls)
-        wls_sorted = [float(wls[i]) for i in order]
-        spectra_sorted = [spectra[i] for i in order]
-        numeric_df = numeric_df[spectra_sorted]
-
-        # 2) Média espectral
-        means = numeric_df.mean().to_numpy()
-
-        # 3) Substitui NaN por None (JSON-safe)
-        numeric_df = numeric_df.where(pd.notnull(numeric_df), None)
-        means = [None if (m is None or (isinstance(m, float) and np.isnan(m))) else float(m) for m in means]
-
-        # 4) Preenche estruturas esperadas pelo front
-        mean_spec["wavelengths"] = wls_sorted
-        mean_spec["values"] = means
-        spectra_matrix["wavelengths"] = wls_sorted
-        spectra_matrix["values"] = numeric_df.values.tolist()
-
-    # Retorno compatível com o front (usa targets / mean_spectra / spectra_matrix)
     return {
-        "columns": columns,            # extra, útil para debug
-        "targets": targets,            # usado no front
-        "spectra": spectra,            # extra
-        "mean_spectra": mean_spec,     # usado no front
-        "spectra_matrix": spectra_matrix,  # usado no front
-        "warnings": warnings,          # extra
+        "dataset_id": did or DatasetStore.inst()._last_id,
+        "targets": targets,
+        "features": features,
+        "n_rows": int(df.shape[0]),
+        "n_cols": int(df.shape[1]),
     }
 
 
@@ -1699,6 +1656,9 @@ def optimize(req: OptimizeParams, request: Request):
         )
     try:
         df = _get_df_or_400(getattr(req, "dataset_id", None))
+        logger.info(
+            f"optimize using dataset_id={getattr(req, 'dataset_id', 'last')} shape={df.shape}"
+        )
         if req.target not in df.columns:
             raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
@@ -1832,6 +1792,9 @@ def train(req: TrainParams, request: Request):
         )
     try:
         df = _get_df_or_400(getattr(req, "dataset_id", None))
+        logger.info(
+            f"train using dataset_id={getattr(req, 'dataset_id', 'last')} shape={df.shape}"
+        )
         if req.target not in df.columns:
             raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
