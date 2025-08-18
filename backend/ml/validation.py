@@ -1,64 +1,51 @@
+"""Validation utilities used by the optimisation and training endpoints."""
+
+from __future__ import annotations
+
 import numpy as np
 from sklearn.model_selection import LeaveOneOut, StratifiedKFold, KFold
 
 
-def build_cv_meta(method: str, params: dict, y):
-    """Constrói o objeto de validação e retorna (cv, meta).
+def build_cv_meta(method: str, params: dict, y, is_classification: bool):
+    """Return a cross-validation splitter and metadata.
 
     Parameters
     ----------
-    method : str
-        Nome do método solicitado (ex.: ``"LOO"``, ``"StratifiedKFold"``).
-    params : dict
-        Parâmetros adicionais para o construtor da validação. Atualmente
-        apenas ``n_splits`` é utilizado.
-    y : array-like
-        Vetor de respostas/alvos. Será convertido de forma segura para um
-        ``numpy.ndarray`` 1D.
-
-    Returns
-    -------
-    tuple
-        ``(cv, meta)`` onde ``cv`` é o objeto de validação pronto para uso e
-        ``meta`` é um ``dict`` com informações sobre o método efetivamente
-        utilizado, número de divisões e quantidade de amostras.
+    method:
+        Requested validation strategy name.  Case-insensitive.  Supported values
+        are ``"LOO"``, ``"KFold"`` and ``"StratifiedKFold"``.  Any unknown
+        value falls back to ``KFold``.
+    params:
+        Additional parameters such as ``n_splits`` or ``folds``.
+    y:
+        Target vector.
+    is_classification:
+        Whether the task is classification (enables ``StratifiedKFold``).
     """
 
-    # Garantir vetor 1D com tamanho conhecido (evita "len() of unsized object")
-    y_arr = np.asarray(y).ravel()
-    n_samples = int(y_arr.shape[0])
-
-    method = (method or "").strip().upper()
+    y = np.asarray(y).ravel()
+    method = (method or "LOO").upper()
     params = params or {}
 
     if method == "LOO":
         cv = LeaveOneOut()
-        splits = n_samples
-        meta_method = "LOO"
-
-    elif method in {"SKF", "STRATIFIEDK", "STRATIFIEDKFOLD", "STRATIFIED"}:
-        n_splits = int(params.get("n_splits", 5)) if params else 5
-        classes, counts = np.unique(y_arr, return_counts=True)
-        # StratifiedKFold requer pelo menos duas classes e que cada uma tenha
-        # quantidade mínima de amostras para todas as dobras
-        if classes.size >= 2 and counts.min(initial=0) >= n_splits and n_splits >= 2:
-            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-            splits = n_splits
-            meta_method = "StratifiedKFold"
-        else:
-            # Fallback seguro para KFold quando estratificação não é possível
-            safe_splits = max(2, min(n_splits, n_samples))
-            cv = KFold(n_splits=safe_splits, shuffle=True, random_state=42)
-            splits = safe_splits
-            meta_method = "KFold(fallback)"
-
+        splits = len(y)
+        used = "LOO"
+    elif method == "STRATIFIEDKFOLD" and is_classification:
+        n_splits = int(params.get("n_splits") or params.get("folds") or 5)
+        n_splits = max(2, min(n_splits, len(np.unique(y))))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        splits = n_splits
+        used = "StratifiedKFold"
     else:
-        n_splits = int(params.get("n_splits", 5)) if params else 5
-        safe_splits = max(2, min(n_splits, n_samples))
-        cv = KFold(n_splits=safe_splits, shuffle=True, random_state=42)
-        splits = safe_splits
-        meta_method = "KFold"
+        n_splits = int(params.get("n_splits") or params.get("folds") or 5)
+        n_splits = max(2, min(n_splits, len(y)))
+        cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+        splits = n_splits
+        used = "KFold"
 
-    meta = {"method": meta_method, "splits": splits, "n_samples": n_samples}
-    return cv, meta
+    return cv, {"method": used, "splits": splits}
+
+
+__all__ = ["build_cv_meta"]
 

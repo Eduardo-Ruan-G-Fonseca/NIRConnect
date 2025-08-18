@@ -1,6 +1,7 @@
 import numpy as np
 from typing import Iterable, Optional, Tuple
 from scipy.signal import savgol_filter
+from fastapi import HTTPException
 
 EPS = 1e-12
 
@@ -108,15 +109,19 @@ def vn(X: np.ndarray) -> np.ndarray:
     return X / np.where(norm == 0, 1, norm)
 
 
-def apply_methods(X: np.ndarray | None,
-                  methods: list | None = None,
-                  wl: np.ndarray | None = None) -> np.ndarray:
-    """Apply preprocessing methods in sequence."""
+def apply_methods(
+    X: np.ndarray | None, methods: list | None = None, wl: np.ndarray | None = None
+) -> np.ndarray:
+    """Apply preprocessing methods in sequence.
+
+    The function is defensive against being called with ``X`` equal to
+    ``None`` which could happen when the client skips the dataset upload
+    step.  Instead of raising a generic ``ValueError`` we return a proper
+    HTTP error so the API responds with a meaningful message.
+    """
 
     if X is None:
-        raise ValueError(
-            "Entrada X é None. Certifique-se de executar a preparação dos dados antes do pré-processamento."
-        )
+        raise HTTPException(400, "Nenhum dataset carregado. Faça o upload antes.")
 
     methods = methods or []
     Xp = X.copy() if hasattr(X, "copy") else X
