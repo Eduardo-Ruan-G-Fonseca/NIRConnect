@@ -910,65 +910,56 @@ async def process_file(
 
 @app.post("/columns")
 def post_columns(file: UploadFile):
-    # leitura básica (xlsx/csv)
-    name = (file.filename or "").lower()
-    if name.endswith((".xls", ".xlsx")):
-        df = pd.read_excel(file.file)
-    else:
-        df = pd.read_csv(file.file)
+    """
+    Lê Excel/CSV de maneira robusta (via BytesIO), persiste X e y_df no store
+    e retorna spectra_matrix para o gráfico.
+    """
+    fname = (file.filename or "").lower()
+    raw = file.file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
 
-    # separe espectros: colunas numéricas cujo nome também é numérico
-    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    spectral_cols = []
-    wl_vals = []
-    for c in numeric_cols:
+    # Excel via BytesIO para evitar erro 'SpooledTemporaryFile.seekable'
+    if fname.endswith((".xlsx", ".xls")):
+        bio = io.BytesIO(raw); bio.seek(0)
         try:
-            float_c = float(c)
-            name_is_num = True
+            df = pd.read_excel(bio, engine="openpyxl")
         except Exception:
-            float_c = None
-            name_is_num = False
-        unique_vals = df[c].nunique(dropna=False)
-        if name_is_num or unique_vals > 3:
-            spectral_cols.append(c)
-            if float_c is not None:
-                wl_vals.append(float_c)
-
-    X_df = df[spectral_cols].copy()
-    y_df = df.drop(columns=spectral_cols).copy()
-
-    # sanitiza X para o gráfico não ficar vazio
-    if X_df.empty:
-        X = np.empty((df.shape[0], 0), dtype=float)
+            df = pd.read_excel(bio)
     else:
-        X = sanitize_X(X_df.to_numpy(dtype=float, copy=True))
+        # CSV: tenta UTF-8-SIG, se falhar usa latin-1
+        try:
+            text = raw.decode("utf-8-sig")
+        except Exception:
+            text = raw.decode("latin-1", errors="ignore")
+        df = pd.read_csv(io.StringIO(text))
 
-    # gere um dataset_id (se o seu projeto já gera fora, mantenha)
-    import uuid
+    if df.empty:
+        raise HTTPException(status_code=400, detail="Planilha sem linhas.")
+
+    # separa espectros (numéricos) e alvos (demais)
+    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    if not numeric_cols:
+        raise HTTPException(status_code=400, detail="Não há colunas numéricas para espectros.")
+    X_df = df[numeric_cols].copy()
+    y_df = df.drop(columns=numeric_cols).copy()
+
+    # sanitiza X para garantir gráfico
+    X = sanitize_X(X_df.to_numpy(dtype=float, copy=True))
+
     dataset_id = uuid.uuid4().hex
-
-    wl_min = float(min(wl_vals)) if wl_vals else None
-    wl_max = float(max(wl_vals)) if wl_vals else None
     dataset_store.save(dataset_id, {
-        "X": X,                               # numpy float
+        "X": X,
         "columns": list(X_df.columns),
-        "y_df": y_df.copy(),                  # pandas DF sem cast
+        "y_df": y_df.copy(),               # mantém tipos originais (E01/E02 etc.)
         "targets": list(y_df.columns),
-        "n_samples": int(X.shape[0]),
-        "n_wavelengths": int(X.shape[1]),
-        "wl_min": wl_min,
-        "wl_max": wl_max,
     })
 
     return {
         "dataset_id": dataset_id,
         "columns": list(X_df.columns),
         "targets": list(y_df.columns),
-        "spectra_matrix": X.tolist(),         # <- NECESSÁRIO pro gráfico
-        "n_samples": int(X.shape[0]),
-        "n_wavelengths": int(X.shape[1]),
-        "wl_min": wl_min,
-        "wl_max": wl_max,
+        "spectra_matrix": X.tolist(),      # necessário para renderizar o gráfico
     }
 
 
@@ -1830,26 +1821,25 @@ def deprecated_train_form():
 
 
 @app.post("/train")
-def train(req: TrainParams):  # use o mesmo tipo de request que você já tem
+def train(req: TrainParams):  # mantenha sua classe de request existente
     ds = dataset_store.get(req.dataset_id)
     if not ds:
-        raise HTTPException(status_code=400, detail="Dataset não encontrado no servidor.")
+        raise HTTPException(status_code=400, detail="Dataset não encontrado.")
 
-    # X pré-processado que você já montava anteriormente
     Xp = ds.get("X")
     if Xp is None:
-        raise HTTPException(status_code=400, detail="Matriz espectral não está disponível.")
+        raise HTTPException(status_code=400, detail="Matriz espectral não disponível.")
 
-    # y robusto (sem cast p/ float)
+    # y bruto (sem cast p/ float)
     try:
         y_raw, _ = load_target_or_fail(ds, req.target)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # decide tarefa pela seleção + conteúdo do y
+    # decide tarefa
     task = detect_task_from_y(y_raw, req.analysis_mode)
 
-    # sanitizações
+    # sanitiza
     Xp = sanitize_X(Xp)
     y_sanit, y_classes = sanitize_y(y_raw, task)
     Xp, y_sanit, _ = align_X_y(Xp, y_sanit)
@@ -1860,22 +1850,10 @@ def train(req: TrainParams):  # use o mesmo tipo de request que você já tem
 
     # fit
     if task == "classification":
-        from numpy import unique
-        n_classes = unique(y_sanit).size
-        est = make_pls_da(n_components=safe_n, n_classes=int(n_classes))
-        # PLSRegression aceita float, mas y_sanit já é int (0..K-1)
+        n_classes = int(np.unique(y_sanit).size)
+        est = make_pls_da(n_components=safe_n, n_classes=n_classes)
         est.fit(Xp, y_sanit.astype(int))
-        payload = {"task": "classification", "n_components_used": safe_n, "classes_": y_classes or []}
+        return {"status": "ok", "task": "classification", "n_components_used": safe_n, "classes_": y_classes or []}
     else:
         est = make_pls_reg(n_components=safe_n).fit(Xp, y_sanit)
-        payload = {"task": "regression", "n_components_used": safe_n}
-
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    model_id = uuid.uuid4().hex
-    model_path = os.path.join(MODEL_DIR, f"{model_id}.joblib")
-    try:
-        joblib.dump(est, model_path)
-    except Exception:
-        model_path = ""
-
-    return {"status": "ok", "model_id": model_id, "model_path": model_path, **payload}
+        return {"status": "ok", "task": "regression", "n_components_used": safe_n}
