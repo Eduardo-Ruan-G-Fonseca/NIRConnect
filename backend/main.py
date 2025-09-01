@@ -70,7 +70,7 @@ except Exception:
     )  # fallback se mover
 
 
-from core.pls import is_categorical  # (se não for usar, podemos remover depois)
+from core.pls import is_categorical  # (se nÃ£o for usar, podemos remover depois)
 import joblib
 
 # Progresso global para /optimize/status
@@ -96,7 +96,7 @@ def _get_df_or_400(dataset_id: str | None):
     if not ds:
         raise HTTPException(
             status_code=400,
-            detail="Nenhum dataset está carregado. Faça upload do arquivo e chame /columns novamente.",
+            detail="Nenhum dataset estÃ¡ carregado. FaÃ§a upload do arquivo e chame /columns novamente.",
         )
     X = ds.get("X")
     cols = ds.get("columns", [])
@@ -321,7 +321,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "detail": scrub(exc.errors()),
             "hint": (
                 "Esta rota espera application/json e requer dataset_id. "
-                "Faça upload do dataset (passo 1) e chame /columns (passo 2)."
+                "FaÃ§a upload do dataset (passo 1) e chame /columns (passo 2)."
             ),
         },
     )
@@ -350,23 +350,23 @@ app.add_middleware(
 MultiPartParser.spool_max_size = 100 * 1024 * 1024
 MultiPartParser.max_part_size = 100 * 1024 * 1024
 
-# Labels de métodos de pré-processamento
+# Labels de mÃ©todos de prÃ©-processamento
 METHOD_LABELS = {
     "snv": "SNV",
     "msc": "MSC",
-    "sg1": "1ª Derivada",
-    "sg2": "2ª Derivada",
-    "minmax": "Normalização Min-Max",
+    "sg1": "1Âª Derivada",
+    "sg2": "2Âª Derivada",
+    "minmax": "NormalizaÃ§Ã£o Min-Max",
     "zscore": "Z-score",
     "ncl": "NCL",
     "vn": "Vector Norm",
 }
 ALL_PREPROCESS_METHODS = ["none"] + list(METHOD_LABELS.keys())
 
-# Intervalos aproximados de bandas NIR para grupos químicos
+# Intervalos aproximados de bandas NIR para grupos quÃ­micos
 CHEMICAL_RANGES = [
     (1200, 1300, "celulose"),
-    (1300, 1500, "água"),
+    (1300, 1500, "Ã¡gua"),
     (1500, 1700, "lignina"),
 ]
 
@@ -390,7 +390,7 @@ class PredictRequest(BaseModel):
 @app.post("/predict", tags=["Model"])
 def predict(req: PredictRequest, threshold: float = 0.5):
     if not os.path.exists(MODEL_PATH):
-        raise HTTPException(status_code=400, detail="Modelo não treinado")
+        raise HTTPException(status_code=400, detail="Modelo nÃ£o treinado")
     blob: Dict[str, Any] = joblib.load(MODEL_PATH)
     pipeline = blob["pipeline"]
     class_mapping = blob.get("class_mapping", {})
@@ -422,8 +422,8 @@ from sklearn.impute import SimpleImputer
 def _fit_clean_X(X: np.ndarray):
     """
     Limpa X para treino:
-      - força float
-      - ±inf -> NaN
+      - forÃ§a float
+      - Â±inf -> NaN
       - remove colunas 100% NaN e guarda o mask
       - imputa NaN por mediana (fit)
     Retorna: X_clean, col_mask, imputer
@@ -433,14 +433,14 @@ def _fit_clean_X(X: np.ndarray):
 
     col_ok = ~np.isnan(X).all(axis=0)
     if not col_ok.any():
-        raise HTTPException(status_code=400, detail="Todas as variáveis espectrais ficaram inválidas após o pré-processamento.")
+        raise HTTPException(status_code=400, detail="Todas as variÃ¡veis espectrais ficaram invÃ¡lidas apÃ³s o prÃ©-processamento.")
     if not col_ok.all():
         X = X[:, col_ok]
 
     # linhas 100% NaN
     row_ok = ~np.isnan(X).all(axis=1)
     if not row_ok.any():
-        raise HTTPException(status_code=400, detail="Todas as amostras ficaram inválidas após o pré-processamento.")
+        raise HTTPException(status_code=400, detail="Todas as amostras ficaram invÃ¡lidas apÃ³s o prÃ©-processamento.")
     if not row_ok.all():
         X = X[row_ok]
 
@@ -450,7 +450,7 @@ def _fit_clean_X(X: np.ndarray):
 
 def _transform_clean_X(X: np.ndarray, col_ok: np.ndarray, imp: SimpleImputer):
     """
-    Limpa X de validação/teste usando a MESMA seleção de colunas e o MESMO imputador.
+    Limpa X de validaÃ§Ã£o/teste usando a MESMA seleÃ§Ã£o de colunas e o MESMO imputador.
     """
     X = np.asarray(X, dtype=float)
     X[~np.isfinite(X)] = np.nan
@@ -498,10 +498,10 @@ def _read_dataframe(filename: str, content: bytes) -> pd.DataFrame:
 
 def _to_numeric_series(s: pd.Series) -> pd.Series:
     s = s.astype(str)
-    s = s.str.replace(r"\s+", "", regex=True)                 # remove espaços
-    s = s.str.replace(r"[^0-9eE\+\-\,\.]", "", regex=True)    # mantém dígitos, sinais, . e ,
+    s = s.str.replace(r"\s+", "", regex=True)                 # remove espaÃ§os
+    s = s.str.replace(r"[^0-9eE\+\-\,\.]", "", regex=True)    # mantÃ©m dÃ­gitos, sinais, . e ,
     s = s.str.replace(r"\.(?=\d{3}(?:\D|$))", "", regex=True) # remove ponto de milhar
-    s = s.str.replace(",", ".", regex=False)                  # vírgula -> ponto
+    s = s.str.replace(",", ".", regex=False)                  # vÃ­rgula -> ponto
     return pd.to_numeric(s, errors="coerce")
 
 
@@ -517,7 +517,7 @@ def _cross_val_metrics(
 ):
     from sklearn.impute import SimpleImputer
 
-    # default de validação
+    # default de validaÃ§Ã£o
     if validation_method is None:
         validation_method = "StratifiedKFold" if classification else "KFold"
         validation_params = {
@@ -545,20 +545,20 @@ def _cross_val_metrics(
         X_tr_raw[~np.isfinite(X_tr_raw)] = np.nan
         X_te_raw[~np.isfinite(X_te_raw)] = np.nan
 
-        # mantém só colunas que têm pelo menos um valor no TREINO
+        # mantÃ©m sÃ³ colunas que tÃªm pelo menos um valor no TREINO
         col_ok = ~np.isnan(X_tr_raw).all(axis=0)
         if not col_ok.any():
-            raise ValueError("Fold sem variáveis válidas após pré-processamento.")
+            raise ValueError("Fold sem variÃ¡veis vÃ¡lidas apÃ³s prÃ©-processamento.")
         X_tr = X_tr_raw[:, col_ok]
         X_te = X_te_raw[:, col_ok]
 
         # remove linhas 100% NaN no TREINO (alinha y do treino)
         tr_row_ok = ~np.isnan(X_tr).all(axis=1)
         if not tr_row_ok.any():
-            raise ValueError("Fold sem amostras válidas após pré-processamento.")
+            raise ValueError("Fold sem amostras vÃ¡lidas apÃ³s prÃ©-processamento.")
         X_tr = X_tr[tr_row_ok]
 
-        # imputação por MEDIANA (fit no treino, aplica no teste)
+        # imputaÃ§Ã£o por MEDIANA (fit no treino, aplica no teste)
         imp = SimpleImputer(strategy="median")
         X_tr = imp.fit_transform(X_tr)
         X_te = imp.transform(X_te)
@@ -571,7 +571,7 @@ def _cross_val_metrics(
             )
             preds[test_idx] = model.predict(X_te)
         else:
-            # y numérico no treino com o mesmo filtro de linhas
+            # y numÃ©rico no treino com o mesmo filtro de linhas
             y_tr_full = np.asarray(y[train_idx], dtype=float)
             y_tr = y_tr_full[tr_row_ok]
             model, _, _ = train_plsr(X_tr, y_tr, n_components=n_components)
@@ -629,7 +629,7 @@ def _parse_ranges(df: pd.DataFrame, ranges: List[Tuple[float, float]] | None) ->
 
     spectral_cols = [c for c in df.columns if _is_number(str(c))]
     if not spectral_cols:
-        raise HTTPException(400, "Nenhuma coluna espectral numérica encontrada.")
+        raise HTTPException(400, "Nenhuma coluna espectral numÃ©rica encontrada.")
 
     if ranges:
         wl = np.array([float(c) for c in spectral_cols])
@@ -638,7 +638,7 @@ def _parse_ranges(df: pd.DataFrame, ranges: List[Tuple[float, float]] | None) ->
 
     if not spectral_cols:
         raise HTTPException(
-            400, "Faixa espectral não bate com as colunas disponíveis."
+            400, "Faixa espectral nÃ£o bate com as colunas disponÃ­veis."
         )
 
     return df[spectral_cols], spectral_cols
@@ -752,7 +752,7 @@ def _cm_plot(y_true: list, y_pred: list, labels: list[str]) -> str:
     )
     ax.set_xlabel("Predito", fontsize=fontsize)
     ax.set_ylabel("Real", fontsize=fontsize)
-    ax.set_title("Matriz de Confusão", fontsize=fontsize + 2, weight="bold")
+    ax.set_title("Matriz de ConfusÃ£o", fontsize=fontsize + 2, weight="bold")
     plt.xticks(rotation=0)
     plt.yticks(rotation=0)
     plt.tight_layout()
@@ -792,7 +792,7 @@ def _vip_plot(vip: list[float]) -> str:
     os.close(fd)
     plt.figure()
     plt.bar(range(len(vip)), vip)
-    plt.xlabel("Variável")
+    plt.xlabel("VariÃ¡vel")
     plt.ylabel("VIP")
     plt.tight_layout()
     plt.savefig(path)
@@ -812,7 +812,7 @@ async def upload_metrics(metrics: Metrics) -> dict:
             json.dump(metrics.dict(), f)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-    return {"status": "success", "message": "Métricas atualizadas"}
+    return {"status": "success", "message": "MÃ©tricas atualizadas"}
 
 
 @app.post("/process")
@@ -831,14 +831,14 @@ async def process_file(
 
         # 1) valida se a coluna alvo existe
         if target not in df.columns:
-            raise HTTPException(status_code=400, detail=f"A coluna '{target}' não foi encontrada no arquivo.")
+            raise HTTPException(status_code=400, detail=f"A coluna '{target}' nÃ£o foi encontrada no arquivo.")
 
-        # 2) prepara X/feature names uma vez só
+        # 2) prepara X/feature names uma vez sÃ³
         X_df = df.drop(columns=[target], errors="ignore")
         features = X_df.columns.tolist()
         X = X_df.values
 
-        # 3) aplica pré-processamento, se houver
+        # 3) aplica prÃ©-processamento, se houver
         methods = _parse_preprocess(preprocess)
         if methods:
             X = apply_methods(X, methods)
@@ -855,18 +855,18 @@ async def process_file(
             y = y_all[row_ok]
             _, metrics, extra = train_plsda(X, y, n_components=n_components)
         else:
-            # garante numérico na regressão
+            # garante numÃ©rico na regressÃ£o
             try:
                 y_all = df[target].astype(float).values
             except Exception:
                 raise HTTPException(
                     status_code=400,
-                    detail="Erro: coluna alvo não numérica. Selecione uma coluna numérica para regressão.",
+                    detail="Erro: coluna alvo nÃ£o numÃ©rica. Selecione uma coluna numÃ©rica para regressÃ£o.",
                 )
             y = y_all[row_ok]
             _, metrics, extra = train_plsr(X, y, n_components=n_components)
 
-        # 5) VIP + top Vips serializáveis
+        # 5) VIP + top Vips serializÃ¡veis
         vip = extra.get("vip", [])
         vip_list = vip.tolist() if hasattr(vip, "tolist") else list(vip)
 
@@ -946,7 +946,7 @@ async def columns(file: UploadFile = File(...)):
     keep = ~np.all(np.isnan(X_raw), axis=0)
     X = sanitize_X(X_raw[:, keep])
     if X is None or X.size == 0:
-        raise HTTPException(status_code=400, detail="Matriz X vazia após sanitização.")
+        raise HTTPException(status_code=400, detail="Matriz X vazia apÃ³s sanitizaÃ§Ã£o.")
     columns = [c for c, k in zip(X_df.columns, keep) if k]
 
     wl_vals = [w for w in (_parse_wl(c) for c in columns) if w is not None]
@@ -991,12 +991,12 @@ def preprocess_dataset(req: PreprocessPayload):
 
     ds = STORE.get(req.dataset_id)
     if not ds:
-        raise HTTPException(400, "Dataset não encontrado. Faça o upload novamente.")
+        raise HTTPException(400, "Dataset nÃ£o encontrado. FaÃ§a o upload novamente.")
 
     X_df = pd.DataFrame(ds.get("X"), columns=ds.get("columns", []))
     y_df = ds.get("y_df")
     if req.target not in y_df.columns:
-        raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
+        raise HTTPException(400, f"Coluna alvo '{req.target}' nÃ£o encontrada.")
 
     ranges_list = parse_ranges(req.spectral_ranges) if req.spectral_ranges else []
     _, cols = _parse_ranges(X_df, ranges_list)
@@ -1017,7 +1017,7 @@ async def analisar_file(
     validation_method: str | None = Form(None),
     validation_params: str = Form(""),
 ) -> dict:
-    """Executa análise PLS básica retornando métricas e VIPs (robusto a vírgula decimal e NaN em X)."""
+    """Executa anÃ¡lise PLS bÃ¡sica retornando mÃ©tricas e VIPs (robusto a vÃ­rgula decimal e NaN em X)."""
     try:
         payload = {
             "target": target,
@@ -1046,7 +1046,7 @@ async def analisar_file(
         if target not in df.columns:
             raise HTTPException(
                 status_code=400,
-                detail=f"A coluna '{target}' não foi encontrada no arquivo."
+                detail=f"A coluna '{target}' nÃ£o foi encontrada no arquivo."
             )
 
         # X / features (+ faixas)
@@ -1103,9 +1103,9 @@ async def analisar_file(
             X_train_raw, X_test_raw = X[train_idx], X[test_idx]
             y_train_raw, y_test_raw = y_series.iloc[train_idx], y_series.iloc[test_idx]
 
-            # LIMPEZA/IMPUTAÇÃO CONSISTENTE ENTRE TREINO/TESTE
+            # LIMPEZA/IMPUTAÃÃO CONSISTENTE ENTRE TREINO/TESTE
             X_train, col_ok, imp, train_row_ok = _fit_clean_X(X_train_raw)
-            # alinhar y de treino se houve remoção de linhas 100% NaN
+            # alinhar y de treino se houve remoÃ§Ã£o de linhas 100% NaN
             y_train = y_train_raw.iloc[train_row_ok].reset_index(drop=True)
             X_test = _transform_clean_X(X_test_raw, col_ok, imp)
             y_test = y_test_raw.reset_index(drop=True)
@@ -1124,18 +1124,18 @@ async def analisar_file(
                 X_out = X_test
 
             else:
-                # regressão
+                # regressÃ£o
                 from sklearn.cross_decomposition import PLSRegression
                 from sklearn.metrics import r2_score, mean_squared_error
 
-                # alvo numérico robusto
+                # alvo numÃ©rico robusto
                 y_train_num = _to_numeric_series(y_train)
                 y_test_num = _to_numeric_series(y_test)
                 if y_train_num.isna().all() or y_test_num.isna().all():
                     raise HTTPException(status_code=400,
-                                        detail="Erro: coluna alvo não numérica. Selecione uma coluna numérica para regressão.")
+                                        detail="Erro: coluna alvo nÃ£o numÃ©rica. Selecione uma coluna numÃ©rica para regressÃ£o.")
 
-                # já está tudo limpo em X_train/X_test
+                # jÃ¡ estÃ¡ tudo limpo em X_train/X_test
                 pls = PLSRegression(n_components=n_components)
                 pls.fit(X_train, y_train_num.values)
                 y_train_pred = pls.predict(X_train).ravel()
@@ -1159,7 +1159,7 @@ async def analisar_file(
                 y_series_out = y_test_num
                 X_out = X_test
         # =========================
-        # KFold / LOO / Sem validação explícita
+        # KFold / LOO / Sem validaÃ§Ã£o explÃ­cita
         # =========================
         else:
             if classification:
@@ -1179,8 +1179,8 @@ async def analisar_file(
             else:
                 y_numeric = _to_numeric_series(y_series)
                 if y_numeric.isna().all():
-                    raise ValueError("Erro: coluna alvo não numérica. Por favor, selecione uma coluna com valores numéricos para regressão.")
-                # alinha X ao y válido
+                    raise ValueError("Erro: coluna alvo nÃ£o numÃ©rica. Por favor, selecione uma coluna com valores numÃ©ricos para regressÃ£o.")
+                # alinha X ao y vÃ¡lido
                 y_mask = y_numeric.notna().values
                 X = X[y_mask]
                 y_numeric = y_numeric[y_mask].values
@@ -1189,13 +1189,13 @@ async def analisar_file(
                 if not np.isfinite(X).all():
                     col_ok = np.isfinite(X).all(axis=0)
                     if not col_ok.any():
-                        raise HTTPException(status_code=400, detail="Todas as variáveis ficaram inválidas após o pré-processamento.")
+                        raise HTTPException(status_code=400, detail="Todas as variÃ¡veis ficaram invÃ¡lidas apÃ³s o prÃ©-processamento.")
                     if not col_ok.all():
                         features = [f for i, f in enumerate(features) if col_ok[i]]
                         X = X[:, col_ok]
                     row_ok = np.isfinite(X).all(axis=1)
                     if not row_ok.any():
-                        raise HTTPException(status_code=400, detail="Todas as amostras ficaram inválidas após o pré-processamento (NaN/Inf).")
+                        raise HTTPException(status_code=400, detail="Todas as amostras ficaram invÃ¡lidas apÃ³s o prÃ©-processamento (NaN/Inf).")
                     X = X[row_ok]
                     y_numeric = y_numeric[row_ok]
 
@@ -1234,7 +1234,7 @@ async def analisar_file(
             pickle.dump({"model": model, "class_mapping": class_mapping}, fh)
 
         vip = extra["vip"]
-        features_for_vip = features  # já sincronizado quando removemos colunas
+        features_for_vip = features  # jÃ¡ sincronizado quando removemos colunas
         idx = np.argsort(vip)[::-1][:10]
         top_vips = []
         wls_numeric = [float(f) if str(f).replace('.', '', 1).isdigit() else None for f in features_for_vip]
@@ -1299,9 +1299,9 @@ class OptimizeParams(BaseModel):
     """Parameters expected by the /optimize endpoint."""
     target: str
     validation_method: Literal["KFold", "LOO", "Holdout"]
-    n_components: Optional[int] = None          # se None, você define um padrão no /optimize
+    n_components: Optional[int] = None          # se None, vocÃª define um padrÃ£o no /optimize
     n_bootstrap: int = 0
-    folds: Optional[int] = None                 # usado só quando KFold
+    folds: Optional[int] = None                 # usado sÃ³ quando KFold
     analysis_mode: Literal["PLS-R", "PLS-DA"] = "PLS-R"
     spectral_range: Optional[Tuple[float, float]] = None
     preprocessing_methods: Optional[List[str]] = None
@@ -1338,9 +1338,9 @@ import numpy as np
 
 def _resolve_cv_params(raw_method, classification: bool, y_values: np.ndarray, requested_folds: int | None):
     """
-    Resolve método e parâmetros de validação de forma segura/robusta.
+    Resolve mÃ©todo e parÃ¢metros de validaÃ§Ã£o de forma segura/robusta.
     - LOO: retorna ("LOO", {})
-    - StratifiedKFold (classificação): n_splits <= min(amostras por classe), min 2
+    - StratifiedKFold (classificaÃ§Ã£o): n_splits <= min(amostras por classe), min 2
     - KFold: n_splits <= n_samples, min 2
     - Holdout: usa defaults
     - Vazio/None: default = StratifiedKFold (classif) ou KFold (regr)
@@ -1351,7 +1351,7 @@ def _resolve_cv_params(raw_method, classification: bool, y_values: np.ndarray, r
     if method == "LOO":
         return "LOO", {}
 
-    # Defaults por tipo de análise
+    # Defaults por tipo de anÃ¡lise
     if not method:
         method = "StratifiedKFold" if classification else "KFold"
 
@@ -1359,7 +1359,7 @@ def _resolve_cv_params(raw_method, classification: bool, y_values: np.ndarray, r
     if method == "Holdout":
         return "Holdout", {"test_size": 0.2, "shuffle": True, "random_state": 42}
 
-    # StratifiedKFold (classificação)
+    # StratifiedKFold (classificaÃ§Ã£o)
     if method == "StratifiedKFold" and classification:
         folds = int(requested_folds) if requested_folds else 5
         _, counts = np.unique(y_values, return_counts=True)
@@ -1370,7 +1370,7 @@ def _resolve_cv_params(raw_method, classification: bool, y_values: np.ndarray, r
             "random_state": 42,
         }
 
-    # KFold (regr ou class sem estratificação)
+    # KFold (regr ou class sem estratificaÃ§Ã£o)
     if method == "KFold":
         folds = int(requested_folds) if requested_folds else 5
         n_samples = int(len(y_values))
@@ -1394,7 +1394,7 @@ async def optimize_endpoint(
             raise HTTPException(status_code=422, detail="Invalid parameters: params must be a JSON string")
 
         try:
-            opts = OptimizeParams(**parsed)  # usa a versão com validators se você aplicou
+            opts = OptimizeParams(**parsed)  # usa a versÃ£o com validators se vocÃª aplicou
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
@@ -1403,7 +1403,7 @@ async def optimize_endpoint(
         if opts.target not in df.columns:
             raise HTTPException(status_code=400, detail="Target not found")
 
-        # --- prepara X_df e filtra colunas espectrais numéricas
+        # --- prepara X_df e filtra colunas espectrais numÃ©ricas
         X_df = df.drop(columns=[opts.target])
 
         numeric_cols: list[str] = []
@@ -1416,7 +1416,7 @@ async def optimize_endpoint(
             except Exception:
                 pass
         if not numeric_cols:
-            raise HTTPException(status_code=400, detail="Nenhuma coluna espectral (cabeçalho numérico) foi encontrada.")
+            raise HTTPException(status_code=400, detail="Nenhuma coluna espectral (cabeÃ§alho numÃ©rico) foi encontrada.")
 
         order = np.argsort(wls_vals)
         cols_sorted = [numeric_cols[i] for i in order]
@@ -1442,7 +1442,7 @@ async def optimize_endpoint(
             if len(classes) < 2:
                 raise HTTPException(
                     status_code=400,
-                    detail="A coluna alvo precisa ter pelo menos duas classes distintas para otimização."
+                    detail="A coluna alvo precisa ter pelo menos duas classes distintas para otimizaÃ§Ã£o."
                 )
         else:
             try:
@@ -1450,18 +1450,18 @@ async def optimize_endpoint(
             except Exception:
                 raise HTTPException(status_code=400, detail="Target must be numeric for regression (PLS-R).")
 
-        # --- métodos de pré-processamento
+        # --- mÃ©todos de prÃ©-processamento
         methods_in = opts.preprocessing_methods if opts.preprocessing_methods else ALL_PREPROCESS_METHODS
         methods = [m for m in methods_in if m in ALL_PREPROCESS_METHODS]
         if not methods:
-            raise HTTPException(status_code=422, detail="Nenhum método de pré-processamento válido informado.")
+            raise HTTPException(status_code=422, detail="Nenhum mÃ©todo de prÃ©-processamento vÃ¡lido informado.")
 
-        # --- componentes: define intervalo seguro conforme dimensões de X
+        # --- componentes: define intervalo seguro conforme dimensÃµes de X
         max_comp = int(min(X.shape[1], max(1, X.shape[0] - 1)))
         n_comp_range = list(range(1, max_comp + 1))
         log_info(f"[optimize] X shape={X.shape}, n_comp_range={n_comp_range}")
 
-        # ===== Validação: grid leve + LOO final se solicitado =====
+        # ===== ValidaÃ§Ã£o: grid leve + LOO final se solicitado =====
         raw_val_method = parsed.get("validation_method")
         requested_folds = parsed.get("folds")
         y_values = y_series.to_numpy()
@@ -1520,7 +1520,7 @@ async def optimize_endpoint(
             results = opt_res.get("results", [])
             best = opt_res.get("best")
         finally:
-            # garante finalização de progresso mesmo em erro
+            # garante finalizaÃ§Ã£o de progresso mesmo em erro
             OPTIMIZE_PROGRESS["current"] = int(OPTIMIZE_PROGRESS.get("total") or 0)
 
         if raw_val_method == "LOO" and results:
@@ -1592,14 +1592,14 @@ def generate_report(payload: dict) -> str:
 def report_endpoint(payload: dict):
     pdf_path = generate_report(payload)
     if not os.path.exists(pdf_path):
-        raise HTTPException(500, "Falha ao gerar relatório.")
+        raise HTTPException(500, "Falha ao gerar relatÃ³rio.")
     return {"path": pdf_path}
 
 
 @app.get("/report/download")
 def report_download(path: str):
     if not os.path.exists(path):
-        raise HTTPException(404, "Arquivo não encontrado.")
+        raise HTTPException(404, "Arquivo nÃ£o encontrado.")
     return FileResponse(path, media_type="application/pdf", filename=os.path.basename(path))
 
 
@@ -1624,7 +1624,7 @@ async def dashboard_data(log_type: str = "", date: str = "") -> dict:
     levels = ["INFO", "ERROR", "WARNING", "DEBUG"]
     counts = {lvl: log_content.count(lvl) for lvl in levels}
 
-    # Usa a própria função da rota /metrics dentro do mesmo módulo
+    # Usa a prÃ³pria funÃ§Ã£o da rota /metrics dentro do mesmo mÃ³dulo
     metrics = get_metrics().dict()  # ok
 
     metric_history = {
@@ -1676,14 +1676,14 @@ def optimize(req: OptimizeParams, request: Request):
     if request.headers.get("content-type", "").split(";")[0] != "application/json":
         raise HTTPException(status_code=415, detail="Esta rota aceita apenas application/json.")
     if not req.dataset_id:
-        raise HTTPException(status_code=422, detail="dataset_id é obrigatório. Faça upload em /columns primeiro.")
+        raise HTTPException(status_code=422, detail="dataset_id Ã© obrigatÃ³rio. FaÃ§a upload em /columns primeiro.")
 
     try:
         ds = STORE.get(req.dataset_id)
         if not ds:
             raise HTTPException(
                 status_code=409,
-                detail="Nenhum dataset carregado para este dataset_id. Refaça o upload em /columns.",
+                detail="Nenhum dataset carregado para este dataset_id. RefaÃ§a o upload em /columns.",
             )
         X_df = pd.DataFrame(ds.get("X"), columns=ds.get("columns", []))
         logger.info(f"optimize using dataset_id={req.dataset_id} shape={X_df.shape}")
@@ -1700,14 +1700,14 @@ def optimize(req: OptimizeParams, request: Request):
         task = detect_task_from_y(y_raw, req.analysis_mode)
         if req.analysis_mode and str(req.analysis_mode).lower().startswith("regress") and task == "classification":
             logger.warning(
-                "req.mode=Regression, porém y parece categórico; aplicando PLS-DA automaticamente."
+                "req.mode=Regression, porÃ©m y parece categÃ³rico; aplicando PLS-DA automaticamente."
             )
 
         X = sanitize_X(X)
         y, classes_ = sanitize_y(y_raw, task)
         X, y, _ = align_X_y(X, y)
         if X.shape[0] == 0:
-            raise HTTPException(400, "Sem amostras após sanitização/alinhamento.")
+            raise HTTPException(400, "Sem amostras apÃ³s sanitizaÃ§Ã£o/alinhamento.")
 
         spectral_range_str = req.spectral_ranges or ""
         spectral_ranges_applied = ranges_list
@@ -1798,7 +1798,7 @@ def optimize(req: OptimizeParams, request: Request):
 def model_download(model_id: str):
     path = os.path.join(MODEL_DIR, f"{model_id}.joblib")
     if not os.path.exists(path):
-        raise HTTPException(404, "Modelo não encontrado.")
+        raise HTTPException(404, "Modelo nÃ£o encontrado.")
     return FileResponse(path, filename=f"nir_model_{model_id}.joblib", media_type="application/octet-stream")
 
 
@@ -1825,13 +1825,13 @@ def train(req: TrainParams, request: Request):
     if request.headers.get("content-type", "").split(";")[0] != "application/json":
         raise HTTPException(status_code=415, detail="Esta rota aceita apenas application/json.")
     if not req.dataset_id:
-        raise HTTPException(status_code=422, detail="dataset_id é obrigatório. Faça upload em /columns primeiro.")
+        raise HTTPException(status_code=422, detail="dataset_id Ã© obrigatÃ³rio. FaÃ§a upload em /columns primeiro.")
     try:
         ds = STORE.get(req.dataset_id)
         if not ds:
             raise HTTPException(
                 status_code=409,
-                detail="Nenhum dataset carregado para este dataset_id. Refaça o upload em /columns.",
+                detail="Nenhum dataset carregado para este dataset_id. RefaÃ§a o upload em /columns.",
             )
         X_df = pd.DataFrame(ds.get("X"), columns=ds.get("columns", []))
         logger.info(f"train using dataset_id={req.dataset_id} shape={X_df.shape}")
@@ -1845,12 +1845,13 @@ def train(req: TrainParams, request: Request):
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-        # decide task automaticamente a partir de y + req.analysis_mode
-        task = detect_task_from_y(y_raw, req.analysis_mode)
-        if req.analysis_mode and str(req.analysis_mode).lower().startswith("regress") and task == "classification":
-            logger.warning(
-                "req.mode=Regression, porém y parece categórico; aplicando PLS-DA automaticamente."
-            )
+        # --- Logs de diagnóstico para confirmar dtype e amostras ---
+        try:
+            y_dtype = np.asarray(y_raw).dtype
+            y_preview = [str(y_raw[i]) for i in range(min(3, len(y_raw)))]
+            logger.info(f"train: y dtype={y_dtype}, preview={y_preview}")
+        except Exception:
+            pass
 
         methods = req.preprocess or []
         Xp = apply_methods(X, methods=methods)
@@ -1860,18 +1861,26 @@ def train(req: TrainParams, request: Request):
         if Xp is None or Xp.size == 0:
             raise HTTPException(status_code=400, detail="Matriz X ficou vazia após sanitização.")
 
-        # --- Sanitiza y (suporta categórico em classificação) ---
+        # --- Detecta tarefa a partir do próprio y ---
+        task = detect_task_from_y(y_raw, req.analysis_mode)
+        if req.analysis_mode and str(req.analysis_mode).lower().startswith("regress") and task == "classification":
+            logger.warning(
+                "req.mode=Regression, porém y parece categórico; aplicando PLS-DA automaticamente.",
+            )
+
+        # --- Sanitiza y respeitando a tarefa ---
         y_sanit, y_classes = sanitize_y(y_raw, task)
+
 
         # --- Alinha X e y ---
         Xp, y_sanit, _ = align_X_y(Xp, y_sanit)
         if Xp.shape[0] == 0 or y_sanit.size == 0:
-            raise HTTPException(status_code=400, detail="Após alinhamento, não há amostras válidas para o alvo selecionado.")
+            raise HTTPException(status_code=400, detail="ApÃ³s alinhamento, nÃ£o hÃ¡ amostras vÃ¡lidas para o alvo selecionado.")
 
         # --- Limita n_components ---
         safe_ncomp = limit_n_components(req.n_components, Xp)
         logger.info(
-            f"train: task={task} X={Xp.shape} y={y_sanit.shape} ncomp={req.n_components}->{safe_ncomp}"
+            f"train: task={task} X={Xp.shape} y={y_sanit.shape} ncomp_req={req.n_components} -> used={safe_ncomp}"
         )
 
         vp = req.validation_params or {}
@@ -1891,7 +1900,7 @@ def train(req: TrainParams, request: Request):
                 est = OneVsRestClassifier(base).fit(Xp, y_sanit.astype(int))
             class_mapping = {int(i): str(c) for i, c in enumerate(y_classes or [])}
         else:
-            # --- PLSR (regressão) ---
+            # --- PLSR (regressÃ£o) ---
             est = make_pls_reg(n_components=safe_ncomp).fit(Xp, y_sanit)
             class_mapping = None
         state.last_model = est

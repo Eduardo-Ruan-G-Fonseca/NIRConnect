@@ -23,4 +23,4 @@ def encode_labels_if_needed(y_like: List[Any]) -> Tuple[np.ndarray, Dict[int, st
     le = LabelEncoder()
     y_num = le.fit_transform(s.astype(str))
     mapping = {int(i): str(cls) for i, cls in enumerate(le.classes_)}
-    return y_num.astype(float), mapping, int(len(le.classes_))
+    return y_num.astype(int), mapping, int(len(le.classes_))
