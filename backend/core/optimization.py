@@ -18,6 +18,7 @@ from sklearn.model_selection import cross_val_predict
 from .preprocessing import apply_methods
 from .validation import make_cv
 from .pls import fit_plsda_multiclass
+from utils.sanitize import sanitize_X, sanitize_y, limit_n_components
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +138,17 @@ def optimize_model_grid(
     time_budget_s=None,
 ):
     """Grid-search over preprocessing methods and number of PLS components."""
+    task = "classification" if mode in (
+        "classification",
+        "pls-da",
+        "PLS-DA",
+        "Classificação (PLS-DA)",
+    ) else "regression"
+
+    X = sanitize_X(X)
+    y = sanitize_y(y, task)
+    if X is None or X.size == 0:
+        return {"status": "error", "message": "Matriz X vazia após sanitização."}
 
     cv, cv_meta = make_cv(y, validation_method, n_splits)
     labels_all = sorted(list(np.unique(y)))
@@ -151,8 +163,11 @@ def optimize_model_grid(
     for prep in (preprocessors or [None]):
         Xp = preprocess(X, method=prep, range_nm=wavelength_range)
         for nc in range(1, max_nc + 1):
+            ncomp = limit_n_components(nc, Xp)
+            if ncomp < 1:
+                continue
             if mode == "classification":
-                est = make_pls_da(n_components=nc)
+                est = make_pls_da(n_components=ncomp)
                 y_pred = cross_val_predict(est, Xp, y, cv=cv)
                 acc = float(accuracy_score(y, y_pred))
                 f1m = float(
@@ -189,7 +204,7 @@ def optimize_model_grid(
                 curve_val = met_full["MacroF1"]
                 met_curve = {"Accuracy": met_full["Accuracy"], "MacroF1": met_full["MacroF1"]}
             else:
-                est = make_pls_reg(n_components=nc)
+                est = make_pls_reg(n_components=ncomp)
                 y_cv = cross_val_predict(est, Xp, y, cv=cv)
                 rmse = float(np.sqrt(mean_squared_error(y, y_cv)))
                 mae = float(np.mean(np.abs(y - y_cv)))
@@ -209,14 +224,14 @@ def optimize_model_grid(
             results.append(
                 {
                     "preprocess": prep or "none",
-                    "n_components": nc,
+                    "n_components": ncomp,
                     "metrics": met_full,
                     **met_curve,
                 }
             )
             curves_map.setdefault(prep or "none", []).append(
                 {
-                    "n_components": nc,
+                    "n_components": ncomp,
                     **({"MacroF1": curve_val} if mode == "classification" else {"RMSECV": curve_val}),
                 }
             )

@@ -42,7 +42,7 @@ from core.logger import log_info
 from collections import Counter
 from core.validation import build_cv, make_cv, safe_n_components
 from core.bootstrap import train_plsr, train_plsda, bootstrap_metrics
-from core.preprocessing import apply_methods, sanitize_X, build_spectral_mask
+from core.preprocessing import apply_methods, build_spectral_mask, sanitize_X as sanitize_X_core
 from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from typing import Optional, Tuple, List, Literal, Any, Dict, Union
 from core.saneamento import saneamento_global
@@ -51,6 +51,7 @@ from core.optimization import optimize_model_grid, preprocess as grid_preprocess
 from ml.validation import build_cv_meta
 from core.datasets import store_dataset, resolve_dataset
 from core.dataset_store import STORE
+from utils.sanitize import sanitize_X, sanitize_y, limit_n_components
 try:
     from ml.pipeline import (
         build_pls_pipeline,
@@ -112,7 +113,7 @@ def apply_preprocess(X: np.ndarray, method: str) -> np.ndarray:
         Xp = X.copy()
     else:
         Xp = apply_methods(X.copy(), [method])
-    Xp, _ = sanitize_X(Xp)
+    Xp = sanitize_X(Xp)
     return Xp
 
 
@@ -842,7 +843,7 @@ async def process_file(
         X_tmp = np.asarray(X, dtype=float)
         X_tmp[~np.isfinite(X_tmp)] = np.nan
         row_ok = ~np.isnan(X_tmp).all(axis=1)
-        X, col_ok = sanitize_X(X)
+        X, col_ok = sanitize_X_core(X)
         features = [f for i, f in enumerate(features) if col_ok[i]]
 
         # 4) treina
@@ -937,18 +938,27 @@ async def columns(file: UploadFile = File(...)):
         except Exception:
             return None
 
-    wl_vals = [w for w in (_parse_wl(c) for c in X_df.columns) if w is not None]
+    X_raw = np.asarray(X_df.values, dtype=float)
+    X_raw[np.isinf(X_raw)] = np.nan
+    keep = ~np.all(np.isnan(X_raw), axis=0)
+    X = sanitize_X(X_raw[:, keep])
+    if X is None or X.size == 0:
+        raise HTTPException(status_code=400, detail="Matriz X vazia após sanitização.")
+    columns = [c for c, k in zip(X_df.columns, keep) if k]
+    X_df_clean = pd.DataFrame(X, columns=columns)
+
+    wl_vals = [w for w in (_parse_wl(c) for c in columns) if w is not None]
     meta = {
-        "columns": list(X_df.columns),
+        "columns": columns,
         "targets": targets,
-        "n_samples": int(len(df)),
-        "n_wavelengths": int(len(X_df.columns)),
+        "n_samples": int(X.shape[0]),
+        "n_wavelengths": int(X.shape[1]),
         "wl_min": float(min(wl_vals)) if wl_vals else None,
         "wl_max": float(max(wl_vals)) if wl_vals else None,
     }
 
-    dsid = STORE.put(X_df, y_df, meta)
-    return {"dataset_id": dsid, **meta}
+    dsid = STORE.put(X_df_clean, y_df, meta)
+    return {"dataset_id": dsid, **meta, "spectra_matrix": X.tolist()}
 
 
 @app.get("/columns/meta")
@@ -1834,10 +1844,19 @@ def train(req: TrainParams, request: Request):
 
         methods = req.preprocess or []
         Xp = apply_methods(X, methods=methods)
+        task = "classification" if classification else "regression"
+        Xp = sanitize_X(Xp)
+        y = sanitize_y(y, task)
+        if Xp is None or Xp.size == 0:
+            raise HTTPException(status_code=400, detail="Matriz X ficou vazia após sanitização (todas as colunas inválidas).")
+        safe_ncomp = limit_n_components(req.n_components, Xp)
+        logger.info(
+            f"train: after sanitize shape X={Xp.shape}, n_components_req={req.n_components} -> n_components_used={safe_ncomp}"
+        )
         if classification:
-            est = make_pls_da(n_components=req.n_components).fit(Xp, y)
+            est = make_pls_da(n_components=safe_ncomp).fit(Xp, y)
         else:
-            est = make_pls_reg(n_components=req.n_components).fit(Xp, y)
+            est = make_pls_reg(n_components=safe_ncomp).fit(Xp, y)
         state.last_model = est
 
         if classification and class_mapping is None:
