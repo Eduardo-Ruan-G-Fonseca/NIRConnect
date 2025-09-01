@@ -52,6 +52,7 @@ from ml.validation import build_cv_meta
 from core.datasets import store_dataset, resolve_dataset
 from core.dataset_store import STORE
 from utils.sanitize import sanitize_X, sanitize_y, limit_n_components, align_X_y
+from utils.targets import load_target_or_fail
 try:
     from ml.pipeline import (
         build_pls_pipeline,
@@ -90,14 +91,15 @@ REPORT_DIR = os.path.join(os.path.dirname(__file__), "reports")
 
 
 def _get_df_or_400(dataset_id: str | None):
-    got = STORE.get(dataset_id or "")
-    if not got:
+    ds = STORE.get(dataset_id or "")
+    if not ds:
         raise HTTPException(
             status_code=400,
             detail="Nenhum dataset está carregado. Faça upload do arquivo e chame /columns novamente.",
         )
-    X, _, _ = got
-    return X
+    X = ds.get("X")
+    cols = ds.get("columns", [])
+    return pd.DataFrame(X, columns=cols)
 
 
 def _metrics_ok(m):
@@ -945,7 +947,6 @@ async def columns(file: UploadFile = File(...)):
     if X is None or X.size == 0:
         raise HTTPException(status_code=400, detail="Matriz X vazia após sanitização.")
     columns = [c for c, k in zip(X_df.columns, keep) if k]
-    X_df_clean = pd.DataFrame(X, columns=columns)
 
     wl_vals = [w for w in (_parse_wl(c) for c in columns) if w is not None]
     meta = {
@@ -957,24 +958,23 @@ async def columns(file: UploadFile = File(...)):
         "wl_max": float(max(wl_vals)) if wl_vals else None,
     }
 
-    dsid = STORE.put(X_df_clean, y_df, meta)
+    dsid = STORE.put(X, y_df.copy(), meta)
     return {"dataset_id": dsid, **meta, "spectra_matrix": X.tolist()}
 
 
 @app.get("/columns/meta")
 def columns_meta(dataset_id: str = Query(...)):
-    got = STORE.get(dataset_id)
-    if not got:
+    ds = STORE.get(dataset_id)
+    if not ds:
         raise HTTPException(status_code=404, detail="dataset_id desconhecido")
-    _, _, meta = got
     return {
         "dataset_id": dataset_id,
-        "columns": meta.get("columns", []),
-        "targets": meta.get("targets", []),
-        "n_samples": meta.get("n_samples"),
-        "n_wavelengths": meta.get("n_wavelengths"),
-        "wl_min": meta.get("wl_min"),
-        "wl_max": meta.get("wl_max"),
+        "columns": ds.get("columns", []),
+        "targets": ds.get("targets", []),
+        "n_samples": ds.get("n_samples"),
+        "n_wavelengths": ds.get("n_wavelengths"),
+        "wl_min": ds.get("wl_min"),
+        "wl_max": ds.get("wl_max"),
     }
 
 
@@ -988,11 +988,12 @@ class PreprocessPayload(BaseModel):
 def preprocess_dataset(req: PreprocessPayload):
     """Validate dataset/target and return columns after spectral selection."""
 
-    got = STORE.get(req.dataset_id)
-    if not got:
+    ds = STORE.get(req.dataset_id)
+    if not ds:
         raise HTTPException(400, "Dataset não encontrado. Faça o upload novamente.")
 
-    X_df, y_df, _ = got
+    X_df = pd.DataFrame(ds.get("X"), columns=ds.get("columns", []))
+    y_df = ds.get("y_df")
     if req.target not in y_df.columns:
         raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
@@ -1677,21 +1678,21 @@ def optimize(req: OptimizeParams, request: Request):
         raise HTTPException(status_code=422, detail="dataset_id é obrigatório. Faça upload em /columns primeiro.")
 
     try:
-        got = STORE.get(req.dataset_id)
-        if not got:
+        ds = STORE.get(req.dataset_id)
+        if not ds:
             raise HTTPException(
                 status_code=409,
                 detail="Nenhum dataset carregado para este dataset_id. Refaça o upload em /columns.",
             )
-        X_df, y_df, _ = got
+        X_df = pd.DataFrame(ds.get("X"), columns=ds.get("columns", []))
         logger.info(f"optimize using dataset_id={req.dataset_id} shape={X_df.shape}")
-        if req.target not in y_df.columns:
-            raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
         ranges_list = parse_ranges(req.spectral_ranges) if req.spectral_ranges else []
         X_df, features = _parse_ranges(X_df, ranges_list)
         X = to_float_matrix(X_df.values)
-        y_raw = y_df[req.target].tolist()
+        y_raw = STORE.get_target(req.dataset_id, req.target)
+        if y_raw is None or len(y_raw) == 0:
+            raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
         classification = req.analysis_mode == "PLS-DA"
         if classification:
             y, class_mapping, _ = encode_labels_if_needed(y_raw)
@@ -1813,22 +1814,23 @@ def train(req: TrainParams, request: Request):
     if not req.dataset_id:
         raise HTTPException(status_code=422, detail="dataset_id é obrigatório. Faça upload em /columns primeiro.")
     try:
-        got = STORE.get(req.dataset_id)
-        if not got:
+        ds = STORE.get(req.dataset_id)
+        if not ds:
             raise HTTPException(
                 status_code=409,
                 detail="Nenhum dataset carregado para este dataset_id. Refaça o upload em /columns.",
             )
-        X_df, _, _ = got
+        X_df = pd.DataFrame(ds.get("X"), columns=ds.get("columns", []))
         logger.info(f"train using dataset_id={req.dataset_id} shape={X_df.shape}")
 
         ranges_list = parse_ranges(req.spectral_ranges) if req.spectral_ranges else []
         X_df, features = _parse_ranges(X_df, ranges_list)
         X = to_float_matrix(X_df.values)
 
-        y_raw = STORE.get_target(req.dataset_id, req.target)
-        if y_raw is None or (hasattr(y_raw, "__len__") and len(y_raw) == 0):
-            raise HTTPException(status_code=400, detail="Variável-alvo (y) ausente ou vazia. Verifique o campo 'target' e o dataset.")
+        try:
+            y_raw, _ = load_target_or_fail(ds, req.target)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         classification = req.analysis_mode == "PLS-DA"
 
         methods = req.preprocess or []
@@ -1846,7 +1848,7 @@ def train(req: TrainParams, request: Request):
         # --- Alinha X e y ---
         Xp, y_sanit, _ = align_X_y(Xp, y_sanit)
         if Xp.shape[0] == 0 or y_sanit.size == 0:
-            raise HTTPException(status_code=400, detail="Após alinhamento, não há amostras válidas (y vazio ou todo inválido).")
+            raise HTTPException(status_code=400, detail="Após alinhamento, não há amostras válidas. Verifique o alvo selecionado.")
 
         # --- Limita n_components ---
         safe_ncomp = limit_n_components(req.n_components, Xp)
