@@ -47,10 +47,11 @@ from core.interpreter import interpretar_vips, gerar_resumo_interpretativo
 from typing import Optional, Tuple, List, Literal, Any, Dict, Union
 from core.saneamento import saneamento_global
 from core.io_utils import to_float_matrix, encode_labels_if_needed
-from core.optimization import optimize_model_grid, preprocess as grid_preprocess, make_pls_da, make_pls_reg
+from core.optimization import optimize_model_grid, preprocess as grid_preprocess
 from ml.validation import build_cv_meta
 from core.datasets import store_dataset, resolve_dataset
-from core.dataset_store import STORE
+from dataset_store import DatasetStore
+from pls import make_pls_reg, make_pls_da
 from utils.task_detect import detect_task_from_y
 from utils.sanitize import sanitize_X, sanitize_y, limit_n_components, align_X_y
 from utils.targets import load_target_or_fail
@@ -72,6 +73,9 @@ except Exception:
 
 from core.pls import is_categorical  # (se nÃ£o for usar, podemos remover depois)
 import joblib
+
+dataset_store = DatasetStore()
+STORE = dataset_store
 
 # Progresso global para /optimize/status
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
@@ -905,62 +909,42 @@ async def process_file(
         raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/columns")
-async def columns(file: UploadFile = File(...)):
-    """Upload dataset file, store it and return targets/metadata."""
+def post_columns(file: UploadFile):
+    # leitura básica (xlsx/csv)
+    name = (file.filename or "").lower()
+    if name.endswith((".xls", ".xlsx")):
+        df = pd.read_excel(file.file)
+    else:
+        df = pd.read_csv(file.file)
 
-    content = await file.read()
-    try:
-        df = _read_dataframe(file.filename, content)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Erro ao ler o dataset.")
+    # separe espectros (numéricos) e alvos (demais)
+    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    X_df = df[numeric_cols].copy()
+    y_df = df.drop(columns=numeric_cols).copy()
 
-    import pandas as pd
+    if X_df.empty:
+        raise HTTPException(status_code=400, detail="Não há colunas numéricas para espectros.")
 
-    def _is_number(val: str) -> bool:
-        try:
-            float(str(val).strip())
-            return True
-        except Exception:
-            return False
+    # sanitiza X para o gráfico não ficar vazio
+    X = sanitize_X(X_df.to_numpy(dtype=float, copy=True))
 
-    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
-    few_level_nums = [c for c in num_cols if df[c].nunique(dropna=True) <= 30 and not _is_number(c)]
-    targets = list(dict.fromkeys(cat_cols + few_level_nums))
+    # gere um dataset_id (se o seu projeto já gera fora, mantenha)
+    import uuid
+    dataset_id = uuid.uuid4().hex
 
-    X_df = df.drop(columns=targets, errors="ignore")
-    y_df = df[targets].copy()
+    dataset_store.save(dataset_id, {
+        "X": X,                               # numpy float
+        "columns": list(X_df.columns),
+        "y_df": y_df.copy(),                  # pandas DF sem cast
+        "targets": list(y_df.columns),
+    })
 
-    def _parse_wl(name: str):
-        s = str(name).strip().lower()
-        if s.startswith("wl_"):
-            s = s[3:]
-        s = s.replace(",", ".")
-        try:
-            return float(s)
-        except Exception:
-            return None
-
-    X_raw = np.asarray(X_df.values, dtype=float)
-    X_raw[np.isinf(X_raw)] = np.nan
-    keep = ~np.all(np.isnan(X_raw), axis=0)
-    X = sanitize_X(X_raw[:, keep])
-    if X is None or X.size == 0:
-        raise HTTPException(status_code=400, detail="Matriz X vazia apÃ³s sanitizaÃ§Ã£o.")
-    columns = [c for c, k in zip(X_df.columns, keep) if k]
-
-    wl_vals = [w for w in (_parse_wl(c) for c in columns) if w is not None]
-    meta = {
-        "columns": columns,
-        "targets": targets,
-        "n_samples": int(X.shape[0]),
-        "n_wavelengths": int(X.shape[1]),
-        "wl_min": float(min(wl_vals)) if wl_vals else None,
-        "wl_max": float(max(wl_vals)) if wl_vals else None,
+    return {
+        "dataset_id": dataset_id,
+        "columns": list(X_df.columns),
+        "targets": list(y_df.columns),
+        "spectra_matrix": X.tolist(),         # <- NECESSÁRIO pro gráfico
     }
-
-    dsid = STORE.put(X, y_df.copy(), meta)
-    return {"dataset_id": dsid, **meta, "spectra_matrix": X.tolist()}
 
 
 @app.get("/columns/meta")
@@ -1821,122 +1805,45 @@ def deprecated_train_form():
 
 
 @app.post("/train")
-def train(req: TrainParams, request: Request):
-    if request.headers.get("content-type", "").split(";")[0] != "application/json":
-        raise HTTPException(status_code=415, detail="Esta rota aceita apenas application/json.")
-    if not req.dataset_id:
-        raise HTTPException(status_code=422, detail="dataset_id Ã© obrigatÃ³rio. FaÃ§a upload em /columns primeiro.")
+def train(req: TrainParams):  # use o mesmo tipo de request que você já tem
+    ds = dataset_store.get(req.dataset_id)
+    if not ds:
+        raise HTTPException(status_code=400, detail="Dataset não encontrado no servidor.")
+
+    # X pré-processado que você já montava anteriormente
+    Xp = ds.get("X")
+    if Xp is None:
+        raise HTTPException(status_code=400, detail="Matriz espectral não está disponível.")
+
+    # y robusto (sem cast p/ float)
     try:
-        ds = STORE.get(req.dataset_id)
-        if not ds:
-            raise HTTPException(
-                status_code=409,
-                detail="Nenhum dataset carregado para este dataset_id. RefaÃ§a o upload em /columns.",
-            )
-        X_df = pd.DataFrame(ds.get("X"), columns=ds.get("columns", []))
-        logger.info(f"train using dataset_id={req.dataset_id} shape={X_df.shape}")
+        y_raw, _ = load_target_or_fail(ds, req.target)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-        ranges_list = parse_ranges(req.spectral_ranges) if req.spectral_ranges else []
-        X_df, features = _parse_ranges(X_df, ranges_list)
-        X = to_float_matrix(X_df.values)
+    # decide tarefa pela seleção + conteúdo do y
+    task = detect_task_from_y(y_raw, req.analysis_mode)
 
-        try:
-            y_raw, _ = load_target_or_fail(ds, req.target)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+    # sanitizações
+    Xp = sanitize_X(Xp)
+    y_sanit, y_classes = sanitize_y(y_raw, task)
+    Xp, y_sanit, _ = align_X_y(Xp, y_sanit)
+    if Xp.shape[0] == 0 or y_sanit.size == 0:
+        raise HTTPException(status_code=400, detail="Após alinhamento, não há amostras válidas para o alvo.")
 
-        # --- Logs de diagnóstico para confirmar dtype e amostras ---
-        try:
-            y_dtype = np.asarray(y_raw).dtype
-            y_preview = [str(y_raw[i]) for i in range(min(3, len(y_raw)))]
-            logger.info(f"train: y dtype={y_dtype}, preview={y_preview}")
-        except Exception:
-            pass
+    safe_n = limit_n_components(req.n_components, Xp)
 
-        methods = req.preprocess or []
-        Xp = apply_methods(X, methods=methods)
+    # fit
+    if task == "classification":
+        from numpy import unique
+        n_classes = unique(y_sanit).size
+        est = make_pls_da(n_components=safe_n, n_classes=int(n_classes))
+        # PLSRegression aceita float, mas y_sanit já é int (0..K-1)
+        est.fit(Xp, y_sanit.astype(int))
+        payload = {"task": "classification", "n_components_used": safe_n, "classes_": y_classes or []}
+    else:
+        est = make_pls_reg(n_components=safe_n).fit(Xp, y_sanit)
+        payload = {"task": "regression", "n_components_used": safe_n}
 
-        # --- Sanitiza X ---
-        Xp = sanitize_X(Xp)
-        if Xp is None or Xp.size == 0:
-            raise HTTPException(status_code=400, detail="Matriz X ficou vazia após sanitização.")
-
-        # --- Detecta tarefa a partir do próprio y ---
-        task = detect_task_from_y(y_raw, req.analysis_mode)
-        if req.analysis_mode and str(req.analysis_mode).lower().startswith("regress") and task == "classification":
-            logger.warning(
-                "req.mode=Regression, porém y parece categórico; aplicando PLS-DA automaticamente.",
-            )
-
-        # --- Sanitiza y respeitando a tarefa ---
-        y_sanit, y_classes = sanitize_y(y_raw, task)
-
-
-        # --- Alinha X e y ---
-        Xp, y_sanit, _ = align_X_y(Xp, y_sanit)
-        if Xp.shape[0] == 0 or y_sanit.size == 0:
-            raise HTTPException(status_code=400, detail="ApÃ³s alinhamento, nÃ£o hÃ¡ amostras vÃ¡lidas para o alvo selecionado.")
-
-        # --- Limita n_components ---
-        safe_ncomp = limit_n_components(req.n_components, Xp)
-        logger.info(
-            f"train: task={task} X={Xp.shape} y={y_sanit.shape} ncomp_req={req.n_components} -> used={safe_ncomp}"
-        )
-
-        vp = req.validation_params or {}
-        cv, cv_meta = build_cv_meta(req.validation_method, vp, y_sanit)
-        start_nm, end_nm = (ranges_list[0] if ranges_list else (None, None))
-
-        if task == "classification":
-            # --- PLS-DA ---
-            from sklearn.cross_decomposition import PLSRegression
-            from sklearn.multiclass import OneVsRestClassifier
-
-            if len(np.unique(y_sanit)) <= 2:
-                est = PLSRegression(n_components=safe_ncomp)
-                est.fit(Xp, y_sanit.astype(float))
-            else:
-                base = PLSRegression(n_components=safe_ncomp)
-                est = OneVsRestClassifier(base).fit(Xp, y_sanit.astype(int))
-            class_mapping = {int(i): str(c) for i, c in enumerate(y_classes or [])}
-        else:
-            # --- PLSR (regressÃ£o) ---
-            est = make_pls_reg(n_components=safe_ncomp).fit(Xp, y_sanit)
-            class_mapping = None
-        state.last_model = est
-
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        model_id = uuid.uuid4().hex
-        model_path = os.path.join(MODEL_DIR, f"{model_id}.joblib")
-        joblib.dump(
-            {
-                "pipeline": est,
-                "prep": req.preprocess,
-                "n_components": req.n_components,
-                "n_components_used": safe_ncomp,
-                "target": req.target,
-                "class_mapping": class_mapping,
-                "spectral_ranges": ranges_list if ranges_list else None,
-                "validation": cv_meta["validation"],
-                "decision_mode": req.decision_mode,
-                "threshold": req.threshold,
-                "created_at": datetime.utcnow().isoformat() + "Z",
-                **({"classes_": y_classes} if y_classes else {}),
-            },
-            model_path,
-        )
-
-        resp = {
-            "model_id": model_id,
-            "dataset_id": req.dataset_id,
-            "preprocess_applied": methods,
-        }
-        resp["spectral_range"] = req.spectral_ranges
-        resp["spectral_ranges_applied"] = ranges_list
-        resp.update(cv_meta)
-        return resp
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("train failed")
-        raise HTTPException(status_code=400, detail=f"Falha no processamento: {e}")
+    # TODO: se você já serializa o modelo/coeficientes, mantenha a mesma resposta aqui
+    return {"status": "ok", **payload}
