@@ -51,6 +51,7 @@ from core.optimization import optimize_model_grid, preprocess as grid_preprocess
 from ml.validation import build_cv_meta
 from core.datasets import store_dataset, resolve_dataset
 from core.dataset_store import STORE
+from utils.task_detect import detect_task_from_y
 from utils.sanitize import sanitize_X, sanitize_y, limit_n_components, align_X_y
 from utils.targets import load_target_or_fail
 try:
@@ -1690,18 +1691,23 @@ def optimize(req: OptimizeParams, request: Request):
         ranges_list = parse_ranges(req.spectral_ranges) if req.spectral_ranges else []
         X_df, features = _parse_ranges(X_df, ranges_list)
         X = to_float_matrix(X_df.values)
-        y_raw = STORE.get_target(req.dataset_id, req.target)
-        if y_raw is None or len(y_raw) == 0:
-            raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
-        classification = req.analysis_mode == "PLS-DA"
-        if classification:
-            y, class_mapping, _ = encode_labels_if_needed(y_raw)
-            X, y, features = saneamento_global(X, y, features)
-        else:
-            y = pd.to_numeric(pd.Series(y_raw), errors="coerce").to_numpy(dtype=float)
-            class_mapping = {}
-            X, y, features = saneamento_global(X, y, features)
-        y = np.asarray(y).ravel()
+
+        try:
+            y_raw, _ = load_target_or_fail(ds, req.target)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+        task = detect_task_from_y(y_raw, req.analysis_mode)
+        if req.analysis_mode and str(req.analysis_mode).lower().startswith("regress") and task == "classification":
+            logger.warning(
+                "req.mode=Regression, porém y parece categórico; aplicando PLS-DA automaticamente."
+            )
+
+        X = sanitize_X(X)
+        y, classes_ = sanitize_y(y_raw, task)
+        X, y, _ = align_X_y(X, y)
+        if X.shape[0] == 0:
+            raise HTTPException(400, "Sem amostras após sanitização/alinhamento.")
 
         spectral_range_str = req.spectral_ranges or ""
         spectral_ranges_applied = ranges_list
@@ -1715,7 +1721,7 @@ def optimize(req: OptimizeParams, request: Request):
         out = optimize_model_grid(
             X,
             y,
-            mode="classification" if classification else "regression",
+            mode=task,
             preprocessors=req.preprocess or None,
             n_components_max=req.n_components,
             validation_method=val_name,
@@ -1733,8 +1739,15 @@ def optimize(req: OptimizeParams, request: Request):
             method=best_prep,
             range_nm=(start_nm, end_nm) if start_nm is not None and end_nm is not None else None,
         )
-        if classification:
-            best_estimator = make_pls_da(n_components=best_nc).fit(Xp, y)
+        if task == "classification":
+            from sklearn.cross_decomposition import PLSRegression
+            from sklearn.multiclass import OneVsRestClassifier
+
+            if len(np.unique(y)) <= 2:
+                best_estimator = PLSRegression(n_components=best_nc).fit(Xp, y.astype(float))
+            else:
+                base = PLSRegression(n_components=best_nc)
+                best_estimator = OneVsRestClassifier(base).fit(Xp, y.astype(int))
         else:
             best_estimator = make_pls_reg(n_components=best_nc).fit(Xp, y)
 
@@ -1747,7 +1760,7 @@ def optimize(req: OptimizeParams, request: Request):
             json.dump(
                 {
                     "target": req.target,
-                    "classification": req.classification,
+                    "classification": task == "classification",
                     "preprocess": best_prep,
                     "n_components": best_nc,
                     "validation_used": val_name,
@@ -1831,16 +1844,21 @@ def train(req: TrainParams, request: Request):
             y_raw, _ = load_target_or_fail(ds, req.target)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        classification = req.analysis_mode == "PLS-DA"
+
+        # decide task automaticamente a partir de y + req.analysis_mode
+        task = detect_task_from_y(y_raw, req.analysis_mode)
+        if req.analysis_mode and str(req.analysis_mode).lower().startswith("regress") and task == "classification":
+            logger.warning(
+                "req.mode=Regression, porém y parece categórico; aplicando PLS-DA automaticamente."
+            )
 
         methods = req.preprocess or []
         Xp = apply_methods(X, methods=methods)
-        task = "classification" if classification else "regression"
 
         # --- Sanitiza X ---
         Xp = sanitize_X(Xp)
         if Xp is None or Xp.size == 0:
-            raise HTTPException(status_code=400, detail="Matriz X ficou vazia após sanitização (todas as colunas inválidas).")
+            raise HTTPException(status_code=400, detail="Matriz X ficou vazia após sanitização.")
 
         # --- Sanitiza y (suporta categórico em classificação) ---
         y_sanit, y_classes = sanitize_y(y_raw, task)
@@ -1848,22 +1866,32 @@ def train(req: TrainParams, request: Request):
         # --- Alinha X e y ---
         Xp, y_sanit, _ = align_X_y(Xp, y_sanit)
         if Xp.shape[0] == 0 or y_sanit.size == 0:
-            raise HTTPException(status_code=400, detail="Após alinhamento, não há amostras válidas. Verifique o alvo selecionado.")
+            raise HTTPException(status_code=400, detail="Após alinhamento, não há amostras válidas para o alvo selecionado.")
 
         # --- Limita n_components ---
         safe_ncomp = limit_n_components(req.n_components, Xp)
         logger.info(
-            f"train: after sanitize+align X={Xp.shape}, y={y_sanit.shape}, n_components_req={req.n_components} -> used={safe_ncomp}"
+            f"train: task={task} X={Xp.shape} y={y_sanit.shape} ncomp={req.n_components}->{safe_ncomp}"
         )
 
         vp = req.validation_params or {}
         cv, cv_meta = build_cv_meta(req.validation_method, vp, y_sanit)
         start_nm, end_nm = (ranges_list[0] if ranges_list else (None, None))
 
-        if classification:
-            est = make_pls_da(n_components=safe_ncomp).fit(Xp, y_sanit)
+        if task == "classification":
+            # --- PLS-DA ---
+            from sklearn.cross_decomposition import PLSRegression
+            from sklearn.multiclass import OneVsRestClassifier
+
+            if len(np.unique(y_sanit)) <= 2:
+                est = PLSRegression(n_components=safe_ncomp)
+                est.fit(Xp, y_sanit.astype(float))
+            else:
+                base = PLSRegression(n_components=safe_ncomp)
+                est = OneVsRestClassifier(base).fit(Xp, y_sanit.astype(int))
             class_mapping = {int(i): str(c) for i, c in enumerate(y_classes or [])}
         else:
+            # --- PLSR (regressão) ---
             est = make_pls_reg(n_components=safe_ncomp).fit(Xp, y_sanit)
             class_mapping = None
         state.last_model = est
