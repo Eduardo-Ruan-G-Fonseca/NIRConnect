@@ -1,7 +1,7 @@
 from __future__ import annotations
+
 import numpy as np
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import LabelEncoder
 
 __all__ = ["sanitize_X", "sanitize_y", "limit_n_components", "align_X_y"]
 
@@ -37,16 +37,18 @@ def sanitize_y(y: np.ndarray, task: str):
     Retorna (y_float_or_int, y_classes) onde y_classes é o mapping opcional (ou None)
     """
     y = np.asarray(y, dtype=object).reshape(-1, 1)
-    # troca ±Inf por NaN quando possível
+
+    # troca ±Inf por NaN sem tentar converter strings
     try:
-        y_float = y.astype(float)
-        y = np.where(np.isinf(y_float), np.nan, y_float)
+        y = np.where(np.isinf(y.astype(float)), np.nan, y)
     except Exception:
         y = np.where(y == float("inf"), np.nan, y)
         y = np.where(y == float("-inf"), np.nan, y)
 
     if task == "classification":
-        # imputação por moda em objeto
+        from sklearn.impute import SimpleImputer
+        from sklearn.preprocessing import LabelEncoder
+
         imp = SimpleImputer(strategy="most_frequent")
         y_imp = imp.fit_transform(y).ravel().astype(object)
 
@@ -54,12 +56,14 @@ def sanitize_y(y: np.ndarray, task: str):
         y_encoded = le.fit_transform(y_imp)  # 0..K-1
         classes = list(le.classes_)
         return y_encoded.astype(int), classes
-    else:
-        # regressão: força float onde possível; inválidos -> NaN; imputa média
-        yf = _coerce_float_or_nan(y.ravel()).reshape(-1, 1)
-        imp = SimpleImputer(strategy="mean")
-        yf = imp.fit_transform(yf).ravel()
-        return yf, None
+
+    # regressão: força float onde possível; inválidos -> NaN; imputa média
+    from sklearn.impute import SimpleImputer
+
+    yf = _coerce_float_or_nan(y.ravel()).reshape(-1, 1)
+    imp = SimpleImputer(strategy="mean")
+    yf = imp.fit_transform(yf).ravel()
+    return yf, None
 
 def limit_n_components(n_components: int, X: np.ndarray) -> int:
     if X is None or X.size == 0:
