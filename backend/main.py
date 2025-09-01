@@ -917,26 +917,47 @@ def post_columns(file: UploadFile):
     else:
         df = pd.read_csv(file.file)
 
-    # separe espectros (numéricos) e alvos (demais)
+    # separe espectros: colunas numéricas cujo nome também é numérico
     numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    X_df = df[numeric_cols].copy()
-    y_df = df.drop(columns=numeric_cols).copy()
+    spectral_cols = []
+    wl_vals = []
+    for c in numeric_cols:
+        try:
+            float_c = float(c)
+            name_is_num = True
+        except Exception:
+            float_c = None
+            name_is_num = False
+        unique_vals = df[c].nunique(dropna=False)
+        if name_is_num or unique_vals > 3:
+            spectral_cols.append(c)
+            if float_c is not None:
+                wl_vals.append(float_c)
 
-    if X_df.empty:
-        raise HTTPException(status_code=400, detail="Não há colunas numéricas para espectros.")
+    X_df = df[spectral_cols].copy()
+    y_df = df.drop(columns=spectral_cols).copy()
 
     # sanitiza X para o gráfico não ficar vazio
-    X = sanitize_X(X_df.to_numpy(dtype=float, copy=True))
+    if X_df.empty:
+        X = np.empty((df.shape[0], 0), dtype=float)
+    else:
+        X = sanitize_X(X_df.to_numpy(dtype=float, copy=True))
 
     # gere um dataset_id (se o seu projeto já gera fora, mantenha)
     import uuid
     dataset_id = uuid.uuid4().hex
 
+    wl_min = float(min(wl_vals)) if wl_vals else None
+    wl_max = float(max(wl_vals)) if wl_vals else None
     dataset_store.save(dataset_id, {
         "X": X,                               # numpy float
         "columns": list(X_df.columns),
         "y_df": y_df.copy(),                  # pandas DF sem cast
         "targets": list(y_df.columns),
+        "n_samples": int(X.shape[0]),
+        "n_wavelengths": int(X.shape[1]),
+        "wl_min": wl_min,
+        "wl_max": wl_max,
     })
 
     return {
@@ -944,6 +965,10 @@ def post_columns(file: UploadFile):
         "columns": list(X_df.columns),
         "targets": list(y_df.columns),
         "spectra_matrix": X.tolist(),         # <- NECESSÁRIO pro gráfico
+        "n_samples": int(X.shape[0]),
+        "n_wavelengths": int(X.shape[1]),
+        "wl_min": wl_min,
+        "wl_max": wl_max,
     }
 
 
@@ -1845,5 +1870,12 @@ def train(req: TrainParams):  # use o mesmo tipo de request que você já tem
         est = make_pls_reg(n_components=safe_n).fit(Xp, y_sanit)
         payload = {"task": "regression", "n_components_used": safe_n}
 
-    # TODO: se você já serializa o modelo/coeficientes, mantenha a mesma resposta aqui
-    return {"status": "ok", **payload}
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    model_id = uuid.uuid4().hex
+    model_path = os.path.join(MODEL_DIR, f"{model_id}.joblib")
+    try:
+        joblib.dump(est, model_path)
+    except Exception:
+        model_path = ""
+
+    return {"status": "ok", "model_id": model_id, "model_path": model_path, **payload}
