@@ -21,7 +21,9 @@ def test_upload_preprocess_and_train(tmp_path):
     data = resp.json()
     dataset_id = data["dataset_id"]
     assert dataset_id
-    assert "spectra_matrix" not in data
+    assert "spectra_matrix" in data
+    assert len(data["spectra_matrix"]) == 4
+    assert len(data["spectra_matrix"][0]) == 2
     assert data["n_samples"] == 4
     assert data["n_wavelengths"] == 2
     assert data["wl_min"] == 1100.0
