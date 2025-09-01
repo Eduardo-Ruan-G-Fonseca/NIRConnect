@@ -2,102 +2,80 @@ from __future__ import annotations
 
 import numpy as np
 from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import LabelEncoder
+from typing import Optional, Tuple
 
-__all__ = ["sanitize_X", "sanitize_y", "limit_n_components", "align_X_y"]
+__all__ = ["sanitize_X", "sanitize_y", "align_X_y", "limit_n_components"]
+
+MISSING_SENTINELS = {"", "na", "n/a", "nan", "null", "none", "-", "–", "—"}
+
 
 def sanitize_X(X: np.ndarray) -> np.ndarray:
-    """float, ±Inf->NaN, remove colunas 100% NaN, imputa média."""
     X = np.asarray(X, dtype=float)
     X[np.isinf(X)] = np.nan
-    # remove colunas inteiras NaN
     keep = ~np.all(np.isnan(X), axis=0)
-    if np.any(~keep):
-        X = X[:, keep]
+    X = X[:, keep] if keep.ndim == 1 else X
     if X.size == 0:
         return X
-    # imputa média por coluna (ignora colunas sem observações)
-    imp = SimpleImputer(strategy="mean")
-    X = imp.fit_transform(X)
-    return X
+    return SimpleImputer(strategy="mean").fit_transform(X)
 
-def _coerce_float_or_nan(arr: np.ndarray) -> np.ndarray:
-    out = np.empty(arr.shape, dtype=float)
-    for i, v in enumerate(arr.ravel()):
+
+def _to_float_or_nan(a: np.ndarray) -> np.ndarray:
+    out = np.empty(a.shape, dtype=float)
+    r = out.ravel()
+    src = a.ravel()
+    for i, v in enumerate(src):
         try:
-            out.ravel()[i] = float(v)
+            r[i] = float(v)
         except Exception:
-            out.ravel()[i] = np.nan
+            r[i] = np.nan
     return out
 
-def sanitize_y(y: np.ndarray, task: str):
-    """
-    task: 'regression' ou 'classification'
-    - regressão: tenta float, imputa média
-    - classificação: aceita strings, label-encode; imputa moda antes do encode quando necessário
-    Retorna (y_float_or_int, y_classes) onde y_classes é o mapping opcional (ou None)
-    """
-    y = np.asarray(y, dtype=object).reshape(-1, 1)
 
-    # troca ±Inf por NaN sem tentar converter strings
-    try:
-        y = np.where(np.isinf(y.astype(float)), np.nan, y)
-    except Exception:
-        y = np.where(y == float("inf"), np.nan, y)
-        y = np.where(y == float("-inf"), np.nan, y)
+def sanitize_y(y: np.ndarray, task: str) -> Tuple[np.ndarray, Optional[list]]:
+    y = np.asarray(y, dtype=object).reshape(-1, 1)
+    # normaliza sentinelas de missing (mantém dtype=object para strings)
+    for i in range(y.shape[0]):
+        v = y[i, 0]
+        if v is None:
+            y[i, 0] = np.nan
+        elif isinstance(v, str) and v.strip().casefold() in MISSING_SENTINELS:
+            y[i, 0] = np.nan
 
     if task == "classification":
-        from sklearn.impute import SimpleImputer
-        from sklearn.preprocessing import LabelEncoder
-
-        imp = SimpleImputer(strategy="most_frequent")
-        y_imp = imp.fit_transform(y).ravel().astype(object)
-
+        y_imp = (
+            SimpleImputer(strategy="most_frequent")
+            .fit_transform(y)
+            .ravel()
+            .astype(object)
+        )
         le = LabelEncoder()
-        y_encoded = le.fit_transform(y_imp)  # 0..K-1
-        classes = list(le.classes_)
-        return y_encoded.astype(int), classes
+        y_enc = le.fit_transform(y_imp)  # 0..K-1
+        return y_enc.astype(int), list(le.classes_)
+    else:
+        yf = _to_float_or_nan(y.ravel()).reshape(-1, 1)
+        yf = SimpleImputer(strategy="mean").fit_transform(yf).ravel()
+        return yf, None
 
-    # regressão: força float onde possível; inválidos -> NaN; imputa média
-    from sklearn.impute import SimpleImputer
-
-    yf = _coerce_float_or_nan(y.ravel()).reshape(-1, 1)
-    imp = SimpleImputer(strategy="mean")
-    yf = imp.fit_transform(yf).ravel()
-    return yf, None
-
-def limit_n_components(n_components: int, X: np.ndarray) -> int:
-    if X is None or X.size == 0:
-        return max(1, int(n_components))
-    n_samples, n_features = X.shape
-    hard_max = max(1, min(n_features, n_samples - 1))
-    return int(max(1, min(n_components, hard_max)))
 
 def align_X_y(X: np.ndarray, y: np.ndarray):
-    """
-    Remove linhas onde y é NaN (ou comprimento inconsistente), retornando X_alinhado, y_alinhado e máscara.
-    """
     X = np.asarray(X)
     y = np.asarray(y)
     if y.ndim > 1:
         y = y.ravel()
-
-    # Se y veio vazio, retorna como está (caller decide o erro)
-    if y.size == 0:
-        return X, y, np.ones(X.shape[0], dtype=bool)
-
-    # constrói máscara de linhas válidas (y não-NaN)
-    if np.issubdtype(y.dtype, np.floating):
-        mask = ~np.isnan(y)
-    else:
-        # tipos inteiros/categóricos já devem estar sem NaN aqui
-        mask = np.ones_like(y, dtype=bool)
-
-    # alinha pelo tamanho mínimo
     n = min(X.shape[0], y.shape[0])
-    Xn = X[:n]
-    yn = y[:n]
-    mask = mask[:n]
+    X = X[:n]
+    y = y[:n]
+    mask = np.ones_like(y, dtype=bool)
+    if y.dtype.kind == "f":
+        mask = ~np.isnan(y)
+    return X[mask], y[mask], mask
 
-    Xn = Xn[mask]
-    yn = yn[mask]
-    return Xn, yn, mask
+
+def limit_n_components(n_components: int, X: np.ndarray) -> int:
+    if X is None or X.size == 0:
+        return int(max(1, n_components))
+    n_samples, n_features = X.shape
+    hard = max(1, min(n_features, n_samples - 1))
+    return int(max(1, min(int(n_components), hard)))
+
