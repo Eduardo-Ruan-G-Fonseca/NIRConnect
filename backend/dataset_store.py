@@ -8,7 +8,7 @@ class DatasetStore:
         self._data: Dict[str, Dict[str, Any]] = {}
 
     def save(self, dataset_id: str, payload: Dict[str, Any]):
-        self._data[dataset_id] = payload   # não altere tipos aqui
+        self._data[dataset_id] = payload   # não alterar tipos aqui
 
     def get(self, dataset_id: str) -> Dict[str, Any]:
         return self._data.get(dataset_id, {})

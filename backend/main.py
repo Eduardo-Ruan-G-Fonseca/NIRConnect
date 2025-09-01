@@ -77,6 +77,12 @@ import joblib
 dataset_store = DatasetStore()
 STORE = dataset_store
 
+
+def _try_float_header(x):
+    s = str(x).strip().replace(",", ".")
+    return float(s)
+
+
 # Progresso global para /optimize/status
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
 
@@ -908,61 +914,76 @@ async def process_file(
     except Exception as exc:  # pragma: no cover - sanity
         raise HTTPException(status_code=400, detail=str(exc))
 
+
 @app.post("/columns")
 def post_columns(file: UploadFile):
-    """
-    Lê Excel/CSV de maneira robusta (via BytesIO), persiste X e y_df no store
-    e retorna spectra_matrix para o gráfico.
-    """
-    fname = (file.filename or "").lower()
+    """Lê Excel/CSV via BytesIO, detecta colunas espectrais pelos cabeçalhos (wavelengths),
+    persiste no store e retorna spectra_matrix + wavelengths para o gráfico."""
     raw = file.file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Arquivo vazio.")
+    name = (file.filename or "").lower()
 
-    # Excel via BytesIO para evitar erro 'SpooledTemporaryFile.seekable'
-    if fname.endswith((".xlsx", ".xls")):
+    # Excel por BytesIO (corrige SpooledTemporaryFile.seekable)
+    if name.endswith((".xlsx", ".xls")):
         bio = io.BytesIO(raw); bio.seek(0)
-        try:
-            df = pd.read_excel(bio, engine="openpyxl")
-        except Exception:
-            df = pd.read_excel(bio)
+        df = pd.read_excel(bio, engine="openpyxl")
     else:
-        # CSV: tenta UTF-8-SIG, se falhar usa latin-1
-        try:
-            text = raw.decode("utf-8-sig")
-        except Exception:
-            text = raw.decode("latin-1", errors="ignore")
+        # CSV: tenta utf-8-sig; fallback latin-1
+        try: text = raw.decode("utf-8-sig")
+        except Exception: text = raw.decode("latin-1", errors="ignore")
         df = pd.read_csv(io.StringIO(text))
 
     if df.empty:
         raise HTTPException(status_code=400, detail="Planilha sem linhas.")
 
-    # separa espectros (numéricos) e alvos (demais)
-    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    if not numeric_cols:
-        raise HTTPException(status_code=400, detail="Não há colunas numéricas para espectros.")
-    X_df = df[numeric_cols].copy()
-    y_df = df.drop(columns=numeric_cols).copy()
+    # 1) detectar espectros pelo CABEÇALHO -> wavelengths (float)
+    spectral_cols = []
+    wavelengths = []
+    for c in df.columns:
+        try:
+            w = _try_float_header(c)
+            spectral_cols.append(c)
+            wavelengths.append(float(w))
+        except Exception:
+            pass
 
-    # sanitiza X para garantir gráfico
+    if not spectral_cols:
+        raise HTTPException(status_code=400, detail="Não encontrei colunas espectrais (cabeçalhos numéricos).")
+
+    # 2) construir X (garantir float nas células também)
+    X_df = df[spectral_cols].copy()
+    # se vier strings com vírgula decimal nas células
+    for c in spectral_cols:
+        if X_df[c].dtype == object:
+            X_df[c] = (
+                X_df[c]
+                .astype("string")
+                .str.replace(",", ".", regex=False)
+            )
+        X_df[c] = pd.to_numeric(X_df[c], errors="coerce")
     X = sanitize_X(X_df.to_numpy(dtype=float, copy=True))
+
+    # 3) targets = resto das colunas (variáveis não espectrais)
+    y_df = df.drop(columns=spectral_cols).copy()
 
     dataset_id = uuid.uuid4().hex
     dataset_store.save(dataset_id, {
-        "X": X,
-        "columns": list(X_df.columns),
-        "y_df": y_df.copy(),               # mantém tipos originais (E01/E02 etc.)
+        "X": X,                                # numpy float shape (n_samples, n_features)
+        "columns": [str(c) for c in spectral_cols],  # nomes originais
+        "wavelengths": [float(w) for w in wavelengths],  # eixo X numérico (nm ou µm, conforme planilha)
+        "y_df": y_df.copy(),
         "targets": list(y_df.columns),
     })
 
     return {
         "dataset_id": dataset_id,
-        "columns": list(X_df.columns),
+        "columns": [float(w) for w in wavelengths],   # <-- eixo x para o front
         "targets": list(y_df.columns),
-        "spectra_matrix": X.tolist(),      # necessário para renderizar o gráfico
+        "spectra_matrix": X.tolist(),                 # <-- matriz para o gráfico (média/preview)
+        "n_samples": int(X.shape[0]),
+        "n_features": int(X.shape[1]),
     }
-
-
 @app.get("/columns/meta")
 def columns_meta(dataset_id: str = Query(...)):
     ds = STORE.get(dataset_id)
@@ -1802,26 +1823,21 @@ def model_download(model_id: str):
     return FileResponse(path, filename=f"nir_model_{model_id}.joblib", media_type="application/octet-stream")
 
 
-class TrainParams(BaseModel):
-    dataset_id: Optional[str] = None
-    target: str
-    analysis_mode: Literal["PLS-R", "PLS-DA"] = "PLS-R"
-    n_components: int
-    preprocess: List[str] = []
-    spectral_ranges: Optional[str] = None
-    validation_method: Literal["LOO", "KFold", "StratifiedKFold"] = "LOO"
-    validation_params: Dict[str, Any] = Field(default_factory=dict)
-    decision_mode: str = "argmax"
-    threshold: float = 0.5
 
+class TrainRequest(BaseModel):
+    dataset_id: Optional[str] = None
+    target_name: str
+    mode: str | None = None
+    n_components: int
 
 @app.post("/train-form")
 def deprecated_train_form():
     raise HTTPException(status_code=410, detail="Rota obsoleta. Use POST /train com JSON.")
 
 
+
 @app.post("/train")
-def train(req: TrainParams):  # mantenha sua classe de request existente
+def train(req: TrainRequest):
     ds = dataset_store.get(req.dataset_id)
     if not ds:
         raise HTTPException(status_code=400, detail="Dataset não encontrado.")
@@ -1830,16 +1846,13 @@ def train(req: TrainParams):  # mantenha sua classe de request existente
     if Xp is None:
         raise HTTPException(status_code=400, detail="Matriz espectral não disponível.")
 
-    # y bruto (sem cast p/ float)
     try:
-        y_raw, _ = load_target_or_fail(ds, req.target)
+        y_raw, _ = load_target_or_fail(ds, req.target_name)  # dtype=object se 'E01'
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # decide tarefa
-    task = detect_task_from_y(y_raw, req.analysis_mode)
+    task = detect_task_from_y(y_raw, req.mode)
 
-    # sanitiza
     Xp = sanitize_X(Xp)
     y_sanit, y_classes = sanitize_y(y_raw, task)
     Xp, y_sanit, _ = align_X_y(Xp, y_sanit)
@@ -1848,7 +1861,6 @@ def train(req: TrainParams):  # mantenha sua classe de request existente
 
     safe_n = limit_n_components(req.n_components, Xp)
 
-    # fit
     if task == "classification":
         n_classes = int(np.unique(y_sanit).size)
         est = make_pls_da(n_components=safe_n, n_classes=n_classes)
