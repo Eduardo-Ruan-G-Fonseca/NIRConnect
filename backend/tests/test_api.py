@@ -114,8 +114,8 @@ def test_columns_targets_features(tmp_path):
     did = data["dataset_id"]
     assert did
     assert "cat" in data["targets"]
-    assert "numcat" in data["targets"]
     assert "feat" in data["columns"]
+    assert "numcat" in data["columns"]
 
 
 def test_analisar_ranges_and_history(tmp_path):

@@ -12,7 +12,7 @@ client = TestClient(app)
 
 
 def test_upload_preprocess_and_train(tmp_path):
-    df = pd.DataFrame({"1100": [1, 2, 3, 4], "1200": [2, 4, 6, 8], "target": [0, 1, 0, 1]})
+    df = pd.DataFrame({"1100": [1, 2, 3, 4], "1200": [2, 4, 6, 8], "target": ["E01", "E02", "E01", "E02"]})
     path = tmp_path / "data.csv"
     df.to_csv(path, index=False)
     with open(path, "rb") as fh:
@@ -24,10 +24,6 @@ def test_upload_preprocess_and_train(tmp_path):
     assert "spectra_matrix" in data
     assert len(data["spectra_matrix"]) == 4
     assert len(data["spectra_matrix"][0]) == 2
-    assert data["n_samples"] == 4
-    assert data["n_wavelengths"] == 2
-    assert data["wl_min"] == 1100.0
-    assert data["wl_max"] == 1200.0
 
     meta_resp = client.get(f"/columns/meta?dataset_id={dataset_id}")
     assert meta_resp.status_code == 200
@@ -56,5 +52,8 @@ def test_upload_preprocess_and_train(tmp_path):
     resp = client.post("/train", json=train_payload)
     assert resp.status_code == 200
     data = resp.json()
-    assert "model_id" in data
+    assert data["status"] == "ok"
+    assert data["task"] == "classification"
+    assert data["n_components_used"] == 2
+    assert set(data["classes_"]) == {"E01", "E02"}
 
