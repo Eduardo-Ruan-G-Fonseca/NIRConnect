@@ -19,5 +19,14 @@ class DatasetStore:
     def has(self, dsid: str) -> bool:
         return dsid in self._mem
 
+    def get_target(self, dataset_id: str, target_name: str):
+        ds = self._mem.get(dataset_id)
+        if not ds:
+            return None
+        _, ydf, _ = ds
+        if ydf is None or target_name not in getattr(ydf, "columns", []):
+            return None
+        return ydf[target_name].to_numpy().tolist()
+
 
 STORE = DatasetStore()

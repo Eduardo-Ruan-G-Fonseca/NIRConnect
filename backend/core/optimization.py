@@ -18,7 +18,7 @@ from sklearn.model_selection import cross_val_predict
 from .preprocessing import apply_methods
 from .validation import make_cv
 from .pls import fit_plsda_multiclass
-from utils.sanitize import sanitize_X, sanitize_y, limit_n_components
+from utils.sanitize import sanitize_X, sanitize_y, limit_n_components, align_X_y
 
 
 # ---------------------------------------------------------------------------
@@ -51,19 +51,39 @@ class _PLSDAEstimator(BaseEstimator):
         self.n_components = int(n_components)
 
     def fit(self, X, y):
-        self.model_ = fit_plsda_multiclass(X, y, n_components=self.n_components)
+        nc = limit_n_components(self.n_components, X)
+        self.model_ = fit_plsda_multiclass(X, y, n_components=nc)
         return self
 
     def predict(self, X):
-        return self.model_.predict(X)
+        preds = self.model_.predict(X)
+        # map back to encoded integers when using LabelEncoder internally
+        try:
+            return self.model_.label_encoder.transform(preds)
+        except Exception:
+            return preds
 
 
 def make_pls_da(n_components: int) -> BaseEstimator:
     return _PLSDAEstimator(n_components=n_components)
 
 
-def make_pls_reg(n_components: int) -> PLSRegression:
-    return PLSRegression(n_components=n_components)
+class _PLSRegEstimator(BaseEstimator):
+    def __init__(self, n_components: int):
+        self.n_components = int(n_components)
+
+    def fit(self, X, y):
+        nc = limit_n_components(self.n_components, X)
+        self.model_ = PLSRegression(n_components=nc)
+        self.model_.fit(X, y)
+        return self
+
+    def predict(self, X):
+        return self.model_.predict(X)
+
+
+def make_pls_reg(n_components: int) -> BaseEstimator:
+    return _PLSRegEstimator(n_components=n_components)
 
 
 # ---------------------------------------------------------------------------
@@ -146,12 +166,13 @@ def optimize_model_grid(
     ) else "regression"
 
     X = sanitize_X(X)
-    y = sanitize_y(y, task)
-    if X is None or X.size == 0:
-        return {"status": "error", "message": "Matriz X vazia após sanitização."}
+    y, classes_ = sanitize_y(y, task)
+    X, y, _ = align_X_y(X, y)
+    if X.shape[0] == 0:
+        return {"status": "error", "message": "Sem amostras após sanitização/alinhamento."}
 
     cv, cv_meta = make_cv(y, validation_method, n_splits)
-    labels_all = sorted(list(np.unique(y)))
+    labels_all = list(range(len(classes_))) if classes_ is not None else sorted(list(np.unique(y)))
     n_feat, n_samp = X.shape[1], X.shape[0]
     max_nc_safe = min(n_feat // 4, n_samp - 1, 50)
     max_nc = min(n_components_max or max_nc_safe, max_nc_safe)
@@ -263,5 +284,6 @@ def optimize_model_grid(
         "validation": cv_meta,
         "range_used": list(wavelength_range) if wavelength_range else None,
         "labels_all": labels_all,
+        **({"classes_": classes_} if classes_ is not None else {}),
     }
 

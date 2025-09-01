@@ -51,7 +51,7 @@ from core.optimization import optimize_model_grid, preprocess as grid_preprocess
 from ml.validation import build_cv_meta
 from core.datasets import store_dataset, resolve_dataset
 from core.dataset_store import STORE
-from utils.sanitize import sanitize_X, sanitize_y, limit_n_components
+from utils.sanitize import sanitize_X, sanitize_y, limit_n_components, align_X_y
 try:
     from ml.pipeline import (
         build_pls_pipeline,
@@ -1819,49 +1819,52 @@ def train(req: TrainParams, request: Request):
                 status_code=409,
                 detail="Nenhum dataset carregado para este dataset_id. Refaça o upload em /columns.",
             )
-        X_df, y_df, _ = got
+        X_df, _, _ = got
         logger.info(f"train using dataset_id={req.dataset_id} shape={X_df.shape}")
-        if req.target not in y_df.columns:
-            raise HTTPException(400, f"Coluna alvo '{req.target}' não encontrada.")
 
         ranges_list = parse_ranges(req.spectral_ranges) if req.spectral_ranges else []
         X_df, features = _parse_ranges(X_df, ranges_list)
         X = to_float_matrix(X_df.values)
-        y_raw = y_df[req.target].tolist()
-        classification = req.analysis_mode == "PLS-DA"
-        if classification:
-            y, class_mapping, _ = encode_labels_if_needed(y_raw)
-            X, y, features = saneamento_global(X, y, features)
-        else:
-            y = pd.to_numeric(pd.Series(y_raw), errors="coerce").to_numpy(dtype=float)
-            class_mapping = None
-            X, y, features = saneamento_global(X, y, features)
-        y = np.asarray(y).ravel()
 
-        vp = req.validation_params or {}
-        cv, cv_meta = build_cv_meta(req.validation_method, vp, y)
-        start_nm, end_nm = (ranges_list[0] if ranges_list else (None, None))
+        y_raw = STORE.get_target(req.dataset_id, req.target)
+        if y_raw is None or (hasattr(y_raw, "__len__") and len(y_raw) == 0):
+            raise HTTPException(status_code=400, detail="Variável-alvo (y) ausente ou vazia. Verifique o campo 'target' e o dataset.")
+        classification = req.analysis_mode == "PLS-DA"
 
         methods = req.preprocess or []
         Xp = apply_methods(X, methods=methods)
         task = "classification" if classification else "regression"
+
+        # --- Sanitiza X ---
         Xp = sanitize_X(Xp)
-        y = sanitize_y(y, task)
         if Xp is None or Xp.size == 0:
             raise HTTPException(status_code=400, detail="Matriz X ficou vazia após sanitização (todas as colunas inválidas).")
+
+        # --- Sanitiza y (suporta categórico em classificação) ---
+        y_sanit, y_classes = sanitize_y(y_raw, task)
+
+        # --- Alinha X e y ---
+        Xp, y_sanit, _ = align_X_y(Xp, y_sanit)
+        if Xp.shape[0] == 0 or y_sanit.size == 0:
+            raise HTTPException(status_code=400, detail="Após alinhamento, não há amostras válidas (y vazio ou todo inválido).")
+
+        # --- Limita n_components ---
         safe_ncomp = limit_n_components(req.n_components, Xp)
         logger.info(
-            f"train: after sanitize shape X={Xp.shape}, n_components_req={req.n_components} -> n_components_used={safe_ncomp}"
+            f"train: after sanitize+align X={Xp.shape}, y={y_sanit.shape}, n_components_req={req.n_components} -> used={safe_ncomp}"
         )
-        if classification:
-            est = make_pls_da(n_components=safe_ncomp).fit(Xp, y)
-        else:
-            est = make_pls_reg(n_components=safe_ncomp).fit(Xp, y)
-        state.last_model = est
 
-        if classification and class_mapping is None:
-            classes = np.unique(y)
-            class_mapping = {int(i): str(c) for i, c in enumerate(classes)}
+        vp = req.validation_params or {}
+        cv, cv_meta = build_cv_meta(req.validation_method, vp, y_sanit)
+        start_nm, end_nm = (ranges_list[0] if ranges_list else (None, None))
+
+        if classification:
+            est = make_pls_da(n_components=safe_ncomp).fit(Xp, y_sanit)
+            class_mapping = {int(i): str(c) for i, c in enumerate(y_classes or [])}
+        else:
+            est = make_pls_reg(n_components=safe_ncomp).fit(Xp, y_sanit)
+            class_mapping = None
+        state.last_model = est
 
         os.makedirs(MODEL_DIR, exist_ok=True)
         model_id = uuid.uuid4().hex
@@ -1871,6 +1874,7 @@ def train(req: TrainParams, request: Request):
                 "pipeline": est,
                 "prep": req.preprocess,
                 "n_components": req.n_components,
+                "n_components_used": safe_ncomp,
                 "target": req.target,
                 "class_mapping": class_mapping,
                 "spectral_ranges": ranges_list if ranges_list else None,
@@ -1878,6 +1882,7 @@ def train(req: TrainParams, request: Request):
                 "decision_mode": req.decision_mode,
                 "threshold": req.threshold,
                 "created_at": datetime.utcnow().isoformat() + "Z",
+                **({"classes_": y_classes} if y_classes else {}),
             },
             model_path,
         )
