@@ -18,6 +18,7 @@ from sklearn.model_selection import cross_val_predict
 from .preprocessing import apply_methods
 from .validation import make_cv
 from .pls import fit_plsda_multiclass
+from utils.task_detect import detect_task_from_y
 from utils.sanitize import sanitize_X, sanitize_y, limit_n_components, align_X_y
 
 
@@ -158,12 +159,11 @@ def optimize_model_grid(
     time_budget_s=None,
 ):
     """Grid-search over preprocessing methods and number of PLS components."""
-    task = "classification" if mode in (
-        "classification",
-        "pls-da",
-        "PLS-DA",
-        "Classificação (PLS-DA)",
-    ) else "regression"
+    task = detect_task_from_y(y, mode)
+    if mode and str(mode).lower().startswith("regress") and task == "classification" and logger:
+        logger.warning(
+            "req.mode=Regression, porém y parece categórico; aplicando PLS-DA automaticamente."
+        )
 
     X = sanitize_X(X)
     y, classes_ = sanitize_y(y, task)
@@ -187,9 +187,18 @@ def optimize_model_grid(
             ncomp = limit_n_components(nc, Xp)
             if ncomp < 1:
                 continue
-            if mode == "classification":
-                est = make_pls_da(n_components=ncomp)
-                y_pred = cross_val_predict(est, Xp, y, cv=cv)
+            if task == "classification":
+                from sklearn.cross_decomposition import PLSRegression
+                from sklearn.multiclass import OneVsRestClassifier
+
+                if np.unique(y).size <= 2:
+                    est = PLSRegression(n_components=ncomp)
+                    y_cont = cross_val_predict(est, Xp, y.astype(float), cv=cv).ravel()
+                    y_pred = (y_cont >= 0.5).astype(int)
+                else:
+                    est = OneVsRestClassifier(PLSRegression(n_components=ncomp))
+                    y_pred = cross_val_predict(est, Xp, y, cv=cv)
+
                 acc = float(accuracy_score(y, y_pred))
                 f1m = float(
                     f1_score(
@@ -214,7 +223,11 @@ def optimize_model_grid(
                         "support": int(d.get("support", (y == lbl).sum())),
                     }
                 cm = confusion_matrix(y, y_pred, labels=labels_all).tolist()
-                kappa = float(cohen_kappa_score(y, y_pred, labels=labels_all)) if len(labels_all) > 1 else 0.0
+                kappa = (
+                    float(cohen_kappa_score(y, y_pred, labels=labels_all))
+                    if len(labels_all) > 1
+                    else 0.0
+                )
                 met_full = {
                     "Accuracy": round(acc, 4),
                     "MacroF1": round(f1m, 4),
@@ -253,7 +266,7 @@ def optimize_model_grid(
             curves_map.setdefault(prep or "none", []).append(
                 {
                     "n_components": ncomp,
-                    **({"MacroF1": curve_val} if mode == "classification" else {"RMSECV": curve_val}),
+                    **({"MacroF1": curve_val} if task == "classification" else {"RMSECV": curve_val}),
                 }
             )
             if logger:
@@ -265,7 +278,7 @@ def optimize_model_grid(
 
     best = (
         max(results, key=lambda r: r["MacroF1"])
-        if mode == "classification"
+        if task == "classification"
         else min(results, key=lambda r: r["RMSECV"])
     )
 
