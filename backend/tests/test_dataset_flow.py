@@ -41,13 +41,9 @@ def test_upload_preprocess_and_train(tmp_path):
 
     train_payload = {
         "dataset_id": dataset_id,
-        "target": "target",
-        "analysis_mode": "PLS-DA",
+        "target_name": "target",
+        "mode": "PLS-DA",
         "n_components": 2,
-        "preprocess": [],
-        "spectral_ranges": "1100-1200",
-        "validation_method": "LOO",
-        "decision_mode": "argmax",
     }
     resp = client.post("/train", json=train_payload)
     assert resp.status_code == 200

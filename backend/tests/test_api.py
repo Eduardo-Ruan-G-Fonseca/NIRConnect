@@ -98,9 +98,9 @@ def test_columns_targets_features(tmp_path):
     import pandas as pd
 
     df = pd.DataFrame({
-        "feat": list(range(40)),
+        "1100": list(range(40)),
+        "1200": list(range(40, 80)),
         "cat": ["a", "b"] * 20,
-        "numcat": [1, 2] * 20,
     })
     path = tmp_path / "data.csv"
     df.to_csv(path, index=False)
@@ -114,9 +114,8 @@ def test_columns_targets_features(tmp_path):
     did = data["dataset_id"]
     assert did
     assert "cat" in data["targets"]
-    assert "feat" in data["columns"]
-    assert "numcat" in data["columns"]
-
+    assert 1100.0 in data["columns"]
+    assert 1200.0 in data["columns"]
 
 def test_analisar_ranges_and_history(tmp_path):
     import pandas as pd, json as js
