@@ -144,7 +144,6 @@ function DecimalChooser({
 
 export default function Step2Parameters({ onBack, onNext }) {
   const [targets, setTargets] = useState([]);
-  const [features, setFeatures] = useState([]);
   const [error, setError] = useState("");
 
   const [target, setTarget] = useState("");
@@ -166,7 +165,6 @@ export default function Step2Parameters({ onBack, onNext }) {
     const cachedCols = JSON.parse(localStorage.getItem("nir.columns") || "[]");
     if (cachedTargets.length && cachedCols.length) {
       setTargets(cachedTargets);
-      setFeatures(cachedCols);
       setTarget((t) => t || cachedTargets[0] || "");
       return;
     }
@@ -187,14 +185,12 @@ export default function Step2Parameters({ onBack, onNext }) {
           })
         );
         setTargets(meta.targets);
-        setFeatures(meta.columns);
         setTarget(meta.targets[0] || "");
         setError(null);
       })
       .catch(() => {
         setError("Erro ao recuperar metadados. Refaça o upload no passo 1.");
         setTargets([]);
-        setFeatures([]);
       });
   }, []);
 

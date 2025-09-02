@@ -148,8 +148,6 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
 
   async function runAnalysis(e) {
     e.preventDefault();
-    const ds = getDatasetId();
-    if (!ds) return alert("Dataset não encontrado — volte ao passo 1 e faça o upload.");
     if (!ranges.length) return alert("Selecione ao menos uma faixa.");
 
     setRunning(true);
@@ -161,10 +159,13 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
 
       const rangesStr = ranges.map(([a, b]) => `${a}-${b}`).join(",");
 
+      const dsId = getDatasetId();
+      if (!dsId) throw new Error("Dataset não encontrado. Volte ao passo 1 e reenvie o arquivo.");
       const payload = {
-        target: step2.target,
+        dataset_id: dsId,
+        target_name: step2.target,               // backend espera 'target_name'
+        mode: step2.classification ? "classification" : "regression",  // backend espera 'mode'
         n_components: step2.n_components,
-        classification: step2.classification,
         threshold: step2.classification && step2.threshold != null ? step2.threshold : undefined,
         n_bootstrap: step2.n_bootstrap ?? 0,
         validation_method: step2.validation_method,

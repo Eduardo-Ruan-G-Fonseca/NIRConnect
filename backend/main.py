@@ -931,17 +931,15 @@ async def process_file(
 
 @app.post("/columns")
 def post_columns(file: UploadFile):
-    """
-    Lê Excel/CSV via BytesIO, detecta colunas espectrais por conteúdo numérico,
-    sanitiza X e persiste no store. Retorna payload 100% compatível com o front:
-    { dataset_id, columns, targets, spectra_matrix }.
-    """
+    """Lê Excel/CSV via BytesIO, detecta colunas espectrais e retorna payload
+    que o front espera: dataset_id, columns, targets, spectra_matrix (values/wavelengths),
+    mean_spectra e metadados (n_samples, n_wavelengths, wl_min, wl_max)."""
     raw = file.file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Arquivo vazio.")
     name = (file.filename or "").lower()
 
-    # 1) Leitura robusta
+    # leitura robusta
     if name.endswith((".xlsx", ".xls")):
         bio = io.BytesIO(raw); bio.seek(0)
         df = pd.read_excel(bio, engine="openpyxl")
@@ -955,33 +953,62 @@ def post_columns(file: UploadFile):
     if df.empty:
         raise HTTPException(status_code=400, detail="Planilha sem linhas.")
 
-    # 2) Detecta espectros por conteúdo (suporta cabeçalho como '908,1', etc.)
+    # espectros por conteúdo
     spectral_cols = _detect_spectral_columns(df)
     if not spectral_cols:
-        raise HTTPException(status_code=400, detail="Não encontrei colunas espectrais (conteúdo numérico insuficiente).")
+        raise HTTPException(status_code=400, detail="Não encontrei colunas espectrais.")
 
-    # 3) Constrói X numerizando células (vírgula decimal -> ponto) e sanitiza
+    # X (float, sem NaN/Inf) e wl (numéricos a partir do cabeçalho)
     X_df = pd.DataFrame({c: _coerce_numeric_series(df[c]) for c in spectral_cols})
-    X = sanitize_X(X_df.to_numpy(dtype=float, copy=True))  # 2D float, finito
+    X = sanitize_X(X_df.to_numpy(dtype=float, copy=True))
+    # wavelengths derivados dos nomes das colunas espectrais
+    def _to_float_header(s):
+        try: return float(str(s).strip().replace(",", "."))
+        except: return None
+    wavelengths = [_to_float_header(c) for c in spectral_cols]
+    wl = [w for w in wavelengths if w is not None]
+    if len(wl) == len(spectral_cols):
+        wl_sorted = wl
+    else:
+        # se não der pra converter todos, apenas não envia wavelengths aqui; o front usa meta.columns
+        wl_sorted = []
 
-    # 4) Alvos = resto das colunas, preservando tipos originais (p/ PLS-DA)
+    # alvos = resto das colunas
     y_df = df.drop(columns=spectral_cols).copy()
 
-    # 5) Persiste e retorna payload esperado
     dataset_id = uuid.uuid4().hex
     dataset_store.save(dataset_id, {
-        "X": X,                                # numpy float (n_samples, n_features)
-        "columns": list(X_df.columns),         # NOMES ORIGINAIS (strings) -> front usa no eixo X
-        "y_df": y_df,                          # DataFrame intacto
+        "X": X,
+        "columns": list(X_df.columns),   # nomes originais (strings)
+        "y_df": y_df,
         "targets": list(y_df.columns),
     })
 
-    return {
+    # metadados para Step1
+    n_samples = int(X.shape[0])
+    n_wavelengths = int(X.shape[1])
+    wl_min = float(wl_sorted[0]) if wl_sorted else None
+    wl_max = float(wl_sorted[-1]) if wl_sorted else None
+
+    # payload exatamente como o Step1/Step3 usam
+    payload = {
         "dataset_id": dataset_id,
-        "columns": list(X_df.columns),         # <- não mude o nome da chave
-        "targets": list(y_df.columns),         # <- idem
-        "spectra_matrix": X.tolist(),          # <- OBRIGATÓRIO p/ gráfico
+        "columns": list(X_df.columns),  # Step3 tenta parsear p/ números
+        "targets": list(y_df.columns),
+        "spectra_matrix": {
+            "values": X.tolist(),                # Step3 lê .values para plotar todos os espectros
+            "wavelengths": wl_sorted or None,    # opcional; se None, Step3 deriva de "columns"
+        },
+        "mean_spectra": {
+            "wavelengths": wl_sorted or None,
+            "values": X.mean(axis=0).tolist(),
+        },
+        "n_samples": n_samples,
+        "n_wavelengths": n_wavelengths,
+        "wl_min": wl_min,
+        "wl_max": wl_max,
     }
+    return payload
 @app.get("/columns/meta")
 def columns_meta(dataset_id: str = Query(...)):
     ds = STORE.get(dataset_id)
