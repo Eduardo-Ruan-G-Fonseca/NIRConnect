@@ -114,8 +114,8 @@ def test_columns_targets_features(tmp_path):
     did = data["dataset_id"]
     assert did
     assert "cat" in data["targets"]
-    assert 1100.0 in data["columns"]
-    assert 1200.0 in data["columns"]
+    assert "1100" in data["columns"]
+    assert "1200" in data["columns"]
 
 def test_analisar_ranges_and_history(tmp_path):
     import pandas as pd, json as js

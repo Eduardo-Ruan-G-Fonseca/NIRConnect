@@ -6,16 +6,15 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import pickle
-import pandas as pd
-import io
+import io, uuid
 import numpy as np
+import pandas as pd
 import csv
 from starlette.formparsers import MultiPartParser
 from datetime import datetime
 from pydantic import BaseModel, validator, Field
 import logging
 import warnings
-import uuid
 import time
 import re
 
@@ -78,9 +77,24 @@ dataset_store = DatasetStore()
 STORE = dataset_store
 
 
-def _try_float_header(x):
-    s = str(x).strip().replace(",", ".")
-    return float(s)
+def _coerce_numeric_series(s: pd.Series) -> pd.Series:
+    """Converte série para numérico aceitando vírgula decimal; mantém NaN quando não der."""
+    if s.dtype == object or pd.api.types.is_string_dtype(s):
+        s = s.astype("string").str.replace(",", ".", regex=False)
+    return pd.to_numeric(s, errors="coerce")
+
+
+def _detect_spectral_columns(df: pd.DataFrame) -> list[str]:
+    """
+    Heurística robusta: coluna é espectral se >=80% das células virarem número
+    após coerção (aceitando vírgula decimal). Mantém a ordem original.
+    """
+    specs = []
+    for c in df.columns:
+        s2 = _coerce_numeric_series(df[c])
+        if s2.notna().mean() >= 0.80:
+            specs.append(c)
+    return specs
 
 
 # Progresso global para /optimize/status
@@ -917,72 +931,56 @@ async def process_file(
 
 @app.post("/columns")
 def post_columns(file: UploadFile):
-    """Lê Excel/CSV via BytesIO, detecta colunas espectrais pelos cabeçalhos (wavelengths),
-    persiste no store e retorna spectra_matrix + wavelengths para o gráfico."""
+    """
+    Lê Excel/CSV via BytesIO, detecta colunas espectrais por conteúdo numérico,
+    sanitiza X e persiste no store. Retorna payload 100% compatível com o front:
+    { dataset_id, columns, targets, spectra_matrix }.
+    """
     raw = file.file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Arquivo vazio.")
     name = (file.filename or "").lower()
 
-    # Excel por BytesIO (corrige SpooledTemporaryFile.seekable)
+    # 1) Leitura robusta
     if name.endswith((".xlsx", ".xls")):
         bio = io.BytesIO(raw); bio.seek(0)
         df = pd.read_excel(bio, engine="openpyxl")
     else:
-        # CSV: tenta utf-8-sig; fallback latin-1
-        try: text = raw.decode("utf-8-sig")
-        except Exception: text = raw.decode("latin-1", errors="ignore")
+        try:
+            text = raw.decode("utf-8-sig")
+        except Exception:
+            text = raw.decode("latin-1", errors="ignore")
         df = pd.read_csv(io.StringIO(text))
 
     if df.empty:
         raise HTTPException(status_code=400, detail="Planilha sem linhas.")
 
-    # 1) detectar espectros pelo CABEÇALHO -> wavelengths (float)
-    spectral_cols = []
-    wavelengths = []
-    for c in df.columns:
-        try:
-            w = _try_float_header(c)
-            spectral_cols.append(c)
-            wavelengths.append(float(w))
-        except Exception:
-            pass
-
+    # 2) Detecta espectros por conteúdo (suporta cabeçalho como '908,1', etc.)
+    spectral_cols = _detect_spectral_columns(df)
     if not spectral_cols:
-        raise HTTPException(status_code=400, detail="Não encontrei colunas espectrais (cabeçalhos numéricos).")
+        raise HTTPException(status_code=400, detail="Não encontrei colunas espectrais (conteúdo numérico insuficiente).")
 
-    # 2) construir X (garantir float nas células também)
-    X_df = df[spectral_cols].copy()
-    # se vier strings com vírgula decimal nas células
-    for c in spectral_cols:
-        if X_df[c].dtype == object:
-            X_df[c] = (
-                X_df[c]
-                .astype("string")
-                .str.replace(",", ".", regex=False)
-            )
-        X_df[c] = pd.to_numeric(X_df[c], errors="coerce")
-    X = sanitize_X(X_df.to_numpy(dtype=float, copy=True))
+    # 3) Constrói X numerizando células (vírgula decimal -> ponto) e sanitiza
+    X_df = pd.DataFrame({c: _coerce_numeric_series(df[c]) for c in spectral_cols})
+    X = sanitize_X(X_df.to_numpy(dtype=float, copy=True))  # 2D float, finito
 
-    # 3) targets = resto das colunas (variáveis não espectrais)
+    # 4) Alvos = resto das colunas, preservando tipos originais (p/ PLS-DA)
     y_df = df.drop(columns=spectral_cols).copy()
 
+    # 5) Persiste e retorna payload esperado
     dataset_id = uuid.uuid4().hex
     dataset_store.save(dataset_id, {
-        "X": X,                                # numpy float shape (n_samples, n_features)
-        "columns": [str(c) for c in spectral_cols],  # nomes originais
-        "wavelengths": [float(w) for w in wavelengths],  # eixo X numérico (nm ou µm, conforme planilha)
-        "y_df": y_df.copy(),
+        "X": X,                                # numpy float (n_samples, n_features)
+        "columns": list(X_df.columns),         # NOMES ORIGINAIS (strings) -> front usa no eixo X
+        "y_df": y_df,                          # DataFrame intacto
         "targets": list(y_df.columns),
     })
 
     return {
         "dataset_id": dataset_id,
-        "columns": [float(w) for w in wavelengths],   # <-- eixo x para o front
-        "targets": list(y_df.columns),
-        "spectra_matrix": X.tolist(),                 # <-- matriz para o gráfico (média/preview)
-        "n_samples": int(X.shape[0]),
-        "n_features": int(X.shape[1]),
+        "columns": list(X_df.columns),         # <- não mude o nome da chave
+        "targets": list(y_df.columns),         # <- idem
+        "spectra_matrix": X.tolist(),          # <- OBRIGATÓRIO p/ gráfico
     }
 @app.get("/columns/meta")
 def columns_meta(dataset_id: str = Query(...)):
@@ -1838,6 +1836,12 @@ def deprecated_train_form():
 
 @app.post("/train")
 def train(req: TrainRequest):
+    if not getattr(req, "dataset_id", None):
+        # mensagem que o front já exibe
+        raise HTTPException(
+            status_code=400,
+            detail="Esta rota espera application/json e requer dataset_id. Faça upload do dataset (passo 1) e chame /columns (passo 2).",
+        )
     ds = dataset_store.get(req.dataset_id)
     if not ds:
         raise HTTPException(status_code=400, detail="Dataset não encontrado.")
