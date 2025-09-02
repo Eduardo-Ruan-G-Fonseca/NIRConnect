@@ -22,8 +22,8 @@ def test_upload_preprocess_and_train(tmp_path):
     dataset_id = data["dataset_id"]
     assert dataset_id
     assert "spectra_matrix" in data
-    assert len(data["spectra_matrix"]) == 4
-    assert len(data["spectra_matrix"][0]) == 2
+    assert len(data["spectra_matrix"]["values"]) == 4
+    assert len(data["spectra_matrix"]["values"][0]) == 2
 
     meta_resp = client.get(f"/columns/meta?dataset_id={dataset_id}")
     assert meta_resp.status_code == 200
@@ -42,7 +42,7 @@ def test_upload_preprocess_and_train(tmp_path):
     train_payload = {
         "dataset_id": dataset_id,
         "target_name": "target",
-        "mode": "PLS-DA",
+        "mode": "classification",
         "n_components": 2,
     }
     resp = client.post("/train", json=train_payload)

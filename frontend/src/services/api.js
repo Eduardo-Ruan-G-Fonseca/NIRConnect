@@ -1,5 +1,5 @@
 
-import { postJSON } from "../api/http";
+import { postJSON, getDatasetId } from "../api/http";
 
 const DEFAULT_API_BASE =
   typeof location !== 'undefined'
@@ -120,7 +120,8 @@ export async function postPreprocess(payload) {
 
 
 export async function postTrain(payload) {
-  return postJSON(`${API_BASE}/train`, payload);
+  const ds = payload?.dataset_id || getDatasetId();
+  return postJSON(`${API_BASE}/train`, { dataset_id: ds, ...payload });
 }
 
 
