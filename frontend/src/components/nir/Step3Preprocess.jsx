@@ -5,28 +5,59 @@ import Plotly from "plotly.js-dist-min";
 import { postTrain } from "../../services/api";
 import { getDatasetId } from "../../api/http";
 
+// util local
+const parseWavelengths = (meta) => {
+  // prioridade: meta.spectra_matrix.wavelengths
+  if (meta?.spectra_matrix?.wavelengths && meta.spectra_matrix.wavelengths.length > 0) {
+    return meta.spectra_matrix.wavelengths.map(Number);
+  }
+  // fallback: meta.columns (strings tipo "908,1")
+  return (meta?.columns || []).map(c => {
+    const s = String(c).trim().replace(',', '.');
+    const v = Number(s);
+    return Number.isFinite(v) ? v : null;
+  });
+};
+
+const transpose = (m) => m[0]?.map((_, j) => m.map(row => row[j]));
+
 export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
   const chartRef = useRef(null);
   const preselectedOnce = useRef(false); // garante que a seleção total só acontece 1x
 
-  // dados vindos do /columns
-  const wavelengths = useMemo(() => {
-    if (meta?.spectra_matrix?.wavelengths) return meta.spectra_matrix.wavelengths;
-    if (meta?.mean_spectra?.wavelengths) return meta.mean_spectra.wavelengths;
-    if (meta?.columns) {
-      return meta.columns
-        .map((c) => {
-          const s = String(c).replace(/^wl_/, "").replace(",", ".");
-          const n = parseFloat(s);
-          return Number.isFinite(n) ? n : null;
-        })
-        .filter((n) => n != null);
+  // parse metadados e matriz
+  const { wavelengths, series } = useMemo(() => {
+    let wl = parseWavelengths(meta);
+    let M = meta?.spectra_matrix?.values || [];
+    // --- Autodetecção de orientação ---
+    // Esperado: linhas = amostras, colunas = n_wavelengths.
+    // Usamos os metadados do backend para decidir transposição.
+    const ns = meta?.n_samples ?? (Array.isArray(M) ? M.length : 0);
+    const nw = meta?.n_wavelengths ?? (Array.isArray(M?.[0]) ? M[0].length : 0);
+    if (Array.isArray(M) && M.length === nw && Array.isArray(M[0]) && M[0].length === ns) {
+      // parece transposta (linhas = wavelengths), destranspor
+      M = transpose(M);
     }
-    return [];
+
+    // Se wavelengths vier com algum null, gera eixo 0..n_wavelengths-1 para não quebrar o grafico
+    if (!wl || wl.length !== (M[0]?.length || 0) || wl.some(v => v === null)) {
+      wl = Array.from({ length: M[0]?.length || 0 }, (_, i) => i);
+    }
+
+    return { wavelengths: wl, series: M };
   }, [meta]);
-  const allSpectraValues = meta?.spectra_matrix?.values || [];
-  const meanWl   = meta?.mean_spectra?.wavelengths || [];
-  const meanVals = meta?.mean_spectra?.values || [];
+
+  // ATENÇÃO: series já está corrigida na orientação acima
+  const meanLine = useMemo(() => {
+    if (meta.mean_spectra?.values && meta.mean_spectra.values.length === wavelengths.length) {
+      return meta.mean_spectra.values;
+    }
+    if (!series?.length) return [];
+    const nS = series.length, nW = series[0].length;
+    const acc = new Array(nW).fill(0);
+    for (let i = 0; i < nS; i++) for (let j = 0; j < nW; j++) acc[j] += Number(series[i][j] ?? 0);
+    return acc.map(v => v / nS);
+  }, [meta, wavelengths, series]);
 
   const wlMinAuto = wavelengths[0] ?? "";
   const wlMaxAuto = wavelengths.length ? wavelengths[wavelengths.length - 1] : "";
@@ -56,9 +87,10 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
     if (!chartRef.current || !wavelengths.length) return;
 
     const traces = [];
-
-    if (allSpectraValues.length) {
-      for (const row of allSpectraValues) {
+    const MAX_LINES = 300;
+    const toPlot = series.slice(0, MAX_LINES);
+    if (toPlot.length) {
+      for (const row of toPlot) {
         traces.push({
           x: wavelengths,
           y: row,
@@ -72,10 +104,10 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
       }
     }
 
-    if (showMean && meanWl.length && meanVals.length) {
+    if (showMean && meanLine.length) {
       traces.push({
-        x: meanWl,
-        y: meanVals,
+        x: wavelengths,
+        y: meanLine,
         type: "scatter",
         mode: "lines",
         line: { width: 2, color: "red" },
@@ -95,10 +127,15 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
       line: { width: 0 },
     }));
 
+    const flat = series.flat();
+    const ymin = Math.min(...flat);
+    const ymax = Math.max(...flat);
+    const pad = (ymax - ymin) * 0.05;
     const layout = {
       margin: { l: 40, r: 10, t: 10, b: 40 },
       dragmode: "select",
       shapes,
+      yaxis: { range: [ymin - pad, ymax + pad] },
     };
 
     Plotly.react(chartRef.current, traces, layout, { responsive: true, displayModeBar: false });
@@ -123,7 +160,7 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
         try { Plotly.purge(chartRef.current); } catch { /* ignore */ }
       }
     };
-  }, [wavelengths, allSpectraValues, meanWl, meanVals, showMean, ranges]);
+  }, [wavelengths, series, meanLine, showMean, ranges]);
 
   function applyRange() {
     const a = toNum(lambdaMin), b = toNum(lambdaMax);

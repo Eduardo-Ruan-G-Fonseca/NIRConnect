@@ -120,8 +120,20 @@ export async function postPreprocess(payload) {
 
 
 export async function postTrain(payload) {
-  const ds = payload?.dataset_id || getDatasetId();
-  return postJSON(`${API_BASE}/train`, { dataset_id: ds, ...payload });
+  const ds = payload?.dataset_id || getDatasetId();  // sua função util que guarda o id do passo 2
+  const body = {
+    dataset_id: ds,
+    target_name: payload.target_name ?? payload.target,     // compat
+    mode: payload.mode ?? (payload.classification ? "classification" : "regression"),
+    n_components: payload.n_components,
+    threshold: payload.threshold,
+    n_bootstrap: payload.n_bootstrap ?? 0,
+    validation_method: payload.validation_method,
+    validation_params: payload.validation_params,
+    spectral_ranges: payload.spectral_ranges,
+    preprocess: payload.preprocess,
+  };
+  return postJSON(`${API_BASE}/train`, body);
 }
 
 
