@@ -977,18 +977,23 @@ def post_columns(file: UploadFile):
     y_df = df.drop(columns=spectral_cols).copy()
 
     dataset_id = uuid.uuid4().hex
-    dataset_store.save(dataset_id, {
-        "X": X,
-        "columns": list(X_df.columns),   # nomes originais (strings)
-        "y_df": y_df,
-        "targets": list(y_df.columns),
-    })
 
     # metadados para Step1
     n_samples = int(X.shape[0])
     n_wavelengths = int(X.shape[1])
     wl_min = float(wl_sorted[0]) if wl_sorted else None
     wl_max = float(wl_sorted[-1]) if wl_sorted else None
+
+    dataset_store.save(dataset_id, {
+        "X": X,
+        "columns": list(X_df.columns),   # nomes originais (strings)
+        "y_df": y_df,
+        "targets": list(y_df.columns),
+        "n_samples": n_samples,
+        "n_wavelengths": n_wavelengths,
+        "wl_min": wl_min,
+        "wl_max": wl_max,
+    })
 
     # payload exatamente como o Step1/Step3 usam
     payload = {
