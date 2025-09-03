@@ -61,6 +61,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import (
     accuracy_score, balanced_accuracy_score, f1_score, confusion_matrix,
     precision_recall_fscore_support, cohen_kappa_score, matthews_corrcoef,
+    roc_auc_score,
 )
 from ml.vip import compute_vip_pls, compute_vip_ovr_mean
 try:
@@ -1681,8 +1682,8 @@ class OptimizeParams(BaseModel):
     validation_params: Dict[str, Any] = Field(default_factory=dict)
 
 
-@app.post("/optimize")
-def optimize(req: OptimizeParams, request: Request):
+@app.post("/optimize-advanced")
+def optimize_advanced(req: OptimizeParams, request: Request):
     if request.headers.get("content-type", "").split(";")[0] != "application/json":
         raise HTTPException(status_code=415, detail="Esta rota aceita apenas application/json.")
     if not req.dataset_id:
@@ -1852,7 +1853,6 @@ def _curve_cv_for_display(original_cv, y, task):
 def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
     nmax = max_k or _safe_limit_ncomp(X)
     is_loo = cv.__class__.__name__.lower().startswith("leave")
-    # limite para não travar (LOO mais pesado)
     nmax = min(nmax, 6 if is_loo else 15)
 
     ks = list(range(1, nmax + 1))
@@ -1860,11 +1860,14 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
         "n_components": ks,
         "accuracy": [], "balanced_accuracy": [], "f1_macro": [],
         "rmsecv": [], "r2cv": [],
+        "auc_macro": [],
         "note": "fastCV=StratifiedKFold(5)" if isinstance(cv, StratifiedKFold) else None
     }
 
     for k in ks:
         y_true_all, y_pred_all, y_pred_reg_all = [], [], []
+        scores_all = []
+
         for tr, te in cv.split(X, y):
             Xtr, Xte, ytr, yte = X[tr], X[te], y[tr], y[te]
             if task == "classification":
@@ -1874,12 +1877,14 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
                     pls = PLSRegression(n_components=k).fit(Xtr, ytr)
                     s = pls.predict(Xte).ravel()
                     yp = (s >= threshold).astype(int)
+                    scores_all.append(s.reshape(-1, 1))
                 else:
-                    scores = np.zeros((Xte.shape[0], K))
+                    S = np.zeros((Xte.shape[0], K))
                     for idx, c in enumerate(classes):
                         pls_k = PLSRegression(n_components=k).fit(Xtr, (ytr == c).astype(int))
-                        scores[:, idx] = pls_k.predict(Xte).ravel()
-                    yp = classes[np.argmax(scores, axis=1)]
+                        S[:, idx] = pls_k.predict(Xte).ravel()
+                    yp = classes[np.argmax(S, axis=1)]
+                    scores_all.append(S)
                 y_true_all.append(yte); y_pred_all.append(yp)
             else:
                 pls = PLSRegression(n_components=k).fit(Xtr, ytr)
@@ -1892,6 +1897,15 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
             curve["accuracy"].append(float(accuracy_score(y_true, y_pred)))
             curve["balanced_accuracy"].append(float(balanced_accuracy_score(y_true, y_pred)))
             curve["f1_macro"].append(float(f1_score(y_true, y_pred, average="macro")))
+            try:
+                S = np.vstack(scores_all)
+                if S.shape[1] == 1:
+                    auc = roc_auc_score(y_true, S.ravel())
+                else:
+                    auc = roc_auc_score(y_true, S, multi_class="ovr")
+            except Exception:
+                auc = float("nan")
+            curve["auc_macro"].append(float(auc))
             curve["rmsecv"].append(None); curve["r2cv"].append(None)
         else:
             y_pred = np.concatenate(y_pred_reg_all)
@@ -1901,11 +1915,12 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
             r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
             curve["rmsecv"].append(rmse); curve["r2cv"].append(r2)
             curve["accuracy"].append(None); curve["balanced_accuracy"].append(None); curve["f1_macro"].append(None)
+            curve["auc_macro"].append(None)
     return curve
 
 
 def _r2x_r2y(pls: PLSRegression, X: np.ndarray, y: np.ndarray):
-    T, P, Q = pls.x_scores_, pls.x_loadings_, pls.y_loadings_
+    T, P, Q = pls.x_scores_, pls.x_loadings_, pls.y_loadings_.T
     A = T.shape[1]
     X_hat = np.zeros_like(X, dtype=float)
     y = y.reshape(-1, 1)
@@ -1914,7 +1929,7 @@ def _r2x_r2y(pls: PLSRegression, X: np.ndarray, y: np.ndarray):
     ssy = float(np.sum((y - y.mean(0)) ** 2))
     r2x_cum, r2y_cum = [], []
     for a in range(A):
-        ta = T[:, [a]]; pa = P[:, [a]].T; qa = Q[:, [a]].T
+        ta = T[:, [a]]; pa = P[:, [a]].T; qa = Q[[a], :]
         X_hat += ta @ pa; y_hat += ta @ qa
         r2x_cum.append(float(1.0 - np.sum((X - X_hat) ** 2) / ssx) if ssx > 0 else 0.0)
         r2y_cum.append(float(1.0 - np.sum((y - y_hat) ** 2) / ssy) if ssy > 0 else 0.0)
@@ -1963,12 +1978,25 @@ def train(req: TrainRequest):
         _curve_cv_for_display(cv, y, task),
         threshold=(getattr(req, "threshold", 0.5) or 0.5)
     )
+    # recomendação simples baseada na curva
+    recommended_k = None
+    if task == "classification" and curve_cv["balanced_accuracy"]:
+        arr = np.array(curve_cv["balanced_accuracy"], dtype=float)
+        if np.isfinite(arr).any():
+            recommended_k = int(curve_cv["n_components"][np.nanargmax(arr)])
+    elif task != "classification" and curve_cv["rmsecv"]:
+        arr = np.array(curve_cv["rmsecv"], dtype=float)
+        if np.isfinite(arr).any():
+            recommended_k = int(curve_cv["n_components"][np.nanargmin(arr)])
+
     result["cv_curve"] = curve_cv
+    if recommended_k:
+        result["recommended_n_components"] = recommended_k
 
     if task == "classification":
         K = int(np.unique(y).size)
         labels = list(range(K))
-        y_true_all, y_pred_all = [], []
+        y_true_all, y_pred_all, scores_all = [], [], []
 
         for tr, te in cv.split(X, y):
             Xtr, Xte, ytr, yte = X[tr], X[te], y[tr], y[te]
@@ -1976,6 +2004,7 @@ def train(req: TrainRequest):
                 pls = PLSRegression(n_components=safe_n).fit(Xtr, ytr)
                 s = pls.predict(Xte).ravel()
                 yp = (s >= (getattr(req, "threshold", 0.5) or 0.5)).astype(int)
+                scores_all.append(s.reshape(-1, 1))
             else:
                 # One-vs-Rest "manual" para regressão
                 scores = np.zeros((Xte.shape[0], K))
@@ -1984,6 +2013,7 @@ def train(req: TrainRequest):
                     pls_k = PLSRegression(n_components=safe_n).fit(Xtr, yk)
                     scores[:, k] = pls_k.predict(Xte).ravel()
                 yp = np.argmax(scores, axis=1)
+                scores_all.append(scores)
             y_true_all.append(yte); y_pred_all.append(yp)
 
         y_true = np.concatenate(y_true_all)
@@ -1997,8 +2027,12 @@ def train(req: TrainRequest):
         )
         kappa = float(cohen_kappa_score(y_true, y_pred))
         mcc = float(matthews_corrcoef(y_true, y_pred))
+        try:
+            # AUC macro com escores OOF se disponíveis
+            auc_macro = roc_auc_score(y_true, np.vstack(scores_all) if 'scores_all' in locals() else y_pred, multi_class="ovr")
+        except Exception:
+            auc_macro = float("nan")
 
-        # por classe
         prec_c, rec_c, f1_c, sup_c = precision_recall_fscore_support(
             y_true, y_pred, labels=labels, zero_division=0
         )
@@ -2019,13 +2053,14 @@ def train(req: TrainRequest):
         result.update({
             "classes_": classes_ or [],
             "metrics": {
-                "accuracy": float(acc),
-                "balanced_accuracy": float(bacc),
+                "accuracy": acc,
+                "balanced_accuracy": bacc,
                 "precision_macro": float(prec_macro),
                 "recall_macro": float(rec_macro),
                 "f1_macro": float(f1m),
-                "cohen_kappa": float(kappa),
-                "mcc": float(mcc),
+                "cohen_kappa": kappa,
+                "mcc": mcc,
+                "auc_macro": float(auc_macro),
             },
             "per_class": per_class,
             "confusion_matrix": {
@@ -2103,3 +2138,59 @@ def train(req: TrainRequest):
     )
 
     return result
+
+
+class OptimizeRequest(BaseModel):
+    dataset_id: str
+    target_name: str
+    mode: str = "classification"
+    validation_method: str | None = None
+    n_splits: int | None = None
+    threshold: float | None = 0.5
+    k_min: int = 1
+    k_max: int | None = None  # None = usa limite seguro
+
+
+@app.post("/optimize")
+def optimize(req: OptimizeRequest):
+    ds = dataset_store.get(req.dataset_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset não encontrado.")
+
+    X = ds.get("X")
+    from utils.targets import load_target_or_fail
+    from utils.task_detect import detect_task_from_y
+    from utils.sanitize import sanitize_X, sanitize_y, align_X_y, limit_n_components
+    from validation import build_cv
+
+    y_raw, _ = load_target_or_fail(ds, req.target_name)
+    task = detect_task_from_y(y_raw, req.mode)
+    X = sanitize_X(X)
+    y, classes_ = sanitize_y(y_raw, task)
+    X, y, _ = align_X_y(X, y)
+    if X.shape[0] == 0:
+        raise HTTPException(status_code=400, detail="Sem amostras válidas.")
+
+    safe_max = limit_n_components(req.k_max or _safe_limit_ncomp(X), X)
+    k_grid = list(range(max(1, req.k_min), safe_max + 1))
+
+    cv = build_cv(req.validation_method or "KFold", y=y, n_splits=req.n_splits or 5, stratified=(task=="classification"))
+    curve = _compute_cv_curve(X, y, task, cv, threshold=(req.threshold or 0.5), max_k=safe_max)
+
+    # escolhe melhor k
+    if task == "classification":
+        vals = np.array(curve["balanced_accuracy"], dtype=float)
+        best_idx = int(np.nanargmax(vals))
+        score = float(vals[best_idx])
+    else:
+        vals = np.array(curve["rmsecv"], dtype=float)
+        best_idx = int(np.nanargmin(vals))
+        score = float(vals[best_idx])
+
+    best_k = int(curve["n_components"][best_idx])
+    return {
+        "status": "ok",
+        "best_params": {"n_components": best_k, "threshold": req.threshold},
+        "best_score": score,
+        "curve": curve,
+    }

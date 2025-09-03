@@ -26,7 +26,16 @@ export async function postAnalisar(fd) {
 }
 
 export async function postOptimize(payload) {
-  return postJSON(`${API_BASE}/optimize`, payload);
+  return postJSON(`${API_BASE}/optimize`, {
+    dataset_id: payload.dataset_id || getDatasetId(),
+    target_name: payload.target_name || payload.target,
+    mode: payload.mode,
+    validation_method: payload.validation_method,
+    n_splits: payload.n_splits,
+    threshold: payload.threshold,
+    k_min: payload.k_min ?? 1,
+    k_max: payload.k_max ?? null,
+  });
 }
 
 export async function getOptimizeStatus() {
