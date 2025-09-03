@@ -20,7 +20,7 @@ export default function LatentCard({ latent, labels }) {
       <h3 className="card-title mb-3">Latentes (Scores LV1 × LV2)</h3>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="col-span-1">
-          <ResponsiveContainer width="100%" height={320}>
+          <ResponsiveContainer width="100%" height={360}>
             <ScatterChart>
               <CartesianGrid />
               <XAxis type="number" dataKey="lv1" name="LV1" />

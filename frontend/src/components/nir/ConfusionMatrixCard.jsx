@@ -22,7 +22,7 @@ export default function ConfusionMatrixCard({ cm }) {
   const N = cm.normalized;
 
   return (
-    <div className="card p-4">
+    <div className="card p-4" style={{minHeight: 420}}>
       <h3 className="card-title mb-3">Matriz de Confusão</h3>
       <div className="overflow-x-auto">
         <table className="table table-sm">
