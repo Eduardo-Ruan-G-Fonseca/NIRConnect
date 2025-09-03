@@ -1823,6 +1823,106 @@ def deprecated_train_form():
     raise HTTPException(status_code=410, detail="Rota obsoleta. Use POST /train com JSON.")
 
 
+# --- utils p/ curva de validação e latentes ---
+import numpy as np
+from sklearn.cross_decomposition import PLSRegression
+
+
+def _safe_limit_ncomp(X):
+    # rank máximo: min(n_features, n_samples-1)
+    n, p = X.shape
+    return int(max(1, min(p, n - 1)))
+
+
+def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
+    from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
+
+    nmax = max_k or _safe_limit_ncomp(X)
+    is_loo = cv.__class__.__name__.lower().startswith("leave")
+    # para LOO não matar tempo: limite prático
+    nmax = min(nmax, 8 if is_loo else 20)
+
+    curve = {
+        "n_components": list(range(1, nmax + 1)),
+        "accuracy": [],
+        "balanced_accuracy": [],
+        "f1_macro": [],
+        "rmsecv": [],
+        "r2cv": [],
+    }
+
+    for k in curve["n_components"]:
+        y_true_all, y_pred_all = [], []
+        y_pred_reg_all = []
+
+        for tr, te in cv.split(X, y):
+            Xtr, Xte, ytr, yte = X[tr], X[te], y[tr], y[te]
+            if task == "classification":
+                classes = np.unique(ytr)
+                K = len(classes)
+                if K == 2:
+                    pls = PLSRegression(n_components=k).fit(Xtr, ytr)
+                    s = pls.predict(Xte).ravel()
+                    yp = (s >= threshold).astype(int)
+                else:
+                    scores = np.zeros((Xte.shape[0], K))
+                    for idx, c in enumerate(classes):
+                        pls_k = PLSRegression(n_components=k).fit(Xtr, (ytr == c).astype(int))
+                        scores[:, idx] = pls_k.predict(Xte).ravel()
+                    yp = classes[np.argmax(scores, axis=1)]
+                y_true_all.append(yte)
+                y_pred_all.append(yp)
+            else:
+                pls = PLSRegression(n_components=k).fit(Xtr, ytr)
+                y_pred_reg_all.append(pls.predict(Xte).ravel())
+                y_true_all.append(yte)
+
+        y_true = np.concatenate(y_true_all)
+        if task == "classification":
+            y_pred = np.concatenate(y_pred_all)
+            curve["accuracy"].append(float(accuracy_score(y_true, y_pred)))
+            curve["balanced_accuracy"].append(float(balanced_accuracy_score(y_true, y_pred)))
+            curve["f1_macro"].append(float(f1_score(y_true, y_pred, average="macro")))
+            curve["rmsecv"].append(None)
+            curve["r2cv"].append(None)
+        else:
+            y_pred = np.concatenate(y_pred_reg_all)
+            rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+            ss_tot = float(np.var(y_true) * y_true.size)
+            ss_res = float(np.sum((y_true - y_pred) ** 2))
+            r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+            curve["rmsecv"].append(rmse)
+            curve["r2cv"].append(r2)
+            curve["accuracy"].append(None)
+            curve["balanced_accuracy"].append(None)
+            curve["f1_macro"].append(None)
+
+    return curve
+
+
+def _r2x_r2y(pls: PLSRegression, X: np.ndarray, y: np.ndarray):
+    # R²X e R²Y cumulativos por componente
+    T, P, Q = pls.x_scores_, pls.x_loadings_, pls.y_loadings_.T
+    A = T.shape[1]
+    X_hat = np.zeros_like(X, dtype=float)
+    y = y.reshape(-1, 1)
+    y_hat = np.zeros_like(y, dtype=float)
+
+    ssx = float(np.sum((X - X.mean(0)) ** 2))
+    ssy = float(np.sum((y - y.mean(0)) ** 2))
+    r2x_cum, r2y_cum = [], []
+
+    for a in range(A):
+        ta = T[:, [a]]
+        pa = P[:, [a]].T
+        qa = Q[[a], :]
+        X_hat += ta @ pa
+        y_hat += ta @ qa
+        r2x_cum.append(float(1.0 - np.sum((X - X_hat) ** 2) / ssx) if ssx > 0 else 0.0)
+        r2y_cum.append(float(1.0 - np.sum((y - y_hat) ** 2) / ssy) if ssy > 0 else 0.0)
+    return r2x_cum, r2y_cum
+
+
 
 @app.post("/train")
 def train(req: TrainRequest):
@@ -1937,6 +2037,43 @@ def train(req: TrainRequest):
         ss_res = float(np.sum((y_true - y_pred) ** 2))
         r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
         result["metrics"] = {"rmsecv": rmse, "r2cv": r2}
+
+    # --- CURVA DE VALIDAÇÃO (com a mesma CV e threshold do request) ---
+    curve = _compute_cv_curve(
+        X, y, task, cv,
+        threshold=(getattr(req, "threshold", 0.5) or 0.5),
+        max_k=None
+    )
+    result["cv_curve"] = curve
+
+    # --- LATENTES (treino completo com safe_n) ---
+    pls_full = PLSRegression(n_components=safe_n).fit(X, y)
+    T = pls_full.x_scores_
+    P = pls_full.x_loadings_
+    W = pls_full.x_weights_
+    Q = pls_full.y_loadings_
+
+    r2x_cum, r2y_cum = _r2x_r2y(pls_full, X, y)
+
+    latent = {
+        "scores": T[:, : min(3, T.shape[1])].tolist(),
+        "x_loadings": (P[:, : min(3, P.shape[1])].tolist()),
+        "x_weights": (W[:, : min(3, W.shape[1])].tolist()),
+        "y_loadings": (Q[: min(3, Q.shape[0]), :].ravel().tolist()),
+        "r2x_cum": r2x_cum,
+        "r2y_cum": r2y_cum,
+        "wavelengths": wavelengths,
+    }
+    result["latent"] = latent
+
+    # --- centroides no espaço LV para classificação (ajuda no scatter) ---
+    if task == "classification":
+        classes = np.unique(y)
+        centroids = {}
+        for c in classes:
+            m = np.nanmean(T[y == c, :2], axis=0)
+            centroids[str(int(c))] = [float(m[0]), float(m[1])] if np.all(np.isfinite(m)) else [0.0, 0.0]
+        result["latent"]["centroids"] = centroids
 
     logging.getLogger(__name__).info(
         "train ok: task=%s, ncomp=%d, metrics=%s",

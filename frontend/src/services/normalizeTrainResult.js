@@ -42,9 +42,11 @@ export function normalizeTrainResult(res) {
     task: res?.task || "classification",
     metrics: res?.metrics || {},
     cv: res?.cv || {},
+    cv_curve: res?.cv_curve || null,
     vip,
     cm,
     wavelengths: res?.wavelengths || [],
+    latent: res?.latent || null,
     oof: res?.oof || null,
   };
 }

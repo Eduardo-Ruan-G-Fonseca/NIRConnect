@@ -4,6 +4,8 @@ import { getOptimizeStatus } from "../../services/api";
 import { postJSON, getDatasetId, clearDatasetId } from "../../api/http";
 import VipTopCard from "./VipTopCard";
 import ConfusionMatrixCard from "./ConfusionMatrixCard";
+import CvCurveCard from "./CvCurveCard";
+import LatentCard from "./LatentCard";
 import { normalizeTrainResult } from "../../services/normalizeTrainResult";
 
 /* ===== Helpers ===== */
@@ -104,7 +106,7 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
   const isClass = !!step2?.classification;
   const metricLabel = isClass ? "Accuracy" : "RMSECV";
   const ds = getDatasetId();
-  const data = useMemo(() => normalizeTrainResult(result?.data || {}), [result]);
+  const data = useMemo(() => normalizeTrainResult(result?.data || result || {}), [result]);
 
   const spectralRange = useMemo(() => {
     const s = result?.params?.ranges || "";
@@ -456,8 +458,13 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
 
           <div className="md:col-span-12">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <VipTopCard vip={data.vip} />
+              <VipTopCard vip={data.vip} top={30} />
               <ConfusionMatrixCard cm={data.cm} />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+              <CvCurveCard curve={data.cv_curve} task={data.task} />
+              <LatentCard latent={data.latent} labels={data.oof?.labels} />
             </div>
           </div>
 
