@@ -27,6 +27,7 @@ export function normalizeTrainResult(res) {
   return {
     task: res?.task || "classification",
     metrics: res?.metrics || {},
+    per_class: res?.per_class || null,     // <- NOVO (tabela por classe)
     cv: res?.cv || {},
     cv_curve: res?.cv_curve || null,
     vip: extractVip(res),

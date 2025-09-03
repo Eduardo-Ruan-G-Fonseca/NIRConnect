@@ -6,6 +6,7 @@ import VipTopCard from "./VipTopCard";
 import ConfusionMatrixCard from "./ConfusionMatrixCard";
 import CvCurveCard from "./CvCurveCard";
 import LatentCard from "./LatentCard";
+import PerClassMetricsCard from "./PerClassMetricsCard";
 import { normalizeTrainResult } from "../../services/normalizeTrainResult";
 
 /* ===== Helpers ===== */
@@ -462,10 +463,12 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
               <ConfusionMatrixCard cm={data.cm} />
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <CvCurveCard curve={data.cv_curve} task={data.task} />
-              <LatentCard latent={data.latent} labels={data.oof?.labels} />
+              <LatentCard latent={data.latent} labels={data.latent?.sample_labels} />
             </div>
+
+            <PerClassMetricsCard perClass={data.per_class} />
           </div>
 
         </div>
