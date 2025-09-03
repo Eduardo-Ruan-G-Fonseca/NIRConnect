@@ -30,6 +30,9 @@ export function normalizeTrainResult(res) {
     per_class: res?.per_class || null,     // <- NOVO (tabela por classe)
     cv: res?.cv || {},
     cv_curve: res?.cv_curve || null,
+    recommended_n_components: res?.recommended_n_components ?? null,
+    meta: res?.meta || null,
+    train_time_seconds: res?.train_time_seconds ?? null,
     vip: extractVip(res),
     cm: extractConfusion(res),
     wavelengths: res?.wavelengths || [],

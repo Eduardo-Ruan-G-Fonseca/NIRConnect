@@ -125,6 +125,30 @@ def _metrics_ok(m):
     return np.isfinite(m)
 
 
+# --- JSON sanitize: troca NaN/Inf por None de forma recursiva ---
+def _json_sanitize(obj):
+    if isinstance(obj, dict):
+        return {k: _json_sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_sanitize(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return _json_sanitize(obj.tolist())
+    if isinstance(obj, (np.floating, float)):
+        v = float(obj)
+        return None if (np.isnan(v) or np.isinf(v)) else v
+    if isinstance(obj, (np.integer, int)):
+        return int(obj)
+    return obj
+
+
+def _finite_or_none(x):
+    try:
+        x = float(x)
+        return x if np.isfinite(x) else None
+    except Exception:
+        return None
+
+
 def apply_preprocess(X: np.ndarray, method: str) -> np.ndarray:
     if not method or method == "none":
         Xp = X.copy()
@@ -1894,9 +1918,9 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
         y_true = np.concatenate(y_true_all)
         if task == "classification":
             y_pred = np.concatenate(y_pred_all)
-            curve["accuracy"].append(float(accuracy_score(y_true, y_pred)))
-            curve["balanced_accuracy"].append(float(balanced_accuracy_score(y_true, y_pred)))
-            curve["f1_macro"].append(float(f1_score(y_true, y_pred, average="macro")))
+            curve["accuracy"].append(_finite_or_none(accuracy_score(y_true, y_pred)))
+            curve["balanced_accuracy"].append(_finite_or_none(balanced_accuracy_score(y_true, y_pred)))
+            curve["f1_macro"].append(_finite_or_none(f1_score(y_true, y_pred, average="macro")))
             try:
                 S = np.vstack(scores_all)
                 if S.shape[1] == 1:
@@ -1904,8 +1928,8 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
                 else:
                     auc = roc_auc_score(y_true, S, multi_class="ovr")
             except Exception:
-                auc = float("nan")
-            curve["auc_macro"].append(float(auc))
+                auc = None
+            curve["auc_macro"].append(_finite_or_none(auc))
             curve["rmsecv"].append(None); curve["r2cv"].append(None)
         else:
             y_pred = np.concatenate(y_pred_reg_all)
@@ -1913,7 +1937,8 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
             ss_tot = float(np.var(y_true) * y_true.size)
             ss_res = float(np.sum((y_true - y_pred) ** 2))
             r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
-            curve["rmsecv"].append(rmse); curve["r2cv"].append(r2)
+            curve["rmsecv"].append(_finite_or_none(rmse))
+            curve["r2cv"].append(_finite_or_none(r2))
             curve["accuracy"].append(None); curve["balanced_accuracy"].append(None); curve["f1_macro"].append(None)
             curve["auc_macro"].append(None)
     return curve
@@ -1939,6 +1964,7 @@ def _r2x_r2y(pls: PLSRegression, X: np.ndarray, y: np.ndarray):
 
 @app.post("/train")
 def train(req: TrainRequest):
+    start_time = time.time()
     # -------- validações básicas --------
     if not getattr(req, "dataset_id", None):
         raise HTTPException(status_code=400, detail="Esta rota espera application/json e requer dataset_id. Faça upload do dataset (passo 1) e chame /columns (passo 2).")
@@ -1968,7 +1994,21 @@ def train(req: TrainRequest):
     cv = build_cv_simple(req.validation_method or "KFold", y=y, n_splits=getattr(req, "n_splits", 5), stratified=(task == "classification"))
 
     # -------- treino + métricas --------
-    result = {"status": "ok", "task": task, "n_components_used": safe_n, "cv": {"method": str(cv).split("(")[0]}}
+    n_samples, n_features = X.shape
+    meta = {"n_samples": int(n_samples), "n_features": int(n_features)}
+    if task == "classification":
+        uniq, counts = np.unique(y, return_counts=True)
+        meta["classes"] = [
+            {"label": (classes_[i] if classes_ else str(uniq[i])), "count": int(counts[i])}
+            for i in range(len(uniq))
+        ]
+    result = {
+        "status": "ok",
+        "task": task,
+        "n_components_used": safe_n,
+        "cv": {"method": str(cv).split("(")[0]},
+        "meta": meta,
+    }
     wavelengths = ds.get("columns") or []
     result["wavelengths"] = wavelengths
 
@@ -2070,6 +2110,10 @@ def train(req: TrainRequest):
             },
             "oof": {"y_true": y_true.tolist(), "y_pred": y_pred.tolist(), "labels": classes_ or [str(i) for i in labels]},
         })
+        metrics_auc = None if (
+            "auc_macro" not in locals() or not (isinstance(auc_macro, (int, float)) and np.isfinite(auc_macro))
+        ) else float(auc_macro)
+        result["metrics"]["auc_macro"] = metrics_auc
 
         # VIPs no conjunto inteiro (média OVR quando multiclasses)
         if K == 2:
@@ -2137,7 +2181,9 @@ def train(req: TrainRequest):
         task, safe_n, result.get("metrics")
     )
 
-    return result
+    result["train_time_seconds"] = float(time.time() - start_time)
+    payload = _json_sanitize(result)
+    return JSONResponse(content=payload)
 
 
 class OptimizeRequest(BaseModel):
@@ -2188,9 +2234,10 @@ def optimize(req: OptimizeRequest):
         score = float(vals[best_idx])
 
     best_k = int(curve["n_components"][best_idx])
-    return {
+    response = {
         "status": "ok",
         "best_params": {"n_components": best_k, "threshold": req.threshold},
         "best_score": score,
         "curve": curve,
     }
+    return JSONResponse(content=_json_sanitize(response))

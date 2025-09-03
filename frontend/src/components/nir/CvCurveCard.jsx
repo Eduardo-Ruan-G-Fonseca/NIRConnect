@@ -24,7 +24,7 @@ export default function CvCurveCard({ curve, task, recommended }) {
       <h3 className="card-title mb-3">
         Curva de Validação × Nº de Componentes
         {recommended ? (
-          <span className="badge ml-2">{recommended}</span>
+          <span className="badge ml-2">Sugerido: k = {recommended}</span>
         ) : null}
       </h3>
       <ResponsiveContainer width="100%" height={280}>
