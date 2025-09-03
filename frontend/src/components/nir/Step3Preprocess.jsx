@@ -19,8 +19,6 @@ const parseWavelengths = (meta) => {
   });
 };
 
-const transpose = (m) => m[0]?.map((_, j) => m.map(row => row[j]));
-
 export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
   const chartRef = useRef(null);
   const preselectedOnce = useRef(false); // garante que a seleção total só acontece 1x
@@ -29,15 +27,6 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
   const { wavelengths, series } = useMemo(() => {
     let wl = parseWavelengths(meta);
     let M = meta?.spectra_matrix?.values || [];
-    // --- Autodetecção de orientação ---
-    // Esperado: linhas = amostras, colunas = n_wavelengths.
-    // Usamos os metadados do backend para decidir transposição.
-    const ns = meta?.n_samples ?? (Array.isArray(M) ? M.length : 0);
-    const nw = meta?.n_wavelengths ?? (Array.isArray(M?.[0]) ? M[0].length : 0);
-    if (Array.isArray(M) && M.length === nw && Array.isArray(M[0]) && M[0].length === ns) {
-      // parece transposta (linhas = wavelengths), destranspor
-      M = transpose(M);
-    }
 
     // Se wavelengths vier com algum null, gera eixo 0..n_wavelengths-1 para não quebrar o grafico
     if (!wl || wl.length !== (M[0]?.length || 0) || wl.some(v => v === null)) {

@@ -54,6 +54,7 @@ from pls import make_pls_reg, make_pls_da
 from utils.task_detect import detect_task_from_y
 from utils.sanitize import sanitize_X, sanitize_y, limit_n_components, align_X_y
 from utils.targets import load_target_or_fail
+from utils.spectra import extract_spectra_like_legacy
 try:
     from ml.pipeline import (
         build_pls_pipeline,
@@ -75,26 +76,6 @@ import joblib
 
 dataset_store = DatasetStore()
 STORE = dataset_store
-
-
-def _coerce_numeric_series(s: pd.Series) -> pd.Series:
-    """Converte série para numérico aceitando vírgula decimal; mantém NaN quando não der."""
-    if s.dtype == object or pd.api.types.is_string_dtype(s):
-        s = s.astype("string").str.replace(",", ".", regex=False)
-    return pd.to_numeric(s, errors="coerce")
-
-
-def _detect_spectral_columns(df: pd.DataFrame) -> list[str]:
-    """
-    Heurística robusta: coluna é espectral se >=80% das células virarem número
-    após coerção (aceitando vírgula decimal). Mantém a ordem original.
-    """
-    specs = []
-    for c in df.columns:
-        s2 = _coerce_numeric_series(df[c])
-        if s2.notna().mean() >= 0.80:
-            specs.append(c)
-    return specs
 
 
 # Progresso global para /optimize/status
@@ -931,9 +912,6 @@ async def process_file(
 
 @app.post("/columns")
 def post_columns(file: UploadFile):
-    """Lê Excel/CSV via BytesIO, detecta colunas espectrais e retorna payload
-    que o front espera: dataset_id, columns, targets, spectra_matrix (values/wavelengths),
-    mean_spectra e metadados (n_samples, n_wavelengths, wl_min, wl_max)."""
     raw = file.file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Arquivo vazio.")
@@ -953,67 +931,40 @@ def post_columns(file: UploadFile):
     if df.empty:
         raise HTTPException(status_code=400, detail="Planilha sem linhas.")
 
-    # espectros por conteúdo
-    spectral_cols = _detect_spectral_columns(df)
-    if not spectral_cols:
-        raise HTTPException(status_code=400, detail="Não encontrei colunas espectrais.")
+    # >>> pipeline igual ao legado
+    try:
+        X_plot, wavelengths, y_df, dbg = extract_spectra_like_legacy(df)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    # X (float, sem NaN/Inf) e wl (numéricos a partir do cabeçalho)
-    X_df = pd.DataFrame({c: _coerce_numeric_series(df[c]) for c in spectral_cols})
-    X = sanitize_X(X_df.to_numpy(dtype=float, copy=True))
-    # wavelengths derivados dos nomes das colunas espectrais
-    def _to_float_header(s):
-        try: return float(str(s).strip().replace(",", "."))
-        except: return None
-    wavelengths = [_to_float_header(c) for c in spectral_cols]
-    wl = [w for w in wavelengths if w is not None]
-    if len(wl) == len(spectral_cols):
-        wl_sorted = wl
-    else:
-        # se não der pra converter todos, apenas não envia wavelengths aqui; o front usa meta.columns
-        wl_sorted = []
-
-    # alvos = resto das colunas
-    y_df = df.drop(columns=spectral_cols).copy()
-
+    # guarda no store para treino
     dataset_id = uuid.uuid4().hex
-
-    # metadados para Step1
-    n_samples = int(X.shape[0])
-    n_wavelengths = int(X.shape[1])
-    wl_min = float(wl_sorted[0]) if wl_sorted else None
-    wl_max = float(wl_sorted[-1]) if wl_sorted else None
+    cols_str = [format(w, "g") for w in wavelengths]
 
     dataset_store.save(dataset_id, {
-        "X": X,
-        "columns": list(X_df.columns),   # nomes originais (strings)
+        "X": X_plot,                 # usa o mesmo domínio do gráfico (como no legado)
+        "columns": cols_str,
         "y_df": y_df,
         "targets": list(y_df.columns),
-        "n_samples": n_samples,
-        "n_wavelengths": n_wavelengths,
-        "wl_min": wl_min,
-        "wl_max": wl_max,
     })
 
-    # payload exatamente como o Step1/Step3 usam
-    payload = {
+    return {
         "dataset_id": dataset_id,
-        "columns": list(X_df.columns),  # Step3 tenta parsear p/ números
+        "columns": cols_str,   # front usa como labels
         "targets": list(y_df.columns),
         "spectra_matrix": {
-            "values": X.tolist(),                # Step3 lê .values para plotar todos os espectros
-            "wavelengths": wl_sorted or None,    # opcional; se None, Step3 deriva de "columns"
+            "values": X_plot.tolist(),              # linhas = amostras, colunas = wavelengths
+            "wavelengths": wavelengths,             # numérico
         },
         "mean_spectra": {
-            "wavelengths": wl_sorted or None,
-            "values": X.mean(axis=0).tolist(),
+            "wavelengths": wavelengths,
+            "values": X_plot.mean(axis=0).tolist(),
         },
-        "n_samples": n_samples,
-        "n_wavelengths": n_wavelengths,
-        "wl_min": wl_min,
-        "wl_max": wl_max,
+        "n_samples": int(X_plot.shape[0]),
+        "n_wavelengths": int(X_plot.shape[1]),
+        # opcional: ajuda debug em dev
+        "debug": dbg,
     }
-    return payload
 @app.get("/columns/meta")
 def columns_meta(dataset_id: str = Query(...)):
     ds = STORE.get(dataset_id)
