@@ -54,7 +54,11 @@ from pls import make_pls_reg, make_pls_da
 from utils.task_detect import detect_task_from_y
 from utils.sanitize import sanitize_X, sanitize_y, limit_n_components, align_X_y
 from utils.targets import load_target_or_fail
-from utils.spectra import extract_spectra_like_legacy
+from utils.spectra import prepare_for_plot_legacy
+from validation import build_cv as build_cv_simple
+from sklearn.cross_decomposition import PLSRegression
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, confusion_matrix
+from ml.vip import compute_vip_pls, compute_vip_ovr_mean
 try:
     from ml.pipeline import (
         build_pls_pipeline,
@@ -933,7 +937,7 @@ def post_columns(file: UploadFile):
 
     # >>> pipeline igual ao legado
     try:
-        X_plot, wavelengths, y_df, dbg = extract_spectra_like_legacy(df)
+        X_plot, wavelengths, y_df, dbg = prepare_for_plot_legacy(df)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1810,6 +1814,9 @@ class TrainRequest(BaseModel):
     target_name: str
     mode: str | None = None
     n_components: int
+    validation_method: str | None = None
+    n_splits: int | None = None
+    threshold: float | None = None
 
 @app.post("/train-form")
 def deprecated_train_form():
@@ -1819,40 +1826,107 @@ def deprecated_train_form():
 
 @app.post("/train")
 def train(req: TrainRequest):
+    # -------- validações básicas --------
     if not getattr(req, "dataset_id", None):
-        # mensagem que o front já exibe
-        raise HTTPException(
-            status_code=400,
-            detail="Esta rota espera application/json e requer dataset_id. Faça upload do dataset (passo 1) e chame /columns (passo 2).",
-        )
+        raise HTTPException(status_code=400, detail="Esta rota espera application/json e requer dataset_id. Faça upload do dataset (passo 1) e chame /columns (passo 2).")
+
     ds = dataset_store.get(req.dataset_id)
     if not ds:
         raise HTTPException(status_code=400, detail="Dataset não encontrado.")
 
-    Xp = ds.get("X")
-    if Xp is None:
+    X = ds.get("X")
+    if X is None:
         raise HTTPException(status_code=400, detail="Matriz espectral não disponível.")
 
     try:
-        y_raw, _ = load_target_or_fail(ds, req.target_name)  # dtype=object se 'E01'
+        y_raw, _ = load_target_or_fail(ds, req.target_name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # -------- sanitização --------
     task = detect_task_from_y(y_raw, req.mode)
-
-    Xp = sanitize_X(Xp)
-    y_sanit, y_classes = sanitize_y(y_raw, task)
-    Xp, y_sanit, _ = align_X_y(Xp, y_sanit)
-    if Xp.shape[0] == 0 or y_sanit.size == 0:
+    X = sanitize_X(X)
+    y, classes_ = sanitize_y(y_raw, task)
+    X, y, _ = align_X_y(X, y)
+    if X.shape[0] == 0 or y.size == 0:
         raise HTTPException(status_code=400, detail="Após alinhamento, não há amostras válidas para o alvo.")
 
-    safe_n = limit_n_components(req.n_components, Xp)
+    safe_n = limit_n_components(req.n_components, X)
+    cv = build_cv_simple(req.validation_method or "KFold", y=y, n_splits=getattr(req, "n_splits", 5), stratified=(task == "classification"))
+
+    # -------- treino + métricas --------
+    result = {"status": "ok", "task": task, "n_components_used": safe_n, "cv": {"method": str(cv).split("(")[0]}}
+    wavelengths = ds.get("columns") or []
+    result["wavelengths"] = wavelengths
 
     if task == "classification":
-        n_classes = int(np.unique(y_sanit).size)
-        est = make_pls_da(n_components=safe_n, n_classes=n_classes)
-        est.fit(Xp, y_sanit.astype(int))
-        return {"status": "ok", "task": "classification", "n_components_used": safe_n, "classes_": y_classes or []}
+        K = int(np.unique(y).size)
+        labels = list(range(K))
+        y_true_all, y_pred_all = [], []
+
+        for tr, te in cv.split(X, y):
+            Xtr, Xte, ytr, yte = X[tr], X[te], y[tr], y[te]
+            if K == 2:
+                pls = PLSRegression(n_components=safe_n).fit(Xtr, ytr)
+                s = pls.predict(Xte).ravel()
+                yp = (s >= (getattr(req, "threshold", 0.5) or 0.5)).astype(int)
+            else:
+                # One-vs-Rest "manual" para regressão
+                scores = np.zeros((Xte.shape[0], K))
+                for k in labels:
+                    yk = (ytr == k).astype(int)
+                    pls_k = PLSRegression(n_components=safe_n).fit(Xtr, yk)
+                    scores[:, k] = pls_k.predict(Xte).ravel()
+                yp = np.argmax(scores, axis=1)
+            y_true_all.append(yte); y_pred_all.append(yp)
+
+        y_true = np.concatenate(y_true_all)
+        y_pred = np.concatenate(y_pred_all)
+
+        cm = confusion_matrix(y_true, y_pred, labels=labels).astype(int).tolist()
+        acc = float(accuracy_score(y_true, y_pred))
+        bacc = float(balanced_accuracy_score(y_true, y_pred))
+        f1m = float(f1_score(y_true, y_pred, average="macro"))
+
+        result.update({
+            "classes_": classes_ or [],
+            "metrics": {"accuracy": acc, "balanced_accuracy": bacc, "f1_macro": f1m},
+            "confusion_matrix": {"labels": classes_ or [str(i) for i in labels], "matrix": cm},
+        })
+
+        # VIPs no conjunto inteiro (média OVR quando multiclasses)
+        if K == 2:
+            model = PLSRegression(n_components=safe_n).fit(X, y)
+            vip = compute_vip_pls(model, X, y).tolist()
+        else:
+            models = []
+            Ybin = np.zeros((X.shape[0], K), dtype=int)
+            for k in labels:
+                Ybin[:, k] = (y == k).astype(int)
+                models.append(PLSRegression(n_components=safe_n).fit(X, Ybin[:, k]))
+            vip = compute_vip_ovr_mean(models, X, Ybin).tolist()
+
+        # devolvemos as duas convenções para compat do front
+        result["vip"] = {"wavelengths": wavelengths, "scores": vip}
+        result["vips"] = [{"wavelength": float(wavelengths[i]) if i < len(wavelengths) else i, "score": float(vip[i])} for i in range(len(vip))]
+
     else:
-        est = make_pls_reg(n_components=safe_n).fit(Xp, y_sanit)
-        return {"status": "ok", "task": "regression", "n_components_used": safe_n}
+        # regressão: retorna pelo menos RMSECV e R2CV
+        y_true_all, y_pred_all = [], []
+        for tr, te in cv.split(X, y):
+            model = PLSRegression(n_components=safe_n).fit(X[tr], y[tr])
+            y_true_all.append(y[te]); y_pred_all.append(model.predict(X[te]).ravel())
+        y_true = np.concatenate(y_true_all)
+        y_pred = np.concatenate(y_pred_all)
+        rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+        ss_tot = float(np.var(y_true) * y_true.size)
+        ss_res = float(np.sum((y_true - y_pred) ** 2))
+        r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+        result["metrics"] = {"rmsecv": rmse, "r2cv": r2}
+
+    logging.getLogger(__name__).info(
+        "train ok: task=%s, ncomp=%d, metrics=%s",
+        task, safe_n, result.get("metrics")
+    )
+
+    return result
