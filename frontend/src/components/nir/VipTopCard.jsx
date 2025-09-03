@@ -1,7 +1,7 @@
 // frontend/src/components/nir/VipTopCard.jsx
 import React from "react";
 
-export default function VipTopCard({ vip = [], top = 20, title = "VIPs (Top)" }) {
+export default function VipTopCard({ vip = [], top = 30, title = "VIPs (Top)" }) {
   const topVip = vip.slice(0, top);
 
   if (!topVip.length) {

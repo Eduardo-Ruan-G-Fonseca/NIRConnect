@@ -2,10 +2,8 @@ import React, { useMemo } from "react";
 import { LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 export default function CvCurveCard({ curve, task }) {
-  if (!curve?.n_components?.length) {
-    return <div className="card dashed h-64 flex items-center justify-center"><p>Sem curva de validação.</p></div>;
-  }
   const data = useMemo(() => {
+    if (!curve?.n_components?.length) return [];
     return curve.n_components.map((k, i) => ({
       k,
       accuracy: curve.accuracy?.[i] ?? null,
@@ -15,6 +13,10 @@ export default function CvCurveCard({ curve, task }) {
       r2cv: curve.r2cv?.[i] ?? null,
     }));
   }, [curve]);
+
+  if (!curve?.n_components?.length) {
+    return <div className="card dashed h-64 flex items-center justify-center"><p>Sem curva de validação.</p></div>;
+  }
 
   return (
     <div className="card p-4">
