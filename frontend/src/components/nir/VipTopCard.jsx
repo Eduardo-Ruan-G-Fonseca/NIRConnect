@@ -15,7 +15,7 @@ export default function VipTopCard({ vip = [], top = 30, title = "VIPs (Top)" })
   return (
     <div className="card p-4">
       <h3 className="card-title mb-3">{title}</h3>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" style={{maxHeight: 360, overflowY: "auto"}}>
         <table className="table table-sm">
           <thead>
             <tr>

@@ -57,7 +57,11 @@ from utils.targets import load_target_or_fail
 from utils.spectra import prepare_for_plot_legacy
 from validation import build_cv as build_cv_simple
 from sklearn.cross_decomposition import PLSRegression
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, confusion_matrix
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import (
+    accuracy_score, balanced_accuracy_score, f1_score, confusion_matrix,
+    precision_recall_fscore_support, cohen_kappa_score, matthews_corrcoef,
+)
 from ml.vip import compute_vip_pls, compute_vip_ovr_mean
 try:
     from ml.pipeline import (
@@ -1829,32 +1833,38 @@ from sklearn.cross_decomposition import PLSRegression
 
 
 def _safe_limit_ncomp(X):
-    # rank máximo: min(n_features, n_samples-1)
     n, p = X.shape
     return int(max(1, min(p, n - 1)))
 
 
-def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
-    from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
+def _curve_cv_for_display(original_cv, y, task):
+    """
+    Para o gráfico: se o usuário escolheu LOO e a base é grande,
+    usamos StratifiedKFold(5) apenas para a CURVA (o treino real continua com o CV original).
+    """
+    n = len(y)
+    name = original_cv.__class__.__name__.lower()
+    if name.startswith("leave") and n >= 200 and task == "classification":
+        return StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    return original_cv
 
+
+def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
     nmax = max_k or _safe_limit_ncomp(X)
     is_loo = cv.__class__.__name__.lower().startswith("leave")
-    # para LOO não matar tempo: limite prático
-    nmax = min(nmax, 8 if is_loo else 20)
+    # limite para não travar (LOO mais pesado)
+    nmax = min(nmax, 6 if is_loo else 15)
 
+    ks = list(range(1, nmax + 1))
     curve = {
-        "n_components": list(range(1, nmax + 1)),
-        "accuracy": [],
-        "balanced_accuracy": [],
-        "f1_macro": [],
-        "rmsecv": [],
-        "r2cv": [],
+        "n_components": ks,
+        "accuracy": [], "balanced_accuracy": [], "f1_macro": [],
+        "rmsecv": [], "r2cv": [],
+        "note": "fastCV=StratifiedKFold(5)" if isinstance(cv, StratifiedKFold) else None
     }
 
-    for k in curve["n_components"]:
-        y_true_all, y_pred_all = [], []
-        y_pred_reg_all = []
-
+    for k in ks:
+        y_true_all, y_pred_all, y_pred_reg_all = [], [], []
         for tr, te in cv.split(X, y):
             Xtr, Xte, ytr, yte = X[tr], X[te], y[tr], y[te]
             if task == "classification":
@@ -1870,8 +1880,7 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
                         pls_k = PLSRegression(n_components=k).fit(Xtr, (ytr == c).astype(int))
                         scores[:, idx] = pls_k.predict(Xte).ravel()
                     yp = classes[np.argmax(scores, axis=1)]
-                y_true_all.append(yte)
-                y_pred_all.append(yp)
+                y_true_all.append(yte); y_pred_all.append(yp)
             else:
                 pls = PLSRegression(n_components=k).fit(Xtr, ytr)
                 y_pred_reg_all.append(pls.predict(Xte).ravel())
@@ -1883,41 +1892,30 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
             curve["accuracy"].append(float(accuracy_score(y_true, y_pred)))
             curve["balanced_accuracy"].append(float(balanced_accuracy_score(y_true, y_pred)))
             curve["f1_macro"].append(float(f1_score(y_true, y_pred, average="macro")))
-            curve["rmsecv"].append(None)
-            curve["r2cv"].append(None)
+            curve["rmsecv"].append(None); curve["r2cv"].append(None)
         else:
             y_pred = np.concatenate(y_pred_reg_all)
             rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
             ss_tot = float(np.var(y_true) * y_true.size)
             ss_res = float(np.sum((y_true - y_pred) ** 2))
             r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
-            curve["rmsecv"].append(rmse)
-            curve["r2cv"].append(r2)
-            curve["accuracy"].append(None)
-            curve["balanced_accuracy"].append(None)
-            curve["f1_macro"].append(None)
-
+            curve["rmsecv"].append(rmse); curve["r2cv"].append(r2)
+            curve["accuracy"].append(None); curve["balanced_accuracy"].append(None); curve["f1_macro"].append(None)
     return curve
 
 
 def _r2x_r2y(pls: PLSRegression, X: np.ndarray, y: np.ndarray):
-    # R²X e R²Y cumulativos por componente
-    T, P, Q = pls.x_scores_, pls.x_loadings_, pls.y_loadings_.T
+    T, P, Q = pls.x_scores_, pls.x_loadings_, pls.y_loadings_
     A = T.shape[1]
     X_hat = np.zeros_like(X, dtype=float)
     y = y.reshape(-1, 1)
     y_hat = np.zeros_like(y, dtype=float)
-
     ssx = float(np.sum((X - X.mean(0)) ** 2))
     ssy = float(np.sum((y - y.mean(0)) ** 2))
     r2x_cum, r2y_cum = [], []
-
     for a in range(A):
-        ta = T[:, [a]]
-        pa = P[:, [a]].T
-        qa = Q[[a], :]
-        X_hat += ta @ pa
-        y_hat += ta @ qa
+        ta = T[:, [a]]; pa = P[:, [a]].T; qa = Q[:, [a]].T
+        X_hat += ta @ pa; y_hat += ta @ qa
         r2x_cum.append(float(1.0 - np.sum((X - X_hat) ** 2) / ssx) if ssx > 0 else 0.0)
         r2y_cum.append(float(1.0 - np.sum((y - y_hat) ** 2) / ssy) if ssy > 0 else 0.0)
     return r2x_cum, r2y_cum
@@ -1959,6 +1957,14 @@ def train(req: TrainRequest):
     wavelengths = ds.get("columns") or []
     result["wavelengths"] = wavelengths
 
+    # curva de validação (rápida, sem travar)
+    curve_cv = _compute_cv_curve(
+        X, y, task,
+        _curve_cv_for_display(cv, y, task),
+        threshold=(getattr(req, "threshold", 0.5) or 0.5)
+    )
+    result["cv_curve"] = curve_cv
+
     if task == "classification":
         K = int(np.unique(y).size)
         labels = list(range(K))
@@ -1986,26 +1992,48 @@ def train(req: TrainRequest):
         cm = confusion_matrix(y_true, y_pred, labels=labels).astype(int)
         acc = float(accuracy_score(y_true, y_pred))
         bacc = float(balanced_accuracy_score(y_true, y_pred))
-        f1m = float(f1_score(y_true, y_pred, average="macro"))
+        prec_macro, rec_macro, f1m, _ = precision_recall_fscore_support(
+            y_true, y_pred, average="macro", zero_division=0
+        )
+        kappa = float(cohen_kappa_score(y_true, y_pred))
+        mcc = float(matthews_corrcoef(y_true, y_pred))
 
-        # matriz normalizada por linha (facilita heatmap no front)
+        # por classe
+        prec_c, rec_c, f1_c, sup_c = precision_recall_fscore_support(
+            y_true, y_pred, labels=labels, zero_division=0
+        )
+        per_class = []
+        for i, lab in enumerate(labels):
+            per_class.append({
+                "label": (classes_[i] if classes_ else str(lab)),
+                "precision": float(prec_c[i]),
+                "recall": float(rec_c[i]),
+                "f1": float(f1_c[i]),
+                "support": int(sup_c[i]),
+            })
+
         with np.errstate(divide="ignore", invalid="ignore"):
             row_sum = cm.sum(axis=1, keepdims=True)
             cm_norm = np.divide(cm, row_sum, out=np.zeros_like(cm, dtype=float), where=row_sum != 0)
 
         result.update({
             "classes_": classes_ or [],
-            "metrics": {"accuracy": acc, "balanced_accuracy": bacc, "f1_macro": f1m},
+            "metrics": {
+                "accuracy": float(acc),
+                "balanced_accuracy": float(bacc),
+                "precision_macro": float(prec_macro),
+                "recall_macro": float(rec_macro),
+                "f1_macro": float(f1m),
+                "cohen_kappa": float(kappa),
+                "mcc": float(mcc),
+            },
+            "per_class": per_class,
             "confusion_matrix": {
                 "labels": classes_ or [str(i) for i in labels],
                 "matrix": cm.tolist(),
                 "normalized": cm_norm.tolist(),
             },
-            "oof": {
-                "y_true": y_true.tolist(),
-                "y_pred": y_pred.tolist(),
-                "labels": classes_ or [str(i) for i in labels],
-            }
+            "oof": {"y_true": y_true.tolist(), "y_pred": y_pred.tolist(), "labels": classes_ or [str(i) for i in labels]},
         })
 
         # VIPs no conjunto inteiro (média OVR quando multiclasses)
@@ -2038,31 +2066,25 @@ def train(req: TrainRequest):
         r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
         result["metrics"] = {"rmsecv": rmse, "r2cv": r2}
 
-    # --- CURVA DE VALIDAÇÃO (com a mesma CV e threshold do request) ---
-    curve = _compute_cv_curve(
-        X, y, task, cv,
-        threshold=(getattr(req, "threshold", 0.5) or 0.5),
-        max_k=None
-    )
-    result["cv_curve"] = curve
-
     # --- LATENTES (treino completo com safe_n) ---
     pls_full = PLSRegression(n_components=safe_n).fit(X, y)
     T = pls_full.x_scores_
     P = pls_full.x_loadings_
     W = pls_full.x_weights_
     Q = pls_full.y_loadings_
-
     r2x_cum, r2y_cum = _r2x_r2y(pls_full, X, y)
+
+    # rótulo por amostra (para colorir o scatter corretamente)
+    sample_labels = [ (classes_[int(c)] if classes_ else str(int(c))) for c in y ]
 
     latent = {
         "scores": T[:, : min(3, T.shape[1])].tolist(),
-        "x_loadings": (P[:, : min(3, P.shape[1])].tolist()),
-        "x_weights": (W[:, : min(3, W.shape[1])].tolist()),
-        "y_loadings": (Q[: min(3, Q.shape[0]), :].ravel().tolist()),
-        "r2x_cum": r2x_cum,
-        "r2y_cum": r2y_cum,
+        "x_loadings": P[:, : min(3, P.shape[1])].tolist(),
+        "x_weights": W[:, : min(3, W.shape[1])].tolist(),
+        "y_loadings": Q[: min(3, Q.shape[0]), :].ravel().tolist(),
+        "r2x_cum": r2x_cum, "r2y_cum": r2y_cum,
         "wavelengths": wavelengths,
+        "sample_labels": sample_labels,
     }
     result["latent"] = latent
 
