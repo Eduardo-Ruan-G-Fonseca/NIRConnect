@@ -46,7 +46,7 @@ export default function Step4Decision({ step2, result }) {
         <CvCurveCard
           curve={optimizeResult?.curve || data.cv_curve}
           task={data.task}
-          recommended={optimizeResult?.best_params?.n_components}
+          recommended={optimizeResult?.best_params?.n_components ?? data.recommended_n_components}
         />
         <LatentCard latent={data.latent} labels={data.latent?.sample_labels} />
       </div>

@@ -24,7 +24,7 @@ export default function ConfusionMatrixCard({ cm }) {
   return (
     <div className="card p-4" style={{minHeight: 420}}>
       <h3 className="card-title mb-3">Matriz de Confusão</h3>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" style={{maxHeight: 360, overflowY: "auto"}}>
         <table className="table table-sm">
           <thead>
             <tr>
