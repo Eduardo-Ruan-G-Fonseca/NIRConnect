@@ -1883,15 +1883,29 @@ def train(req: TrainRequest):
         y_true = np.concatenate(y_true_all)
         y_pred = np.concatenate(y_pred_all)
 
-        cm = confusion_matrix(y_true, y_pred, labels=labels).astype(int).tolist()
+        cm = confusion_matrix(y_true, y_pred, labels=labels).astype(int)
         acc = float(accuracy_score(y_true, y_pred))
         bacc = float(balanced_accuracy_score(y_true, y_pred))
         f1m = float(f1_score(y_true, y_pred, average="macro"))
 
+        # matriz normalizada por linha (facilita heatmap no front)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            row_sum = cm.sum(axis=1, keepdims=True)
+            cm_norm = np.divide(cm, row_sum, out=np.zeros_like(cm, dtype=float), where=row_sum != 0)
+
         result.update({
             "classes_": classes_ or [],
             "metrics": {"accuracy": acc, "balanced_accuracy": bacc, "f1_macro": f1m},
-            "confusion_matrix": {"labels": classes_ or [str(i) for i in labels], "matrix": cm},
+            "confusion_matrix": {
+                "labels": classes_ or [str(i) for i in labels],
+                "matrix": cm.tolist(),
+                "normalized": cm_norm.tolist(),
+            },
+            "oof": {
+                "y_true": y_true.tolist(),
+                "y_pred": y_pred.tolist(),
+                "labels": classes_ or [str(i) for i in labels],
+            }
         })
 
         # VIPs no conjunto inteiro (média OVR quando multiclasses)

@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-dist-min";
 import { getOptimizeStatus } from "../../services/api";
 import { postJSON, getDatasetId, clearDatasetId } from "../../api/http";
+import VipTopCard from "./VipTopCard";
+import ConfusionMatrixCard from "./ConfusionMatrixCard";
+import { normalizeTrainResult } from "../../services/normalizeTrainResult";
 
 /* ===== Helpers ===== */
 function joinList(xs){ if(!xs || !xs.length) return "-"; return xs.join(", "); }
@@ -96,84 +99,18 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
   const [busy, setBusy] = useState(false);
 
   // Refs para gráficos Plotly (evita IDs globais)
-  const vipRef = useRef(null);
-  const cmRef = useRef(null);
   const decisionRef = useRef(null);
 
   const isClass = !!step2?.classification;
   const metricLabel = isClass ? "Accuracy" : "RMSECV";
   const ds = getDatasetId();
+  const data = useMemo(() => normalizeTrainResult(result?.data || {}), [result]);
 
   const spectralRange = useMemo(() => {
     const s = result?.params?.ranges || "";
     const m = s.match(/(-?\d+(\.\d+)?)[^\d]+(-?\d+(\.\d+)?)/);
     return m ? [parseFloat(m[1]), parseFloat(m[3])] : undefined;
   }, [result]);
-
-
-  /* ===== Gráficos: VIPs e Confusion ===== */
-  useEffect(() => {
-    if (!result?.data) return;
-
-    // VIPs
-    const top = result.data.top_vips || [];
-    const vipArray = (Array.isArray(top) && top.length ? top : Array.isArray(result.data.vip) ? result.data.vip : []) || [];
-    let vipNames = [], vipValues = [];
-    if (vipArray.length) {
-      if (typeof vipArray[0] === "object" && vipArray[0] !== null) {
-        vipNames  = vipArray.map(it => it.feature ?? it.name ?? it[0] ?? "");
-        vipValues = vipArray.map(it => {
-          const v = Number(it.value ?? it[1] ?? it);
-          return Number.isFinite(v) ? v : 0;
-        });
-      } else if (Array.isArray(vipArray[0])) {
-        vipNames  = vipArray.map(it => String(it[0]));
-        vipValues = vipArray.map(it => {
-          const v = Number(it[1]);
-          return Number.isFinite(v) ? v : 0;
-        });
-      } else {
-        vipNames  = vipArray.map((_, i) => `Var ${i+1}`);
-        vipValues = vipArray.map(v => {
-          const n = Number(v);
-          return Number.isFinite(n) ? n : 0;
-        });
-      }
-    }
-    if (vipValues.length && vipRef.current) {
-      Plotly.newPlot(
-        vipRef.current,
-        [{ x: vipNames, y: vipValues, type: "bar" }],
-        { margin: { t: 20, r: 10, b: 80, l: 50 }, xaxis: { automargin: true }, yaxis: { title: "VIP" } },
-        { displayModeBar: false }
-      );
-    } else if (vipRef.current) {
-      Plotly.purge(vipRef.current);
-      vipRef.current.innerHTML = "";
-    }
-
-    // Confusion matrix
-    const cm = result.data.metrics?.ConfusionMatrix || result.data.metrics?.confusion_matrix;
-    if (Array.isArray(cm) && cm.length && Array.isArray(cm[0]) && cmRef.current) {
-      Plotly.newPlot(
-        cmRef.current,
-        [{ z: cm, type: "heatmap", colorscale: "Viridis", showscale: true }],
-        { margin: { t: 20, r: 10, b: 40, l: 40 } },
-        { displayModeBar: false }
-      );
-    } else if (cmRef.current) {
-      Plotly.purge(cmRef.current);
-      cmRef.current.innerHTML = "";
-    }
-
-    // resize on window change
-    function handleResize(){
-      if (vipRef.current) Plotly.Plots.resize(vipRef.current);
-      if (cmRef.current) Plotly.Plots.resize(cmRef.current);
-    }
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [result?.data]);
 
   useEffect(() => {
     return () => { if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; } };
@@ -517,24 +454,11 @@ export default function Step4Decision({ step2, result, onBack, onContinue }) {
             </div>
           )}
 
-          {/* VIPs */}
-          <div className="nir-card md:col-span-6">
-            <h4 className="nir-card-title">VIPs (Top)</h4>
-            {((result?.data?.top_vips && result.data.top_vips.length) || (result?.data?.vip && result.data.vip.length)) ? (
-              <div ref={vipRef} className="nir-chart h-80" />
-            ) : (
-              <div className="nir-empty">Sem VIPs disponíveis para esta calibração.</div>
-            )}
-          </div>
-
-          {/* Matriz de Confusão */}
-          <div className="nir-card md:col-span-6">
-            <h4 className="nir-card-title">Matriz de Confusão</h4>
-            {(result?.data?.metrics?.ConfusionMatrix || result?.data?.metrics?.confusion_matrix) ? (
-              <div ref={cmRef} className="nir-chart h-80" />
-            ) : (
-              <div className="nir-empty">Não disponível para este modo/validação.</div>
-            )}
+          <div className="md:col-span-12">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <VipTopCard vip={data.vip} />
+              <ConfusionMatrixCard cm={data.cm} />
+            </div>
           </div>
 
         </div>
