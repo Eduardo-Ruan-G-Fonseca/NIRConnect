@@ -1,106 +1,54 @@
 import React, { useMemo } from "react";
-import { LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 
-/**
- * props.curve: objeto retornado pelo backend
- * props.task : "classification" | "regression"
- * props.suggestedK: número sugerido (opcional)
- */
-export default function CvCurveCard({ curve, task, suggestedK }) {
+export default function CvCurveCard({ curve, task }) {
+  const metric = task === "classification" ? "balanced_accuracy" : "rmsecv";
+
   const data = useMemo(() => {
-    if (!curve) return [];
-    if (Array.isArray(curve.points) && curve.points.length) return curve.points;
+    const pts = curve?.points ?? [];
+    return pts
+      .map(p => ({ k: p.k, y: typeof p[metric] === "number" ? p[metric] : NaN }))
+      .filter(d => Number.isFinite(d.y));
+  }, [curve, metric]);
 
-    // fallback: construir a lista a partir dos vetores
-    const ks = curve.n_components || [];
-    const acc  = curve.accuracy || [];
-    const bacc = curve.balanced_accuracy || [];
-    const f1m  = curve.f1_macro || [];
-    const auc  = curve.auc_macro || [];
-    const rmse = curve.rmsecv || [];
-    const r2   = curve.r2cv || [];
-    return ks.map((k, i) => ({
-      k,
-      accuracy: acc[i] ?? null,
-      balanced_accuracy: bacc[i] ?? null,
-      f1_macro: f1m[i] ?? null,
-      auc_macro: auc[i] ?? null,
-      rmsecv: rmse[i] ?? null,
-      r2cv: r2[i] ?? null,
-    }));
-  }, [curve]);
+  const suggested = curve?.recommended_k ?? null;
+  const emptyReason = curve?.debug?.reason_if_empty;
 
-  // há pelo menos UMA série com algum valor?
-  const hasClsSeries = useMemo(() => {
-    if (task !== "classification") return false;
-    return data.some(d => d?.balanced_accuracy != null || d?.accuracy != null || d?.f1_macro != null || d?.auc_macro != null);
-  }, [data, task]);
+  // estado vazio com diagnóstico
+  if (!data.length) {
+    return (
+      <div className="p-4 text-sm text-gray-600">
+        <div className="font-medium mb-1">Curva de validação</div>
+        <div>Nenhum ponto válido para {metric}.
+          {emptyReason ? <> <br/><span className="text-gray-500">{emptyReason}</span></> : null}
+        </div>
+      </div>
+    );
+  }
 
-  const hasRegSeries = useMemo(() => {
-    if (task === "classification") return false;
-    return data.some(d => d?.rmsecv != null || d?.r2cv != null);
-  }, [data, task]);
-
-  const debug = curve?.debug || { valid: {}, reason_if_empty: "" };
-  const noSeries =
-    !data.some(d => d?.balanced_accuracy != null) &&
-    !data.some(d => d?.accuracy != null) &&
-    !data.some(d => d?.f1_macro != null) &&
-    !data.some(d => d?.auc_macro != null) &&
-    !data.some(d => d?.rmsecv != null) &&
-    !data.some(d => d?.r2cv != null);
+  // domínio sugerido
+  const yDomain = task === "classification" ? [0, 1] : [
+    Math.min(...data.map(d => d.y)) * 0.98,
+    Math.max(...data.map(d => d.y)) * 1.02
+  ];
 
   return (
-    <div className="card p-4" id="cv-curve">
-      <div className="flex items-center gap-2 mb-3">
-        <h3 className="card-title">Curva de Validação × Nº de Componentes</h3>
-        {Number.isFinite(suggestedK) && (
-          <span className="ml-2 text-xs px-2 py-1 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
-            Sugerido: k = {suggestedK}
-          </span>
-        )}
+    <div className="h-64">
+      <div className="flex items-center justify-between mb-2">
+        <div className="font-medium">Curva de Validação × Nº de Componentes</div>
+        <span className="px-2 py-0.5 text-xs rounded bg-emerald-100 text-emerald-700">
+          Sugerido: {suggested ?? "—"}
+        </span>
       </div>
-
-      <div style={{ width: "100%", height: 260 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 10, right: 20, bottom: 20, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="k" label={{ value: "Componentes (PLS)", position: "insideBottomRight", offset: -10 }} />
-            <YAxis domain={["auto", "auto"]} />
-            <Tooltip />
-            <Legend />
-
-            {task === "classification" ? (
-              hasClsSeries ? (
-                <>
-                  <Line type="monotone" dataKey="balanced_accuracy" stroke="#10b981" strokeWidth={2} dot={false} isAnimationActive={false} name="Balanced Acc." />
-                  <Line type="monotone" dataKey="accuracy"            stroke="#3b82f6"  strokeWidth={2} dot={false} isAnimationActive={false} name="Accuracy" />
-                  <Line type="monotone" dataKey="f1_macro"            stroke="#f59e0b"  strokeWidth={2} dot={false} isAnimationActive={false} name="F1 macro" />
-                  <Line type="monotone" dataKey="auc_macro"           stroke="#8b5cf6"  strokeWidth={2} dot={false} isAnimationActive={false} name="AUC (macro)" />
-                </>
-              ) : null
-            ) : hasRegSeries ? (
-              <>
-                <Line type="monotone" dataKey="rmsecv" stroke="#ef4444" strokeWidth={2} dot={false} isAnimationActive={false} name="RMSECV" />
-                <Line type="monotone" dataKey="r2cv"   stroke="#10b981" strokeWidth={2} dot={false} isAnimationActive={false} name="R²CV" />
-              </>
-            ) : null}
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-
-      {noSeries && (
-        <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 mt-3">
-          Nenhum ponto válido para plotar a curva.
-          {debug?.reason_if_empty ? <> {debug.reason_if_empty}</> : null}
-          {debug?.valid ? (
-            <div className="mt-1 text-amber-600">
-              valid={JSON.stringify(debug.valid)}
-            </div>
-          ) : null}
-        </div>
-      )}
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="k" label={{ value: "Componentes (PLS)", position: "insideBottom", offset: -5 }} />
+          <YAxis domain={yDomain} />
+          <Tooltip formatter={(v) => (typeof v === "number" ? v.toFixed(3) : v)} />
+          <Line type="monotone" dataKey="y" dot={{ r: 2 }} strokeWidth={2} />
+        </LineChart>
+      </ResponsiveContainer>
     </div>
   );
 }
-

@@ -2187,18 +2187,29 @@ def _compute_cv_curve(X, y, task, cv_or_splits, threshold=0.5, max_k=None):
 
 
 def _best_k_from_curve(curve, task):
-    try:
-        if task == "classification":
-            ys = np.array([v for v in curve.get("balanced_accuracy", [])], dtype=float)
-            if np.isfinite(ys).any():
-                return int(curve["n_components"][int(np.nanargmax(ys))])
-        else:
-            ys = np.array([v for v in curve.get("rmsecv", [])], dtype=float)
-            if np.isfinite(ys).any():
-                return int(curve["n_components"][int(np.nanargmin(ys))])
-    except Exception:
-        pass
-    return None
+    """Return the best k from a curve dict.
+
+    The curve contains a "points" list with metrics per k. We only consider
+    finite values for the metric of interest (balanced_accuracy for
+    classification, rmsecv for regression). If no finite values exist, return
+    None so the caller can handle the absence of a recommendation.
+    """
+
+    metric = "balanced_accuracy" if task == "classification" else "rmsecv"
+    pts = curve.get("points", []) if isinstance(curve, dict) else []
+    data = []
+    for p in pts:
+        val = p.get(metric)
+        if val is not None and np.isfinite(val):
+            data.append((p.get("k"), float(val)))
+
+    if not data:
+        return None
+
+    if task == "classification":
+        return max(data, key=lambda kv: kv[1])[0]
+    else:
+        return min(data, key=lambda kv: kv[1])[0]
 
 
 def _r2x_r2y(pls: PLSRegression, X: np.ndarray, y: np.ndarray):
@@ -2278,7 +2289,6 @@ def train(req: TrainRequest):
     cv_display = _curve_cv_for_display(
         req.validation_method or "KFold", y, task, getattr(req, "n_splits", None)
     )
-    display_splits = list(cv_display.split(np.zeros_like(y), y))
 
     # -------- treino + métricas --------
     n_samples, n_features = X.shape
@@ -2303,13 +2313,14 @@ def train(req: TrainRequest):
         X,
         y,
         task,
-        display_splits,
+        cv_display,
         threshold=(getattr(req, "threshold", 0.5) or 0.5),
         max_k=safe_n,
     )
     result["cv_curve"] = curve_cv
     bestk = _best_k_from_curve(curve_cv, task)
     if bestk is not None:
+        curve_cv["recommended_k"] = bestk
         result["recommended_n_components"] = bestk
 
     if task == "classification":
@@ -2505,20 +2516,23 @@ def optimize(req: OptimizeRequest):
     safe_max = limit_n_components(req.k_max or _safe_limit_ncomp(X), X)
     k_grid = list(range(max(1, req.k_min), safe_max + 1))
 
-    cv_display = _curve_cv_for_display(req.validation_method or "KFold", y, task, req.n_splits)
-    curve = _compute_cv_curve(X, y, task, cv_display, threshold=(req.threshold or 0.5), max_k=safe_max)
+    cv_display = _curve_cv_for_display(
+        req.validation_method or "KFold", y, task, req.n_splits
+    )
+    curve = _compute_cv_curve(
+        X, y, task, cv_display, threshold=(req.threshold or 0.5), max_k=safe_max
+    )
 
-    # escolhe melhor k
-    if task == "classification":
-        vals = np.array(curve["balanced_accuracy"], dtype=float)
-        best_idx = int(np.nanargmax(vals))
-        score = float(vals[best_idx])
-    else:
-        vals = np.array(curve["rmsecv"], dtype=float)
-        best_idx = int(np.nanargmin(vals))
-        score = float(vals[best_idx])
+    best_k = _best_k_from_curve(curve, task)
+    score = None
+    if best_k is not None:
+        metric = "balanced_accuracy" if task == "classification" else "rmsecv"
+        for p in curve.get("points", []):
+            if p.get("k") == best_k:
+                score = p.get(metric)
+                break
+        curve["recommended_k"] = best_k
 
-    best_k = int(curve["n_components"][best_idx])
     response = {
         "status": "ok",
         "best_params": {"n_components": best_k, "threshold": req.threshold},
