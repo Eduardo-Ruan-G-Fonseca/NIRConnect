@@ -28,12 +28,33 @@ from logging_conf import *  # importa direto
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.metrics")
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="sklearn.metrics")
 
-logger = logging.getLogger("nir")
+logger = logging.getLogger("nir.optimize")
 
-warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.metrics")
-warnings.filterwarnings("ignore", category=RuntimeWarning, module="sklearn.metrics")
-
-logger = logging.getLogger("nir")
+def _normalize_sg_params(params):
+    """Normaliza/filtra params SG para evitar combos inválidos."""
+    norm = []
+    if not params:
+        return [(11, 2, 1)]
+    for w, p, d in params:
+        try:
+            w = int(w); p = int(p); d = int(d)
+        except Exception:
+            continue
+        if w < 5:
+            continue
+        if w % 2 == 0:
+            w += 1  # janela deve ser ímpar
+        if p < 1:
+            p = 1
+        if d < 0:
+            d = 0
+        if p < d:
+            p = d  # poly >= deriv
+        if w <= p:
+            w = p + 1 if (p + 1) % 2 == 1 else p + 2
+        norm.append((w, p, d))
+    # evita lista vazia
+    return norm or [(11, 2, 1)]
 
 from core.config import METRICS_FILE, settings
 from core.metrics import regression_metrics, classification_metrics
@@ -2647,16 +2668,19 @@ def optimize_grid(req: OptimizeGridRequest):
     if X.shape[0] == 0:
         raise HTTPException(400, "Sem amostras válidas.")
 
-    # grid de k com cap ≤ 15
+    logger.info("optimize: dataset=%s, X=%s, y=%s, classes=%s", req.dataset_id, X.shape, y.shape, np.unique(y, return_counts=True))
+
+    # hard cap global
     k_grid_max = _hard_cap_k(req.n_components_max, X)
-    k_grid = list(range(max(1, req.n_components_min), k_grid_max + 1))
+    base_k_grid = list(range(max(1, req.n_components_min), k_grid_max + 1))
+    logger.info("optimize: base_k_grid=%s", base_k_grid)
+
+    # normaliza SG
+    sg_grid = _normalize_sg_params(req.sg_params)
 
     # CV estável
     strat = (task == "classification")
     cv = build_cv_opt(req.validation_method, y=y, n_splits=req.n_splits or 5, stratified=strat, repeats=req.repeats or 1)
-
-    trials = []
-    best, best_score = None, -np.inf
 
     # iPLS/siPLS (opcional): determina máscara de variáveis
     base_mask = np.ones(X.shape[1], dtype=bool)
@@ -2664,24 +2688,41 @@ def optimize_grid(req: OptimizeGridRequest):
         base_mask = select_intervals_mask(X, y, w, task, cv,
                                           max_intervals=int(req.ipls_max_intervals or 2),
                                           interval_width=int(req.ipls_interval_width or 20),
-                                          k_grid=k_grid)
+                                          k_grid=base_k_grid)
         if base_mask.sum() < 5:
             base_mask = np.ones(X.shape[1], dtype=bool)
-
-    # grade de SG adicional
-    sg_grid = req.sg_params or [(11,2,1)]
+    trials = []
+    best, best_score = None, -np.inf
+    fail_counts = {
+        "pp_none": 0,
+        "k_empty": 0,
+        "rank_skip": 0,
+        "cv_error": 0,
+    }
 
     # ===== LOOP DE BUSCA =====
     for steps in (req.preprocess_grid or [[]]):
         for sg_t in (sg_grid or [None]):
+            # aplica PP
             Xpp = _apply_preprocess(X[:, base_mask], steps, sg_tuple=sg_t)
             if Xpp is None:
+                fail_counts["pp_none"] += 1
                 continue
             Xpp = sanitize_X(Xpp)
-            # avalia ks
+
+            # k_grid local respeitando o rank de Xpp
+            k_local_max = _hard_cap_k(k_grid_max, Xpp)
+            k_grid = [k for k in base_k_grid if k <= k_local_max]
+            if not k_grid:
+                fail_counts["k_empty"] += 1
+                logger.debug("optimize: k_grid vazio para steps=%s sg=%s (k_local_max=%s)", steps, sg_t, k_local_max)
+                continue
+
             for k in k_grid:
                 if _safe_limit_ncomp(Xpp) < k:
+                    fail_counts["rank_skip"] += 1
                     continue
+
                 t0 = time.time()
                 try:
                     cvm = _compute_cv_metrics(Xpp, y, task, cv,
@@ -2690,8 +2731,11 @@ def optimize_grid(req: OptimizeGridRequest):
                                               threshold=0.5,
                                               classes_=classes_)
                     score = float(cvm.get("balanced_accuracy") or 0.0) if task == "classification" else float(-cvm.get("rmsecv", 1e9))
-                except Exception:
+                except Exception as ex:
+                    fail_counts["cv_error"] += 1
+                    logger.exception("optimize: cv_metrics falhou k=%s steps=%s sg=%s", k, steps, sg_t)
                     continue
+
                 trials.append({
                     "params": {"preprocess": steps, "sg": sg_t, "n_components": k, "mask_vars": int(base_mask.sum())},
                     "cv_metrics": cvm,
@@ -2702,7 +2746,17 @@ def optimize_grid(req: OptimizeGridRequest):
                     best = {"preprocess": steps, "sg": sg_t, "n_components": k, "mask_vars": int(base_mask.sum())}
 
     if not best:
-        raise HTTPException(400, "Nenhuma combinação válida encontrada.")
+        detail = {
+            "message": "Nenhuma combinação válida encontrada na otimização.",
+            "k_grid_base": base_k_grid,
+            "sg_grid": sg_grid,
+            "n_selected_variables": int(base_mask.sum()),
+            "fail_counts": fail_counts,
+        }
+        logger.warning("optimize: %s", detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+    logger.info("optimize: OK best=%s score=%.4f trials=%d", best, (best_score if task=="classification" else -best_score), len(trials))
 
     # ===== RETREINO DO MELHOR =====
     Xbest = _apply_preprocess(X[:, base_mask], best["preprocess"], sg_tuple=best["sg"])
