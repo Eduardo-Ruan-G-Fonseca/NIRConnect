@@ -85,8 +85,9 @@ from core.pls import is_categorical  # (se nÃ£o for usar, podemos remover depo
 import joblib
 from joblib import Parallel, delayed, cpu_count
 
-# limite de paralelismo
+# Use threads para evitar cópia de matrizes entre processos (Windows)
 N_JOBS = max(1, min(cpu_count(), 8))
+JOBLIB_KW = dict(n_jobs=N_JOBS, prefer="threads", require="sharedmem")
 
 dataset_store = DatasetStore()
 STORE = dataset_store
@@ -202,27 +203,36 @@ def _finite(x):
     except Exception:
         return None
 
-def _fold_worker(X, y, tr, te, task, k_eff, threshold):
+def _fold_worker(X, y, tr, te, task, k_eff, threshold, classes):
+    """
+    Retorna tupla:
+      - classificação: ("clf", y_true, y_pred)
+      - regressão:     ("reg", y_true, y_pred)
+    """
     Xtr, Xte = X[tr], X[te]
     ytr, yte = y[tr], y[te]
+
     if task == "classification":
-        classes = np.unique(ytr)
-        if len(classes) == 2:
+        uniq = classes  # ordem das classes global (estável entre folds)
+        if len(uniq) == 2:
+            # binário: alvo 1D
             pls = PLSRegression(n_components=k_eff).fit(Xtr, ytr)
             s = pls.predict(Xte).ravel()
-            yp = (s >= threshold).astype(ytr.dtype)
+            yp = (s >= float(threshold)).astype(ytr.dtype)
+            return ("clf", yte, yp)
         else:
-            K = len(classes)
-            S = np.zeros((Xte.shape[0], K))
-            for idx, c in enumerate(classes):
-                pls_k = PLSRegression(n_components=k_eff).fit(Xtr, (ytr == c).astype(int))
-                S[:, idx] = pls_k.predict(Xte).ravel()
-            yp = classes[np.argmax(S, axis=1)]
-        return yte, yp
+            # multiclasse: PLS multialvo (uma única fit por fold)
+            # Ytr multialvo = one-hot nas classes "uniq"
+            Ytr = (ytr[:, None] == uniq[None, :]).astype(float)
+            pls = PLSRegression(n_components=k_eff).fit(Xtr, Ytr)
+            S = pls.predict(Xte)  # (n_te, n_classes)
+            yp_idx = np.argmax(S, axis=1)
+            yp = uniq[yp_idx]
+            return ("clf", yte, yp)
     else:
         pls = PLSRegression(n_components=k_eff).fit(Xtr, ytr)
         yp = pls.predict(Xte).ravel()
-        return yte, yp
+        return ("reg", yte, yp)
 
 
 def _compute_cv_metrics(X, y, task, cv_or_splits, n_components: int, threshold: float = 0.5):
@@ -232,24 +242,33 @@ def _compute_cv_metrics(X, y, task, cv_or_splits, n_components: int, threshold: 
     Aceita um objeto de CV ou uma lista de splits já pré-calculados.
     """
     splits = cv_or_splits if isinstance(cv_or_splits, list) else list(cv_or_splits.split(X, y))
+    classes = np.unique(y) if task == "classification" else None
+
+    # respeita rank por fold
     k_eff_list = [min(n_components, _safe_limit_ncomp(X[tr])) for tr, _ in splits]
-    results = Parallel(n_jobs=N_JOBS)(
-        delayed(_fold_worker)(X, y, tr, te, task, k_eff, float(threshold))
+
+    # paraleliza POR THREADS (sem copiar X/y)
+    results = Parallel(**JOBLIB_KW)(
+        delayed(_fold_worker)(
+            X, y, tr, te, task, k_eff, float(threshold), classes
+        )
         for (tr, te), k_eff in zip(splits, k_eff_list)
     )
-    y_true = np.concatenate([yt for yt, _ in results])
-    y_pred = np.concatenate([yp for _, yp in results])
 
     if task == "classification":
-        acc = _finite(accuracy_score(y_true, y_pred))
-        bacc = _finite(balanced_accuracy_score(y_true, y_pred))
-        f1_ma = _finite(f1_score(y_true, y_pred, average="macro"))
-        f1_mi = _finite(f1_score(y_true, y_pred, average="micro"))
+        yt, yp = [], []
+        for _, yte, ypred in results:
+            yt.append(yte); yp.append(ypred)
+        yt = np.concatenate(yt); yp = np.concatenate(yp)
+        acc = _finite(accuracy_score(yt, yp))
+        bacc = _finite(balanced_accuracy_score(yt, yp))
+        f1_ma = _finite(f1_score(yt, yp, average="macro"))
+        f1_mi = _finite(f1_score(yt, yp, average="micro"))
         prec_ma, rec_ma, _f, _ = precision_recall_fscore_support(
-            y_true, y_pred, average="macro", zero_division=0
+            yt, yp, average="macro", zero_division=0
         )
-        kappa = _finite(cohen_kappa_score(y_true, y_pred))
-        mcc = _finite(matthews_corrcoef(y_true, y_pred))
+        kappa = _finite(cohen_kappa_score(yt, yp))
+        mcc = _finite(matthews_corrcoef(yt, yp))
         return {
             "accuracy": acc,
             "kappa": kappa,
@@ -259,11 +278,16 @@ def _compute_cv_metrics(X, y, task, cv_or_splits, n_components: int, threshold: 
             "macro_recall": _finite(rec_ma),
             "macro_f1": _finite(f1_ma),
             "balanced_accuracy": bacc,
+            "mcc": mcc,
         }
     else:
-        rmse = _finite(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-        ss_tot = float(np.var(y_true) * y_true.size)
-        ss_res = float(np.sum((y_true - y_pred) ** 2))
+        yt, yp = [], []
+        for _, yte, ypred in results:
+            yt.append(yte); yp.append(ypred)
+        yt = np.concatenate(yt); yp = np.concatenate(yp)
+        rmse = _finite(np.sqrt(np.mean((yt - yp) ** 2)))
+        ss_tot = float(np.var(yt) * yt.size)
+        ss_res = float(np.sum((yt - yp) ** 2))
         r2 = _finite(1.0 - ss_res / ss_tot) if ss_tot > 0 else None
         return {"rmsecv": rmse, "r2cv": r2}
 
@@ -2243,7 +2267,7 @@ def train(req: TrainRequest):
     else:
         wavelengths = wavelengths_arr.tolist()
 
-    safe_n = limit_n_components(req.n_components, X)
+    safe_n = min(int(req.n_components), _safe_limit_ncomp(X))
     splits = _get_cached_cv(
         req.dataset_id,
         req.validation_method or "KFold",
