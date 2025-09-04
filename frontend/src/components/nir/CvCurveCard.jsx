@@ -20,11 +20,11 @@ export default function CvCurveCard({ curve, task, recommended }) {
   }
 
   return (
-    <div className="card p-4">
+    <div id="cv-curve" className="card p-4">
       <h3 className="card-title mb-3">
         Curva de Validação × Nº de Componentes
         {recommended ? (
-          <span className="badge ml-2">Sugerido: k = {recommended}</span>
+          <span className="ml-2 text-xs px-2 py-1 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">Sugerido: k = {recommended}</span>
         ) : null}
       </h3>
       <ResponsiveContainer width="100%" height={280}>
@@ -36,10 +36,12 @@ export default function CvCurveCard({ curve, task, recommended }) {
           <Legend />
           {task === "classification" ? (
             <>
-              <Line type="monotone" dataKey="balanced_accuracy" stroke="#10b981" dot={false} strokeWidth={2} isAnimationActive={false} name="Balanced Acc." />
-              <Line type="monotone" dataKey="accuracy" stroke="#3b82f6" dot={false} strokeWidth={2} isAnimationActive={false} name="Accuracy" />
-              <Line type="monotone" dataKey="f1_macro" stroke="#f59e0b" dot={false} strokeWidth={2} isAnimationActive={false} name="F1 macro" />
-              <Line type="monotone" dataKey="auc_macro" stroke="#8b5cf6" dot={false} strokeWidth={2} isAnimationActive={false} name="AUC (macro)" />
+              <Line type="monotone" dataKey="balanced_accuracy" stroke="#10b981" strokeWidth={2} dot={false} isAnimationActive={false} name="Balanced Acc." />
+              <Line type="monotone" dataKey="accuracy"            stroke="#3b82f6"  strokeWidth={2} dot={false} isAnimationActive={false} name="Accuracy" />
+              <Line type="monotone" dataKey="f1_macro"            stroke="#f59e0b"  strokeWidth={2} dot={false} isAnimationActive={false} name="F1 macro" />
+              {data.some(d => d.auc_macro != null) && (
+                <Line type="monotone" dataKey="auc_macro" stroke="#8b5cf6" strokeWidth={2} dot={false} isAnimationActive={false} name="AUC (macro)" />
+              )}
             </>
           ) : (
             <>
