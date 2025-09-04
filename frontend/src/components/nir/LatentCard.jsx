@@ -34,16 +34,18 @@ export default function LatentCard({ latent, labels }) {
           </ResponsiveContainer>
         </div>
         <div className="col-span-1">
-          <div className="card p-3">
-            <h4 className="font-medium mb-2">R² Cumulativo</h4>
-            <table className="table table-sm">
-              <thead><tr><th>Comp</th><th>R²X (cum)</th><th>R²Y (cum)</th></tr></thead>
-              <tbody>
-                {(latent.r2x_cum || []).map((rx, i) => (
-                  <tr key={i}><td>{i+1}</td><td>{rx.toFixed(4)}</td><td>{(latent.r2y_cum?.[i] ?? 0).toFixed(4)}</td></tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="rounded border p-3">
+            <h3 className="font-medium mb-2">R² Cumulativo</h3>
+            <div style={{maxHeight: 260, overflowY: "auto"}}>
+              <table className="table table-sm">
+                <thead><tr><th>Comp</th><th>R²X (cum)</th><th>R²Y (cum)</th></tr></thead>
+                <tbody>
+                  {(latent.r2x_cum || []).map((rx, i) => (
+                    <tr key={i}><td>{i+1}</td><td>{rx.toFixed(4)}</td><td>{(latent.r2y_cum?.[i] ?? 0).toFixed(4)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>

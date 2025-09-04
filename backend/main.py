@@ -49,6 +49,8 @@ from core.saneamento import saneamento_global
 from core.io_utils import to_float_matrix, encode_labels_if_needed
 from core.optimization import optimize_model_grid, preprocess as grid_preprocess
 from ml.validation import build_cv_meta
+from ml.preprocessing import snv, msc, sg_first_derivative, sg_second_derivative, zscore, minmax_norm, savgol_1d
+from ml.ipls import select_intervals_mask
 from core.datasets import store_dataset, resolve_dataset
 from dataset_store import DatasetStore
 from pls import make_pls_reg, make_pls_da
@@ -58,12 +60,15 @@ from utils.targets import load_target_or_fail
 from utils.spectra import prepare_for_plot_legacy
 from validation import build_cv as build_cv_simple
 from sklearn.cross_decomposition import PLSRegression
-from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut
+from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, RepeatedStratifiedKFold, RepeatedKFold
 from sklearn.metrics import (
     accuracy_score, balanced_accuracy_score, f1_score, confusion_matrix,
     precision_recall_fscore_support, cohen_kappa_score, matthews_corrcoef,
     roc_auc_score,
 )
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
+from sklearn.multiclass import OneVsRestClassifier
 from ml.vip import compute_vip_pls, compute_vip_ovr_mean
 try:
     from ml.pipeline import (
@@ -88,6 +93,12 @@ from joblib import Parallel, delayed, cpu_count
 # Use threads para evitar cópia de matrizes entre processos (Windows)
 N_JOBS = max(1, min(cpu_count(), 8))
 JOBLIB_KW = dict(n_jobs=N_JOBS, prefer="threads", require="sharedmem")
+
+# ==== NOVAS CONSTANTES ====
+MAX_PLS_COMPONENTS = 15          # teto de variáveis latentes
+MAX_K_FOR_CURVE_DEFAULT = 15     # curva sempre 1..15
+PLATEAU_TOL = 0.01               # 1% de platô para sugerir k menor
+RANDOM_STATE = 2025
 
 dataset_store = DatasetStore()
 STORE = dataset_store
@@ -235,7 +246,8 @@ def _fold_worker(X, y, tr, te, task, k_eff, threshold, classes):
         return ("reg", yte, yp)
 
 
-def _compute_cv_metrics(X, y, task, cv_or_splits, n_components: int, threshold: float = 0.5):
+def _compute_cv_metrics(X, y, task, cv_or_splits, n_components: int, threshold: float = 0.5,
+                        classifier: str = "plsda", classes_: np.ndarray | None = None):
     """
     Executa o CV escolhido (LOO/KFold/StratifiedKFold) **para o k escolhido** e
     retorna o bloco 'cv_metrics' que a UI usa na tabela de 'Validação'.
@@ -301,9 +313,30 @@ def apply_preprocess(X: np.ndarray, method: str) -> np.ndarray:
     return Xp
 
 
-def _apply_preprocess(X: np.ndarray, steps: List[str]) -> np.ndarray:
-    Xp = apply_methods(X.copy(), steps)
-    Xp = sanitize_X(Xp)
+def _apply_preprocess(X: np.ndarray, steps: List[str], sg_tuple: Optional[Tuple[int, int, int]] = None) -> Optional[np.ndarray]:
+    Xp = X
+    try:
+        for s in (steps or []):
+            if s == "snv":
+                Xp = snv(Xp)
+            elif s == "msc":
+                Xp = msc(Xp)
+            elif s == "sg1":
+                Xp = sg_first_derivative(Xp)
+            elif s == "sg2":
+                Xp = sg_second_derivative(Xp)
+            elif s == "zscore":
+                Xp = zscore(Xp)
+            elif s == "minmax":
+                Xp = minmax_norm(Xp)
+            else:
+                pass
+        if sg_tuple is not None:
+            w, p, d = sg_tuple
+            Xp = savgol_1d(Xp, window=w, polyorder=p, deriv=d)
+        Xp = sanitize_X(Xp)
+    except Exception:
+        return None
     return Xp
 
 
@@ -2014,6 +2047,18 @@ def _safe_limit_ncomp(X):
     return max(1, min(p, n - 1))
 
 
+def _hard_cap_k(user_max: Optional[int], X: np.ndarray) -> int:
+    """Cap de k: rank seguro ∩ MAX_PLS_COMPONENTS ∩ user_max (se vier)."""
+    rank_cap = _safe_limit_ncomp(X)
+    if user_max is None:
+        return max(1, min(rank_cap, MAX_PLS_COMPONENTS))
+    try:
+        user_max = int(user_max)
+    except Exception:
+        user_max = MAX_PLS_COMPONENTS
+    return max(1, min(rank_cap, MAX_PLS_COMPONENTS, user_max))
+
+
 def _curve_cv_for_display(validation_method, y, task, n_splits: int | None):
     """
     - LOO: LeaveOneOut
@@ -2053,6 +2098,22 @@ def _curve_cv_for_display(validation_method, y, task, n_splits: int | None):
         k = int(n_splits or 5)
         k = max(2, min(k, y.shape[0]))
         return KFold(n_splits=k, shuffle=True, random_state=42)
+
+
+def build_cv_opt(method: str, y: np.ndarray, n_splits: int = 5, stratified: bool = True, repeats: int = 1):
+    m = (method or "").lower()
+    if m in ("loo", "leave-one-out"):
+        from sklearn.model_selection import LeaveOneOut
+        return LeaveOneOut()
+    if "repeated" in m or "rskf" in m:
+        if stratified:
+            return RepeatedStratifiedKFold(n_splits=min(n_splits, int(np.bincount(y).min()) or 2),
+                                           n_repeats=max(1, repeats), random_state=RANDOM_STATE)
+        return RepeatedKFold(n_splits=n_splits, n_repeats=max(1, repeats), random_state=RANDOM_STATE)
+    if stratified:
+        n_splits = min(n_splits, int(np.bincount(y).min()) or 2)
+        return StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
+    return KFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
 
 
 def _compute_cv_curve(X, y, task, cv_or_splits, threshold=0.5, max_k=None):
@@ -2186,30 +2247,22 @@ def _compute_cv_curve(X, y, task, cv_or_splits, threshold=0.5, max_k=None):
     return out
 
 
-def _best_k_from_curve(curve, task):
-    """Return the best k from a curve dict.
-
-    The curve contains a "points" list with metrics per k. We only consider
-    finite values for the metric of interest (balanced_accuracy for
-    classification, rmsecv for regression). If no finite values exist, return
-    None so the caller can handle the absence of a recommendation.
-    """
-
-    metric = "balanced_accuracy" if task == "classification" else "rmsecv"
-    pts = curve.get("points", []) if isinstance(curve, dict) else []
-    data = []
-    for p in pts:
-        val = p.get(metric)
-        if val is not None and np.isfinite(val):
-            data.append((p.get("k"), float(val)))
-
-    if not data:
+def _best_k_from_curve(curve: Dict[str, Any], task: str, tol: float = PLATEAU_TOL) -> Optional[int]:
+    pts = curve.get("points") or []
+    if not pts:
         return None
-
+    metric = "balanced_accuracy" if task == "classification" else "rmsecv"
+    vals = [(p["k"], p.get(metric)) for p in pts if p.get(metric) is not None and np.isfinite(p.get(metric))]
+    if not vals:
+        return None
     if task == "classification":
-        return max(data, key=lambda kv: kv[1])[0]
+        best = max(v for _, v in vals)
+        target = best * (1 - tol)
+        return min(k for k, v in vals if v >= target)
     else:
-        return min(data, key=lambda kv: kv[1])[0]
+        best = min(v for _, v in vals)
+        target = best * (1 + tol)
+        return min(k for k, v in vals if v <= target)
 
 
 def _r2x_r2y(pls: PLSRegression, X: np.ndarray, y: np.ndarray):
@@ -2227,6 +2280,61 @@ def _r2x_r2y(pls: PLSRegression, X: np.ndarray, y: np.ndarray):
         r2x_cum.append(float(1.0 - np.sum((X - X_hat) ** 2) / ssx) if ssx > 0 else 0.0)
         r2y_cum.append(float(1.0 - np.sum((y - y_hat) ** 2) / ssy) if ssy > 0 else 0.0)
     return r2x_cum, r2y_cum
+
+
+def _optimize_class_thresholds(y_true: np.ndarray, proba: np.ndarray, classes_: np.ndarray,
+                               grid: List[float] = [0.3, 0.4, 0.5, 0.6, 0.7]) -> Dict[Any, float]:
+    """One-vs-rest thresholds que maximizam balanced_accuracy."""
+    thr = {}
+    y_true_ovr = {c: (y_true == c).astype(int) for c in classes_}
+    for j, c in enumerate(classes_):
+        best, best_t = -1.0, 0.5
+        pj = proba[:, j]
+        for t in grid:
+            yhat = (pj >= t).astype(int)
+            ba = balanced_accuracy_score(y_true_ovr[c], yhat)
+            if ba > best:
+                best, best_t = ba, t
+        thr[c] = float(best_t)
+    return thr
+
+
+def _train_pls_scores_then_svm(pls, Xtr, ytr, Xte, classes_, C_grid=(1.0, 10.0, 100.0), gamma_grid=(0.01, 0.1, 1.0)):
+    """Transforma X -> scores PLS e treina OneVsRest SVM-RBF nos scores."""
+    Ttr = pls.transform(Xtr)  # (n_samples, n_comp)
+    Tte = pls.transform(Xte)
+    best_clf, best_score = None, -np.inf
+    for C in C_grid:
+        for g in gamma_grid:
+            clf = OneVsRestClassifier(SVC(C=C, gamma=g, probability=True, class_weight="balanced", random_state=RANDOM_STATE))
+            clf.fit(Ttr, ytr)
+            score = clf.score(Ttr, ytr)
+            if score > best_score:
+                best_score, best_clf = score, clf
+    proba = best_clf.predict_proba(Tte)
+    # ordena as colunas na ordem de classes_
+    class_index = {c: i for i, c in enumerate(best_clf.classes_)}
+    out = np.zeros((Tte.shape[0], len(classes_)), dtype=float)
+    for j, c in enumerate(classes_):
+        if c in class_index:
+            out[:, j] = proba[:, class_index[c]]
+    return out
+
+
+def _compute_t2_q(X: np.ndarray, pls_model) -> Dict[str, np.ndarray]:
+    """T² de Hotelling nos scores e Q-residual (norma dos resíduos em X)."""
+    T = pls_model.x_scores_
+    P = pls_model.x_loadings_
+    Xhat = T @ P.T
+    E = X - Xhat
+    S = np.cov(T, rowvar=False)
+    try:
+        S_inv = np.linalg.pinv(S)
+        T2 = np.einsum("ij,jk,ik->i", T, S_inv, T)
+    except Exception:
+        T2 = np.sum((T / (np.std(T, axis=0, ddof=1) + 1e-12))**2, axis=1)
+    Q = np.sum(E**2, axis=1)
+    return {"T2": T2.astype(float), "Q": Q.astype(float)}
 
 
 
@@ -2483,60 +2591,170 @@ def train(req: TrainRequest):
     return JSONResponse(content=payload)
 
 
-class OptimizeRequest(BaseModel):
+class OptimizeGridRequest(BaseModel):
     dataset_id: str
     target_name: str
     mode: str = "classification"
-    validation_method: str | None = None
-    n_splits: int | None = None
-    threshold: float | None = 0.5
-    k_min: int = 1
-    k_max: int | None = None  # None = usa limite seguro
+    validation_method: str = "RepeatedStratifiedKFold"  # default mais estável
+    n_splits: Optional[int] = 5
+    repeats: Optional[int] = 2
+    n_components_min: int = 1
+    n_components_max: Optional[int] = None
+    threshold_grid: Optional[List[float]] = Field(default_factory=lambda: [0.3, 0.4, 0.5, 0.6, 0.7])
+    preprocess_grid: Optional[List[List[str]]] = Field(
+        default_factory=lambda: [
+            [], ["snv"], ["msc"], ["sg1"], ["sg2"], ["snv","sg1"], ["snv","sg2"]
+        ]
+    )
+    sg_params: Optional[List[Tuple[int,int,int]]] = Field(
+        default_factory=lambda: [(9,2,1), (11,2,1), (15,2,1)]
+    )
+    use_ipls: bool = False
+    ipls_max_intervals: int = 2
+    ipls_interval_width: int = 20
+    classifier: str = "plsda"  # "plsda" | "svm"
+    spectral_range: Optional[Dict[str, float]] = None  # {"min":..., "max":...}
+
+
+def build_full_report_for_ui(X, y, task, n_components, classifier, threshold_map, classes_, cv):
+    return {}
 
 
 @app.post("/optimize")
-def optimize(req: OptimizeRequest):
+def optimize_grid(req: OptimizeGridRequest):
     ds = dataset_store.get(req.dataset_id)
     if not ds:
-        raise HTTPException(status_code=404, detail="Dataset não encontrado.")
+        raise HTTPException(404, "Dataset não encontrado.")
+    X = ds["X"]
+    w = ds.get("wavelengths", None)
 
-    X = ds.get("X")
     from utils.targets import load_target_or_fail
-    from utils.task_detect import detect_task_from_y
-    from utils.sanitize import sanitize_X, sanitize_y, align_X_y, limit_n_components
-
+    from utils.sanitize import sanitize_X, sanitize_y, align_X_y
     y_raw, _ = load_target_or_fail(ds, req.target_name)
-    task = detect_task_from_y(y_raw, req.mode)
+    task = "classification" if (req.mode or "").lower().startswith("class") else "regression"
+
+    # faixa espectral (opcional)
+    if req.spectral_range and w is not None:
+        m = (w >= req.spectral_range["min"]) & (w <= req.spectral_range["max"])
+        X = X[:, m]
+        if w is not None:
+            w = w[m]
+
+    # sanitização
     X = sanitize_X(X)
     y, classes_ = sanitize_y(y_raw, task)
     X, y, _ = align_X_y(X, y)
     if X.shape[0] == 0:
-        raise HTTPException(status_code=400, detail="Sem amostras válidas.")
+        raise HTTPException(400, "Sem amostras válidas.")
 
-    safe_max = limit_n_components(req.k_max or _safe_limit_ncomp(X), X)
-    k_grid = list(range(max(1, req.k_min), safe_max + 1))
+    # grid de k com cap ≤ 15
+    k_grid_max = _hard_cap_k(req.n_components_max, X)
+    k_grid = list(range(max(1, req.n_components_min), k_grid_max + 1))
 
-    cv_display = _curve_cv_for_display(
-        req.validation_method or "KFold", y, task, req.n_splits
+    # CV estável
+    strat = (task == "classification")
+    cv = build_cv_opt(req.validation_method, y=y, n_splits=req.n_splits or 5, stratified=strat, repeats=req.repeats or 1)
+
+    trials = []
+    best, best_score = None, -np.inf
+
+    # iPLS/siPLS (opcional): determina máscara de variáveis
+    base_mask = np.ones(X.shape[1], dtype=bool)
+    if bool(req.use_ipls) and w is not None:
+        base_mask = select_intervals_mask(X, y, w, task, cv,
+                                          max_intervals=int(req.ipls_max_intervals or 2),
+                                          interval_width=int(req.ipls_interval_width or 20),
+                                          k_grid=k_grid)
+        if base_mask.sum() < 5:
+            base_mask = np.ones(X.shape[1], dtype=bool)
+
+    # grade de SG adicional
+    sg_grid = req.sg_params or [(11,2,1)]
+
+    # ===== LOOP DE BUSCA =====
+    for steps in (req.preprocess_grid or [[]]):
+        for sg_t in (sg_grid or [None]):
+            Xpp = _apply_preprocess(X[:, base_mask], steps, sg_tuple=sg_t)
+            if Xpp is None:
+                continue
+            Xpp = sanitize_X(Xpp)
+            # avalia ks
+            for k in k_grid:
+                if _safe_limit_ncomp(Xpp) < k:
+                    continue
+                t0 = time.time()
+                try:
+                    cvm = _compute_cv_metrics(Xpp, y, task, cv,
+                                              n_components=k,
+                                              classifier=req.classifier,
+                                              threshold=0.5,
+                                              classes_=classes_)
+                    score = float(cvm.get("balanced_accuracy") or 0.0) if task == "classification" else float(-cvm.get("rmsecv", 1e9))
+                except Exception:
+                    continue
+                trials.append({
+                    "params": {"preprocess": steps, "sg": sg_t, "n_components": k, "mask_vars": int(base_mask.sum())},
+                    "cv_metrics": cvm,
+                    "elapsed_ms": int((time.time() - t0) * 1000),
+                })
+                if score > best_score:
+                    best_score = score
+                    best = {"preprocess": steps, "sg": sg_t, "n_components": k, "mask_vars": int(base_mask.sum())}
+
+    if not best:
+        raise HTTPException(400, "Nenhuma combinação válida encontrada.")
+
+    # ===== RETREINO DO MELHOR =====
+    Xbest = _apply_preprocess(X[:, base_mask], best["preprocess"], sg_tuple=best["sg"])
+    Xbest = sanitize_X(Xbest)
+    k_star = int(best["n_components"])
+
+    # curva 1..15
+    curve_kmax = _hard_cap_k(MAX_K_FOR_CURVE_DEFAULT, Xbest)
+    curve = _compute_cv_curve(Xbest, y, task, cv,
+                              threshold=0.5, max_k=curve_kmax)
+    k_recommended = _best_k_from_curve(curve, task) or k_star
+    k_recommended = _hard_cap_k(k_recommended, Xbest)
+
+    # métricas de validação do melhor
+    cv_best = _compute_cv_metrics(Xbest, y, task, cv,
+                                  n_components=k_recommended,
+                                  classifier=req.classifier,
+                                  classes_=classes_,
+                                  threshold=0.5)
+
+    # thresholds por classe
+    try:
+        proba_full = cv_best.get("proba_oof")
+        if proba_full is not None:
+            thr_map = _optimize_class_thresholds(y, proba_full, classes_)
+        else:
+            thr_map = {int(c): 0.5 for c in classes_}
+    except Exception:
+        thr_map = {int(c): 0.5 for c in classes_}
+
+    report = build_full_report_for_ui(
+        Xbest, y, task,
+        n_components=k_recommended,
+        classifier=req.classifier,
+        threshold_map=thr_map,
+        classes_=classes_,
+        cv=cv
     )
-    curve = _compute_cv_curve(
-        X, y, task, cv_display, threshold=(req.threshold or 0.5), max_k=safe_max
-    )
+    report["cv_curve"] = curve
+    report["cv_metrics"] = cv_best
+    report["recommended_n_components"] = k_recommended
+    report["thresholds_"] = thr_map
+    report["n_selected_variables"] = int(base_mask.sum())
 
-    best_k = _best_k_from_curve(curve, task)
-    score = None
-    if best_k is not None:
-        metric = "balanced_accuracy" if task == "classification" else "rmsecv"
-        for p in curve.get("points", []):
-            if p.get("k") == best_k:
-                score = p.get(metric)
-                break
-        curve["recommended_k"] = best_k
-
-    response = {
+    out = {
         "status": "ok",
-        "best_params": {"n_components": best_k, "threshold": req.threshold},
-        "best_score": score,
-        "curve": curve,
+        "selection_metric": "balanced_accuracy" if task == "classification" else "rmsecv",
+        "best": {
+            "params": best,
+            "score": float(best_score if task == "classification" else -best_score),
+            "report": report
+        },
+        "trials": trials
     }
-    return JSONResponse(content=_json_sanitize(response))
+    return JSONResponse(content=_json_sanitize(out))
