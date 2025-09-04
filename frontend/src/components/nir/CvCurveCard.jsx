@@ -11,7 +11,7 @@ export default function CvCurveCard({ curve, task }) {
       .filter(d => Number.isFinite(d.y));
   }, [curve, metric]);
 
-  const suggested = curve?.recommended_k ?? null;
+  const suggested = curve?.recommended_n_components ?? curve?.recommended_k ?? null;
   const emptyReason = curve?.debug?.reason_if_empty;
 
   // estado vazio com diagnóstico
