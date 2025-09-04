@@ -82,8 +82,9 @@ export default function Step4Decision({ step2, result, dataId }) {
         alert('Não foi possível sugerir k.');
       }
     } catch (e) {
-      console.error(e);
-      alert('Falha ao otimizar.');
+      const detail = e?.response?.data?.detail || e?.data?.detail || e?.message || "Falha ao otimizar.";
+      const msg = typeof detail === "string" ? detail : (detail.message || JSON.stringify(detail));
+      alert(msg);
     } finally {
       setOptLoading(false);
     }
