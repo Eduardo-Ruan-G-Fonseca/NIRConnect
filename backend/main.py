@@ -70,7 +70,7 @@ from core.saneamento import saneamento_global
 from core.io_utils import to_float_matrix, encode_labels_if_needed
 from core.optimization import optimize_model_grid, preprocess as grid_preprocess
 from ml.validation import build_cv_meta
-from ml.preprocessing import snv, msc, sg_first_derivative, sg_second_derivative, zscore, minmax_norm, savgol_1d
+from ml.preprocessing import snv, msc, sg_first_derivative, sg_second_derivative, zscore, minmax_norm
 from ml.ipls import select_intervals_mask
 from core.datasets import store_dataset, resolve_dataset
 from dataset_store import DatasetStore
@@ -334,30 +334,43 @@ def apply_preprocess(X: np.ndarray, method: str) -> np.ndarray:
     return Xp
 
 
-def _apply_preprocess(X: np.ndarray, steps: List[str], sg_tuple: Optional[Tuple[int, int, int]] = None) -> Optional[np.ndarray]:
+def _apply_preprocess(X: np.ndarray, steps: list[str] | None, sg_tuple: tuple[int, int, int] | None = None) -> np.ndarray:
+    """
+    Aplica pipeline de pré-processo por NOME, com parâmetros opcionais de SG.
+    Nunca aborta a otimização: se um passo falha, loga e segue com Xp vigente.
+    """
+    steps = steps or []
     Xp = X
-    try:
-        for s in (steps or []):
+
+    # defaults prudentes para SG
+    w, p, d = (sg_tuple or (11, 2, 1))
+    # normaliza (garante janela ímpar etc.)
+    w, p, d = _normalize_sg_params([(w, p, d)])[0]
+
+    for s in steps:
+        try:
             if s == "snv":
                 Xp = snv(Xp)
             elif s == "msc":
                 Xp = msc(Xp)
-            elif s == "sg1":
-                Xp = sg_first_derivative(Xp)
-            elif s == "sg2":
-                Xp = sg_second_derivative(Xp)
             elif s == "zscore":
                 Xp = zscore(Xp)
             elif s == "minmax":
                 Xp = minmax_norm(Xp)
+            elif s == "sg1":
+                # 1ª derivada com (w,p) normalizados
+                Xp = sg_first_derivative(Xp, window=w, polyorder=p)
+            elif s == "sg2":
+                # 2ª derivada com (w,p)
+                Xp = sg_second_derivative(Xp, window=w, polyorder=p)
             else:
-                pass
-        if sg_tuple is not None:
-            w, p, d = sg_tuple
-            Xp = savgol_1d(Xp, window=w, polyorder=p, deriv=d)
-        Xp = sanitize_X(Xp)
-    except Exception:
-        return None
+                logger.warning("Preprocesso desconhecido: %s (ignorado)", s)
+        except Exception as ex:
+            # Não derruba a grade; apenas registra e segue
+            logger.exception("Falha no passo de pré-processo '%s' (sg=%s) — passo ignorado.", s, (w, p, d))
+            # segue com Xp do passo anterior
+            continue
+
     return Xp
 
 
