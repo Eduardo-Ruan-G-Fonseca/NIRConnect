@@ -57,7 +57,7 @@ from utils.targets import load_target_or_fail
 from utils.spectra import prepare_for_plot_legacy
 from validation import build_cv as build_cv_simple
 from sklearn.cross_decomposition import PLSRegression
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut
 from sklearn.metrics import (
     accuracy_score, balanced_accuracy_score, f1_score, confusion_matrix,
     precision_recall_fscore_support, cohen_kappa_score, matthews_corrcoef,
@@ -1920,102 +1920,167 @@ from sklearn.cross_decomposition import PLSRegression
 
 
 def _safe_limit_ncomp(X):
+    # rank seguro: min(n_features, n_samples - 1)
     n, p = X.shape
-    return int(max(1, min(p, n - 1)))
+    return max(1, min(p, n - 1))
 
 
-def _curve_cv_for_display(original_cv, y, task):
+def _curve_cv_for_display(validation_method, y, task, n_splits: int | None):
     """
-    Para o gráfico: se o usuário escolheu LOO e a base é grande,
-    usamos StratifiedKFold(5) apenas para a CURVA (o treino real continua com o CV original).
+    - LOO: LeaveOneOut
+    - KFold: KFold(n_splits)
+    - StratifiedKFold:
+        * usa min(n_splits, min_count_por_classe) p/ não quebrar
+        * se mesmo assim não der, cai para KFold
     """
-    n = len(y)
-    name = original_cv.__class__.__name__.lower()
-    if name.startswith("leave") and n >= 200 and task == "classification":
-        return StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    return original_cv
+    y = np.asarray(y)
+    if validation_method.upper() in ("LOO", "LEAVEONEOUT"):
+        return LeaveOneOut()
+
+    if task == "classification":
+        # conta por classe
+        _, counts = np.unique(y, return_counts=True)
+        max_splits = int(counts.min()) if counts.size else 2
+        k = int(n_splits or 5)
+        k = max(2, min(k, max_splits))
+        try:
+            return StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
+        except Exception:
+            return KFold(n_splits=k, shuffle=True, random_state=42)
+    else:
+        k = int(n_splits or 5)
+        k = max(2, min(k, y.shape[0]))
+        return KFold(n_splits=k, shuffle=True, random_state=42)
 
 
 def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
-    nmax = max_k or _safe_limit_ncomp(X)
-    is_loo = cv.__class__.__name__.lower().startswith("leave")
-    nmax = min(nmax, 6 if is_loo else 15)
+    X = np.asarray(X)
+    y = np.asarray(y)
+    max_k = int(max_k or _safe_limit_ncomp(X))
+    ks = list(range(1, max_k + 1))
 
-    ks = list(range(1, nmax + 1))
-    curve = {
+    out = {
         "n_components": ks,
-        "accuracy": [], "balanced_accuracy": [], "f1_macro": [],
-        "rmsecv": [], "r2cv": [],
+        "accuracy": [],
+        "balanced_accuracy": [],
+        "f1_macro": [],
         "auc_macro": [],
-        "note": "fastCV=StratifiedKFold(5)" if isinstance(cv, StratifiedKFold) else None
+        "rmsecv": [],
+        "r2cv": [],
+        "points": [],
+        "debug": {},
     }
 
+    valid_counts = {"acc": 0, "bacc": 0, "f1m": 0, "auc": 0, "rmse": 0, "r2": 0}
+    total_k = len(ks)
+
     for k in ks:
-        y_true_all, y_pred_all, y_pred_reg_all = [], [], []
-        scores_all = []
+        y_true_all, y_pred_all = [], []
+        y_true_reg, y_pred_reg = [], []
 
+        folds_ok = 0
         for tr, te in cv.split(X, y):
-            Xtr, Xte, ytr, yte = X[tr], X[te], y[tr], y[te]
-            if task == "classification":
-                classes = np.unique(ytr)
-                K = len(classes)
-                if K == 2:
-                    pls = PLSRegression(n_components=k).fit(Xtr, ytr)
-                    s = pls.predict(Xte).ravel()
-                    yp = (s >= threshold).astype(int)
-                    scores_all.append(s.reshape(-1, 1))
-                else:
-                    S = np.zeros((Xte.shape[0], K))
-                    for idx, c in enumerate(classes):
-                        pls_k = PLSRegression(n_components=k).fit(Xtr, (ytr == c).astype(int))
-                        S[:, idx] = pls_k.predict(Xte).ravel()
-                    yp = classes[np.argmax(S, axis=1)]
-                    scores_all.append(S)
-                y_true_all.append(yte); y_pred_all.append(yp)
-            else:
-                pls = PLSRegression(n_components=k).fit(Xtr, ytr)
-                y_pred_reg_all.append(pls.predict(Xte).ravel())
-                y_true_all.append(yte)
+            Xtr, Xte = X[tr], X[te]
+            ytr, yte = y[tr], y[te]
 
-        y_true = np.concatenate(y_true_all)
-        if task == "classification":
-            y_pred = np.concatenate(y_pred_all)
-            curve["accuracy"].append(_finite(accuracy_score(y_true, y_pred)))
-            curve["balanced_accuracy"].append(_finite(balanced_accuracy_score(y_true, y_pred)))
-            curve["f1_macro"].append(_finite(f1_score(y_true, y_pred, average="macro")))
+            # k efetivo por fold (com LOO o rank cai!)
+            k_eff = min(k, _safe_limit_ncomp(Xtr))
+            if k_eff < 1:
+                continue
+
             try:
-                S = np.vstack(scores_all)
-                if S.shape[1] == 1:
-                    auc = roc_auc_score(y_true, S.ravel())
+                if task == "classification":
+                    classes = np.unique(ytr)
+                    K = len(classes)
+                    if K == 2:
+                        pls = PLSRegression(n_components=k_eff).fit(Xtr, ytr)
+                        s = pls.predict(Xte).ravel()
+                        yp = (s >= float(threshold)).astype(ytr.dtype)
+                    else:
+                        # um-vs-rest com scores
+                        S = np.zeros((Xte.shape[0], K))
+                        for idx, c in enumerate(classes):
+                            pls_k = PLSRegression(n_components=k_eff).fit(Xtr, (ytr == c).astype(int))
+                            S[:, idx] = pls_k.predict(Xte).ravel()
+                        yp = classes[np.argmax(S, axis=1)]
+                    y_true_all.append(yte); y_pred_all.append(yp)
                 else:
-                    auc = roc_auc_score(y_true, S, multi_class="ovr")
+                    pls = PLSRegression(n_components=k_eff).fit(Xtr, ytr)
+                    pred = pls.predict(Xte).ravel()
+                    y_true_reg.append(yte); y_pred_reg.append(pred)
+                folds_ok += 1
             except Exception:
-                auc = None
-            curve["auc_macro"].append(_finite(auc))
-            curve["rmsecv"].append(None); curve["r2cv"].append(None)
-        else:
-            y_pred = np.concatenate(y_pred_reg_all)
-            rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-            ss_tot = float(np.var(y_true) * y_true.size)
-            ss_res = float(np.sum((y_true - y_pred) ** 2))
-            r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
-            curve["rmsecv"].append(_finite(rmse))
-            curve["r2cv"].append(_finite(r2))
-            curve["accuracy"].append(None); curve["balanced_accuracy"].append(None); curve["f1_macro"].append(None)
-            curve["auc_macro"].append(None)
-    points = []
-    for i, k in enumerate(ks):
-        points.append({
+                # ignora fold ruim
+                continue
+
+        # agrega
+        acc = bacc = f1m = aucm = rmse = r2 = None
+
+        if task == "classification" and folds_ok > 0 and len(y_true_all) > 0:
+            y_true = np.concatenate(y_true_all)
+            y_pred = np.concatenate(y_pred_all)
+            acc  = _finite(accuracy_score(y_true, y_pred))
+            bacc = _finite(balanced_accuracy_score(y_true, y_pred))
+            f1m  = _finite(f1_score(y_true, y_pred, average="macro"))
+            # AUC macro (se possível)
+            try:
+                classes = np.unique(y)
+                if len(classes) == 2:
+                    # reexecuta scores binários para AUC
+                    y_true2_all, score_all = [], []
+                    for tr, te in cv.split(X, y):
+                        Xtr, Xte = X[tr], X[te]; ytr, yte = y[tr], y[te]
+                        k_eff = min(k, _safe_limit_ncomp(Xtr))
+                        pls = PLSRegression(n_components=k_eff).fit(Xtr, (ytr == classes[1]).astype(int))
+                        score_all.append(pls.predict(Xte).ravel())
+                        y_true2_all.append((yte == classes[1]).astype(int))
+                    y_true2 = np.concatenate(y_true2_all); score_all = np.concatenate(score_all)
+                    aucm = _finite(roc_auc_score(y_true2, score_all))
+                else:
+                    aucm = None
+            except Exception:
+                aucm = None
+
+            if acc  is not None: valid_counts["acc"]  += 1
+            if bacc is not None: valid_counts["bacc"] += 1
+            if f1m  is not None: valid_counts["f1m"]  += 1
+            if aucm is not None: valid_counts["auc"]  += 1
+        elif task != "classification" and folds_ok > 0 and len(y_true_reg) > 0:
+            yt = np.concatenate(y_true_reg); yp = np.concatenate(y_pred_reg)
+            rmse = _finite(np.sqrt(np.mean((yt - yp) ** 2)))
+            ss_tot = float(np.var(yt) * yt.size)
+            ss_res = float(np.sum((yt - yp) ** 2))
+            r2 = _finite(1.0 - ss_res / ss_tot) if ss_tot > 0 else None
+            if rmse is not None: valid_counts["rmse"] += 1
+            if r2   is not None: valid_counts["r2"]   += 1
+
+        out["accuracy"].append(acc)
+        out["balanced_accuracy"].append(bacc)
+        out["f1_macro"].append(f1m)
+        out["auc_macro"].append(aucm)
+        out["rmsecv"].append(rmse)
+        out["r2cv"].append(r2)
+        out["points"].append({
             "k": int(k),
-            "accuracy": curve["accuracy"][i] if i < len(curve["accuracy"]) else None,
-            "balanced_accuracy": curve["balanced_accuracy"][i] if i < len(curve["balanced_accuracy"]) else None,
-            "f1_macro": curve["f1_macro"][i] if i < len(curve["f1_macro"]) else None,
-            "auc_macro": curve["auc_macro"][i] if i < len(curve["auc_macro"]) else None,
-            "rmsecv": curve["rmsecv"][i] if i < len(curve["rmsecv"]) else None,
-            "r2cv": curve["r2cv"][i] if i < len(curve["r2cv"]) else None,
+            "accuracy": acc,
+            "balanced_accuracy": bacc,
+            "f1_macro": f1m,
+            "auc_macro": aucm,
+            "rmsecv": rmse,
+            "r2cv": r2,
         })
-    curve["points"] = points
-    return curve
+
+    # diagnóstico: quantos k têm valor
+    out["debug"] = {
+        "total_k": total_k,
+        "valid": valid_counts,
+        "reason_if_empty": (
+            "Todas as séries ficaram sem ponto válido (possível n_splits>amostras por classe, "
+            "k acima do rank em vários folds, ou falha em todas as combinações)."
+            if (sum(valid_counts.values()) == 0) else ""
+        ),
+    }
+    return out
 
 
 def _best_k_from_curve(curve, task):
@@ -2102,9 +2167,10 @@ def train(req: TrainRequest):
     result["wavelengths"] = wavelengths
 
     # curva de validação (rápida, sem travar)
+    cv_display = _curve_cv_for_display(req.validation_method or "KFold", y, task, getattr(req, "n_splits", None))
     curve_cv = _compute_cv_curve(
         X, y, task,
-        _curve_cv_for_display(cv, y, task),
+        cv_display,
         threshold=(getattr(req, "threshold", 0.5) or 0.5)
     )
     result["cv_curve"] = curve_cv
@@ -2293,7 +2359,6 @@ def optimize(req: OptimizeRequest):
     from utils.targets import load_target_or_fail
     from utils.task_detect import detect_task_from_y
     from utils.sanitize import sanitize_X, sanitize_y, align_X_y, limit_n_components
-    from validation import build_cv
 
     y_raw, _ = load_target_or_fail(ds, req.target_name)
     task = detect_task_from_y(y_raw, req.mode)
@@ -2306,8 +2371,8 @@ def optimize(req: OptimizeRequest):
     safe_max = limit_n_components(req.k_max or _safe_limit_ncomp(X), X)
     k_grid = list(range(max(1, req.k_min), safe_max + 1))
 
-    cv = build_cv(req.validation_method or "KFold", y=y, n_splits=req.n_splits or 5, stratified=(task=="classification"))
-    curve = _compute_cv_curve(X, y, task, cv, threshold=(req.threshold or 0.5), max_k=safe_max)
+    cv_display = _curve_cv_for_display(req.validation_method or "KFold", y, task, req.n_splits)
+    curve = _compute_cv_curve(X, y, task, cv_display, threshold=(req.threshold or 0.5), max_k=safe_max)
 
     # escolhe melhor k
     if task == "classification":

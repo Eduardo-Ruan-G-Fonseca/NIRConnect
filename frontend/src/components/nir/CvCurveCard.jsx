@@ -41,6 +41,15 @@ export default function CvCurveCard({ curve, task, suggestedK }) {
     return data.some(d => d?.rmsecv != null || d?.r2cv != null);
   }, [data, task]);
 
+  const debug = curve?.debug || { valid: {}, reason_if_empty: "" };
+  const noSeries =
+    !data.some(d => d?.balanced_accuracy != null) &&
+    !data.some(d => d?.accuracy != null) &&
+    !data.some(d => d?.f1_macro != null) &&
+    !data.some(d => d?.auc_macro != null) &&
+    !data.some(d => d?.rmsecv != null) &&
+    !data.some(d => d?.r2cv != null);
+
   return (
     <div className="card p-4" id="cv-curve">
       <div className="flex items-center gap-2 mb-3">
@@ -80,9 +89,15 @@ export default function CvCurveCard({ curve, task, suggestedK }) {
         </ResponsiveContainer>
       </div>
 
-      {((task === "classification" && !hasClsSeries) || (task !== "classification" && !hasRegSeries)) && (
-        <div className="text-sm text-gray-500 mt-3">
-          Sem pontos válidos para plotar a curva. Verifique o método de validação, classes muito raras ou número de componentes.
+      {noSeries && (
+        <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 mt-3">
+          Nenhum ponto válido para plotar a curva.
+          {debug?.reason_if_empty ? <> {debug.reason_if_empty}</> : null}
+          {debug?.valid ? (
+            <div className="mt-1 text-amber-600">
+              valid={JSON.stringify(debug.valid)}
+            </div>
+          ) : null}
         </div>
       )}
     </div>
