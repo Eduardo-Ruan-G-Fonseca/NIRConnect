@@ -29,6 +29,7 @@ export function normalizeTrainResult(res) {
     metrics: res?.metrics || {},
     per_class: res?.per_class || null,     // <- NOVO (tabela por classe)
     cv: res?.cv || {},
+    cv_metrics: res?.cv_metrics || null,
     cv_curve: res?.cv_curve || null,
     recommended_n_components: res?.recommended_n_components ?? null,
     meta: res?.meta || null,

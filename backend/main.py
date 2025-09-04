@@ -141,12 +141,74 @@ def _json_sanitize(obj):
     return obj
 
 
-def _finite_or_none(x):
+def _finite(x):
     try:
         x = float(x)
         return x if np.isfinite(x) else None
     except Exception:
         return None
+
+
+def _compute_cv_metrics(X, y, task, cv, n_components: int, threshold: float = 0.5):
+    """
+    Executa o CV escolhido (LOO/KFold/StratifiedKFold) **para o k escolhido** e
+    retorna o bloco 'cv_metrics' que a UI usa na tabela de 'Validação'.
+    """
+    y_true_all, y_pred_all = [], []
+
+    for tr, te in cv.split(X, y):
+        Xtr, Xte, ytr, yte = X[tr], X[te], y[tr], y[te]
+
+        if task == "classification":
+            classes = np.unique(ytr)
+            K = len(classes)
+            if K == 2:
+                pls = PLSRegression(n_components=n_components).fit(Xtr, ytr)
+                s = pls.predict(Xte).ravel()
+                yp = (s >= threshold).astype(int)
+            else:
+                S = np.zeros((Xte.shape[0], K))
+                for idx, c in enumerate(classes):
+                    pls_k = PLSRegression(n_components=n_components).fit(Xtr, (ytr == c).astype(int))
+                    S[:, idx] = pls_k.predict(Xte).ravel()
+                yp = classes[np.argmax(S, axis=1)]
+            y_true_all.append(yte)
+            y_pred_all.append(yp)
+        else:
+            pls = PLSRegression(n_components=n_components).fit(Xtr, ytr)
+            pred = pls.predict(Xte).ravel()
+            y_true_all.append(yte)
+            y_pred_all.append(pred)
+
+    y_true = np.concatenate(y_true_all)
+    y_pred = np.concatenate(y_pred_all)
+
+    if task == "classification":
+        acc = _finite(accuracy_score(y_true, y_pred))
+        bacc = _finite(balanced_accuracy_score(y_true, y_pred))
+        f1_ma = _finite(f1_score(y_true, y_pred, average="macro"))
+        f1_mi = _finite(f1_score(y_true, y_pred, average="micro"))
+        prec_ma, rec_ma, _f, _ = precision_recall_fscore_support(
+            y_true, y_pred, average="macro", zero_division=0
+        )
+        kappa = _finite(cohen_kappa_score(y_true, y_pred))
+        mcc = _finite(matthews_corrcoef(y_true, y_pred))
+        return {
+            "accuracy": acc,
+            "kappa": kappa,
+            "f1_macro": _finite(f1_ma),
+            "f1_micro": _finite(f1_mi),
+            "macro_precision": _finite(prec_ma),
+            "macro_recall": _finite(rec_ma),
+            "macro_f1": _finite(f1_ma),
+            "balanced_accuracy": bacc,
+        }
+    else:
+        rmse = _finite(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+        ss_tot = float(np.var(y_true) * y_true.size)
+        ss_res = float(np.sum((y_true - y_pred) ** 2))
+        r2 = _finite(1.0 - ss_res / ss_tot) if ss_tot > 0 else None
+        return {"rmsecv": rmse, "r2cv": r2}
 
 
 def apply_preprocess(X: np.ndarray, method: str) -> np.ndarray:
@@ -1918,9 +1980,9 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
         y_true = np.concatenate(y_true_all)
         if task == "classification":
             y_pred = np.concatenate(y_pred_all)
-            curve["accuracy"].append(_finite_or_none(accuracy_score(y_true, y_pred)))
-            curve["balanced_accuracy"].append(_finite_or_none(balanced_accuracy_score(y_true, y_pred)))
-            curve["f1_macro"].append(_finite_or_none(f1_score(y_true, y_pred, average="macro")))
+            curve["accuracy"].append(_finite(accuracy_score(y_true, y_pred)))
+            curve["balanced_accuracy"].append(_finite(balanced_accuracy_score(y_true, y_pred)))
+            curve["f1_macro"].append(_finite(f1_score(y_true, y_pred, average="macro")))
             try:
                 S = np.vstack(scores_all)
                 if S.shape[1] == 1:
@@ -1929,7 +1991,7 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
                     auc = roc_auc_score(y_true, S, multi_class="ovr")
             except Exception:
                 auc = None
-            curve["auc_macro"].append(_finite_or_none(auc))
+            curve["auc_macro"].append(_finite(auc))
             curve["rmsecv"].append(None); curve["r2cv"].append(None)
         else:
             y_pred = np.concatenate(y_pred_reg_all)
@@ -1937,8 +1999,8 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
             ss_tot = float(np.var(y_true) * y_true.size)
             ss_res = float(np.sum((y_true - y_pred) ** 2))
             r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
-            curve["rmsecv"].append(_finite_or_none(rmse))
-            curve["r2cv"].append(_finite_or_none(r2))
+            curve["rmsecv"].append(_finite(rmse))
+            curve["r2cv"].append(_finite(r2))
             curve["accuracy"].append(None); curve["balanced_accuracy"].append(None); curve["f1_macro"].append(None)
             curve["auc_macro"].append(None)
     return curve
@@ -2144,6 +2206,13 @@ def train(req: TrainRequest):
         ss_res = float(np.sum((y_true - y_pred) ** 2))
         r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
         result["metrics"] = {"rmsecv": rmse, "r2cv": r2}
+
+    # métricas de validação com o CV escolhido
+    k_used = safe_n
+    val_metrics = _compute_cv_metrics(
+        X, y, task, cv, n_components=k_used, threshold=(getattr(req, "threshold", 0.5) or 0.5)
+    )
+    result["cv_metrics"] = val_metrics
 
     # --- LATENTES (treino completo com safe_n) ---
     pls_full = PLSRegression(n_components=safe_n).fit(X, y)
