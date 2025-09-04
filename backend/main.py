@@ -17,6 +17,7 @@ import logging
 import warnings
 import time
 import re
+import hashlib
 
 
 import sys, os
@@ -82,6 +83,10 @@ except Exception:
 
 from core.pls import is_categorical  # (se nÃ£o for usar, podemos remover depois)
 import joblib
+from joblib import Parallel, delayed, cpu_count
+
+# limite de paralelismo
+N_JOBS = max(1, min(cpu_count(), 8))
 
 dataset_store = DatasetStore()
 STORE = dataset_store
@@ -89,6 +94,55 @@ STORE = dataset_store
 
 # Progresso global para /optimize/status
 OPTIMIZE_PROGRESS = {"current": 0, "total": 0}
+
+# caches simples para pré-processamento e CV
+preproc_cache: dict = {}
+cv_cache: dict = {}
+
+
+def _hash_y(y: np.ndarray) -> str:
+    yb = np.asarray(y)
+    return hashlib.sha1(yb.view(np.uint8)).hexdigest()
+
+
+def _get_cached_preproc(dataset_id, X, wavelengths, spectral_range, steps, apply_fn):
+    wmin = spectral_range["min"] if spectral_range else None
+    wmax = spectral_range["max"] if spectral_range else None
+    key = (dataset_id, wmin, wmax, tuple(steps or []))
+    if key in preproc_cache:
+        return preproc_cache[key]
+    Xcut = X
+    if spectral_range and wavelengths is not None:
+        m = (wavelengths >= wmin) & (wavelengths <= wmax)
+        Xcut = X[:, m]
+    Xp = apply_fn(Xcut, steps or [])
+    preproc_cache[key] = Xp
+    return Xp
+
+
+def _get_cached_cv(dataset_id, method, n_splits, stratified, y):
+    key = (dataset_id, method, int(n_splits or 0), bool(stratified), _hash_y(y))
+    if key in cv_cache:
+        return cv_cache[key]
+    if str(method).upper() in ("LOO", "LEAVEONEOUT"):
+        cv = LeaveOneOut()
+    else:
+        if stratified:
+            _, counts = np.unique(y, return_counts=True)
+            max_splits = int(counts.min()) if counts.size else 2
+            k = int(n_splits or 5)
+            k = max(2, min(k, max_splits))
+            try:
+                cv = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
+            except Exception:
+                cv = KFold(n_splits=k, shuffle=True, random_state=42)
+        else:
+            k = int(n_splits or 5)
+            k = max(2, min(k, y.shape[0]))
+            cv = KFold(n_splits=k, shuffle=True, random_state=42)
+    splits = list(cv.split(np.zeros_like(y), y))
+    cv_cache[key] = splits
+    return splits
 
 
 class _State:
@@ -148,40 +202,43 @@ def _finite(x):
     except Exception:
         return None
 
+def _fold_worker(X, y, tr, te, task, k_eff, threshold):
+    Xtr, Xte = X[tr], X[te]
+    ytr, yte = y[tr], y[te]
+    if task == "classification":
+        classes = np.unique(ytr)
+        if len(classes) == 2:
+            pls = PLSRegression(n_components=k_eff).fit(Xtr, ytr)
+            s = pls.predict(Xte).ravel()
+            yp = (s >= threshold).astype(ytr.dtype)
+        else:
+            K = len(classes)
+            S = np.zeros((Xte.shape[0], K))
+            for idx, c in enumerate(classes):
+                pls_k = PLSRegression(n_components=k_eff).fit(Xtr, (ytr == c).astype(int))
+                S[:, idx] = pls_k.predict(Xte).ravel()
+            yp = classes[np.argmax(S, axis=1)]
+        return yte, yp
+    else:
+        pls = PLSRegression(n_components=k_eff).fit(Xtr, ytr)
+        yp = pls.predict(Xte).ravel()
+        return yte, yp
 
-def _compute_cv_metrics(X, y, task, cv, n_components: int, threshold: float = 0.5):
+
+def _compute_cv_metrics(X, y, task, cv_or_splits, n_components: int, threshold: float = 0.5):
     """
     Executa o CV escolhido (LOO/KFold/StratifiedKFold) **para o k escolhido** e
     retorna o bloco 'cv_metrics' que a UI usa na tabela de 'Validação'.
+    Aceita um objeto de CV ou uma lista de splits já pré-calculados.
     """
-    y_true_all, y_pred_all = [], []
-
-    for tr, te in cv.split(X, y):
-        Xtr, Xte, ytr, yte = X[tr], X[te], y[tr], y[te]
-
-        if task == "classification":
-            classes = np.unique(ytr)
-            K = len(classes)
-            if K == 2:
-                pls = PLSRegression(n_components=n_components).fit(Xtr, ytr)
-                s = pls.predict(Xte).ravel()
-                yp = (s >= threshold).astype(int)
-            else:
-                S = np.zeros((Xte.shape[0], K))
-                for idx, c in enumerate(classes):
-                    pls_k = PLSRegression(n_components=n_components).fit(Xtr, (ytr == c).astype(int))
-                    S[:, idx] = pls_k.predict(Xte).ravel()
-                yp = classes[np.argmax(S, axis=1)]
-            y_true_all.append(yte)
-            y_pred_all.append(yp)
-        else:
-            pls = PLSRegression(n_components=n_components).fit(Xtr, ytr)
-            pred = pls.predict(Xte).ravel()
-            y_true_all.append(yte)
-            y_pred_all.append(pred)
-
-    y_true = np.concatenate(y_true_all)
-    y_pred = np.concatenate(y_pred_all)
+    splits = cv_or_splits if isinstance(cv_or_splits, list) else list(cv_or_splits.split(X, y))
+    k_eff_list = [min(n_components, _safe_limit_ncomp(X[tr])) for tr, _ in splits]
+    results = Parallel(n_jobs=N_JOBS)(
+        delayed(_fold_worker)(X, y, tr, te, task, k_eff, float(threshold))
+        for (tr, te), k_eff in zip(splits, k_eff_list)
+    )
+    y_true = np.concatenate([yt for yt, _ in results])
+    y_pred = np.concatenate([yp for _, yp in results])
 
     if task == "classification":
         acc = _finite(accuracy_score(y_true, y_pred))
@@ -216,6 +273,12 @@ def apply_preprocess(X: np.ndarray, method: str) -> np.ndarray:
         Xp = X.copy()
     else:
         Xp = apply_methods(X.copy(), [method])
+    Xp = sanitize_X(Xp)
+    return Xp
+
+
+def _apply_preprocess(X: np.ndarray, steps: List[str]) -> np.ndarray:
+    Xp = apply_methods(X.copy(), steps)
     Xp = sanitize_X(Xp)
     return Xp
 
@@ -1908,6 +1971,8 @@ class TrainRequest(BaseModel):
     validation_method: str | None = None
     n_splits: int | None = None
     threshold: float | None = None
+    preprocess: List[str] | None = None
+    spectral_range: Dict[str, float] | None = None
 
 @app.post("/train-form")
 def deprecated_train_form():
@@ -1935,6 +2000,19 @@ def _curve_cv_for_display(validation_method, y, task, n_splits: int | None):
     """
     y = np.asarray(y)
     if validation_method.upper() in ("LOO", "LEAVEONEOUT"):
+        if y.shape[0] > 300:
+            # heurística: LOO muito caro, usa KFold/StratifiedKFold apenas para exibição
+            if task == "classification":
+                _, counts = np.unique(y, return_counts=True)
+                max_splits = int(counts.min()) if counts.size else 2
+                k = max(2, min(10, max_splits))
+                try:
+                    return StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
+                except Exception:
+                    return KFold(n_splits=k, shuffle=True, random_state=42)
+            else:
+                k = max(2, min(10, y.shape[0]))
+                return KFold(n_splits=k, shuffle=True, random_state=42)
         return LeaveOneOut()
 
     if task == "classification":
@@ -1953,11 +2031,12 @@ def _curve_cv_for_display(validation_method, y, task, n_splits: int | None):
         return KFold(n_splits=k, shuffle=True, random_state=42)
 
 
-def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
+def _compute_cv_curve(X, y, task, cv_or_splits, threshold=0.5, max_k=None):
     X = np.asarray(X)
     y = np.asarray(y)
     max_k = int(max_k or _safe_limit_ncomp(X))
     ks = list(range(1, max_k + 1))
+    splits = cv_or_splits if isinstance(cv_or_splits, list) else list(cv_or_splits.split(X, y))
 
     out = {
         "n_components": ks,
@@ -1979,7 +2058,7 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
         y_true_reg, y_pred_reg = [], []
 
         folds_ok = 0
-        for tr, te in cv.split(X, y):
+        for tr, te in splits:
             Xtr, Xte = X[tr], X[te]
             ytr, yte = y[tr], y[te]
 
@@ -2028,7 +2107,7 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
                 if len(classes) == 2:
                     # reexecuta scores binários para AUC
                     y_true2_all, score_all = [], []
-                    for tr, te in cv.split(X, y):
+                    for tr, te in splits:
                         Xtr, Xte = X[tr], X[te]; ytr, yte = y[tr], y[te]
                         k_eff = min(k, _safe_limit_ncomp(Xtr))
                         pls = PLSRegression(n_components=k_eff).fit(Xtr, (ytr == classes[1]).astype(int))
@@ -2144,8 +2223,38 @@ def train(req: TrainRequest):
     if X.shape[0] == 0 or y.size == 0:
         raise HTTPException(status_code=400, detail="Após alinhamento, não há amostras válidas para o alvo.")
 
+    # pré-processamento com cache
+    wavelengths_arr = np.asarray(ds.get("wavelengths") or ds.get("columns") or [])
+    X = _get_cached_preproc(
+        req.dataset_id,
+        X,
+        wavelengths_arr,
+        req.spectral_range,
+        req.preprocess,
+        _apply_preprocess,
+    )
+
+    # ajusta lista de comprimentos de onda conforme range
+    if req.spectral_range and wavelengths_arr.size:
+        m = (wavelengths_arr >= req.spectral_range.get("min")) & (
+            wavelengths_arr <= req.spectral_range.get("max")
+        )
+        wavelengths = wavelengths_arr[m].tolist()
+    else:
+        wavelengths = wavelengths_arr.tolist()
+
     safe_n = limit_n_components(req.n_components, X)
-    cv = build_cv_simple(req.validation_method or "KFold", y=y, n_splits=getattr(req, "n_splits", 5), stratified=(task == "classification"))
+    splits = _get_cached_cv(
+        req.dataset_id,
+        req.validation_method or "KFold",
+        getattr(req, "n_splits", 5),
+        task == "classification",
+        y,
+    )
+    cv_display = _curve_cv_for_display(
+        req.validation_method or "KFold", y, task, getattr(req, "n_splits", None)
+    )
+    display_splits = list(cv_display.split(np.zeros_like(y), y))
 
     # -------- treino + métricas --------
     n_samples, n_features = X.shape
@@ -2160,18 +2269,19 @@ def train(req: TrainRequest):
         "status": "ok",
         "task": task,
         "n_components_used": safe_n,
-        "cv": {"method": str(cv).split("(")[0]},
+        "cv": {"method": req.validation_method or "KFold"},
         "meta": meta,
     }
-    wavelengths = ds.get("columns") or []
     result["wavelengths"] = wavelengths
 
-    # curva de validação (rápida, sem travar)
-    cv_display = _curve_cv_for_display(req.validation_method or "KFold", y, task, getattr(req, "n_splits", None))
+    # curva de validação para exibição
     curve_cv = _compute_cv_curve(
-        X, y, task,
-        cv_display,
-        threshold=(getattr(req, "threshold", 0.5) or 0.5)
+        X,
+        y,
+        task,
+        display_splits,
+        threshold=(getattr(req, "threshold", 0.5) or 0.5),
+        max_k=safe_n,
     )
     result["cv_curve"] = curve_cv
     bestk = _best_k_from_curve(curve_cv, task)
@@ -2183,7 +2293,7 @@ def train(req: TrainRequest):
         labels = list(range(K))
         y_true_all, y_pred_all, scores_all = [], [], []
 
-        for tr, te in cv.split(X, y):
+        for tr, te in splits:
             Xtr, Xte, ytr, yte = X[tr], X[te], y[tr], y[te]
             if K == 2:
                 pls = PLSRegression(n_components=safe_n).fit(Xtr, ytr)
@@ -2279,7 +2389,7 @@ def train(req: TrainRequest):
     else:
         # regressão: retorna pelo menos RMSECV e R2CV
         y_true_all, y_pred_all = [], []
-        for tr, te in cv.split(X, y):
+        for tr, te in splits:
             model = PLSRegression(n_components=safe_n).fit(X[tr], y[tr])
             y_true_all.append(y[te]); y_pred_all.append(model.predict(X[te]).ravel())
         y_true = np.concatenate(y_true_all)
@@ -2293,7 +2403,7 @@ def train(req: TrainRequest):
     # métricas de validação com o CV escolhido
     k_used = safe_n
     val_metrics = _compute_cv_metrics(
-        X, y, task, cv, n_components=k_used, threshold=(getattr(req, "threshold", 0.5) or 0.5)
+        X, y, task, splits, n_components=k_used, threshold=(getattr(req, "threshold", 0.5) or 0.5)
     )
     result["cv_metrics"] = val_metrics
 
