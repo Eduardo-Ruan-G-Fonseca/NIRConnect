@@ -102,7 +102,7 @@ export default function Step4Decision({ step2, result, dataId }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <CvCurveCard curve={data.cv_curve} task={data.task} recommended={data.recommended_n_components} />
+        <CvCurveCard curve={data.cv_curve} task={data.task} suggestedK={data.recommended_n_components} />
         <LatentCard latent={data.latent} labels={data.latent?.sample_labels} />
       </div>
 

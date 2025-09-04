@@ -2003,7 +2003,34 @@ def _compute_cv_curve(X, y, task, cv, threshold=0.5, max_k=None):
             curve["r2cv"].append(_finite(r2))
             curve["accuracy"].append(None); curve["balanced_accuracy"].append(None); curve["f1_macro"].append(None)
             curve["auc_macro"].append(None)
+    points = []
+    for i, k in enumerate(ks):
+        points.append({
+            "k": int(k),
+            "accuracy": curve["accuracy"][i] if i < len(curve["accuracy"]) else None,
+            "balanced_accuracy": curve["balanced_accuracy"][i] if i < len(curve["balanced_accuracy"]) else None,
+            "f1_macro": curve["f1_macro"][i] if i < len(curve["f1_macro"]) else None,
+            "auc_macro": curve["auc_macro"][i] if i < len(curve["auc_macro"]) else None,
+            "rmsecv": curve["rmsecv"][i] if i < len(curve["rmsecv"]) else None,
+            "r2cv": curve["r2cv"][i] if i < len(curve["r2cv"]) else None,
+        })
+    curve["points"] = points
     return curve
+
+
+def _best_k_from_curve(curve, task):
+    try:
+        if task == "classification":
+            ys = np.array([v for v in curve.get("balanced_accuracy", [])], dtype=float)
+            if np.isfinite(ys).any():
+                return int(curve["n_components"][int(np.nanargmax(ys))])
+        else:
+            ys = np.array([v for v in curve.get("rmsecv", [])], dtype=float)
+            if np.isfinite(ys).any():
+                return int(curve["n_components"][int(np.nanargmin(ys))])
+    except Exception:
+        pass
+    return None
 
 
 def _r2x_r2y(pls: PLSRegression, X: np.ndarray, y: np.ndarray):
@@ -2080,20 +2107,10 @@ def train(req: TrainRequest):
         _curve_cv_for_display(cv, y, task),
         threshold=(getattr(req, "threshold", 0.5) or 0.5)
     )
-    # recomendação simples baseada na curva
-    recommended_k = None
-    if task == "classification" and curve_cv["balanced_accuracy"]:
-        arr = np.array(curve_cv["balanced_accuracy"], dtype=float)
-        if np.isfinite(arr).any():
-            recommended_k = int(curve_cv["n_components"][np.nanargmax(arr)])
-    elif task != "classification" and curve_cv["rmsecv"]:
-        arr = np.array(curve_cv["rmsecv"], dtype=float)
-        if np.isfinite(arr).any():
-            recommended_k = int(curve_cv["n_components"][np.nanargmin(arr)])
-
     result["cv_curve"] = curve_cv
-    if recommended_k:
-        result["recommended_n_components"] = recommended_k
+    bestk = _best_k_from_curve(curve_cv, task)
+    if bestk is not None:
+        result["recommended_n_components"] = bestk
 
     if task == "classification":
         K = int(np.unique(y).size)
