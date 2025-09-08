@@ -112,7 +112,7 @@ import joblib
 from joblib import Parallel, delayed, cpu_count
 
 # Use threads para evitar cópia de matrizes entre processos (Windows)
-N_JOBS = max(1, min(cpu_count(), 8))
+N_JOBS = max(1, (os.cpu_count() or 2) - 1)
 JOBLIB_KW = dict(n_jobs=N_JOBS, prefer="threads", require="sharedmem")
 
 # ==== NOVAS CONSTANTES ====
@@ -334,19 +334,17 @@ def apply_preprocess(X: np.ndarray, method: str) -> np.ndarray:
     return Xp
 
 
-def _apply_preprocess(X: np.ndarray, steps: list[str] | None, sg_tuple: tuple[int, int, int] | None = None) -> np.ndarray:
-    """
-    Aplica pipeline de pré-processo por NOME, com parâmetros opcionais de SG.
-    Nunca aborta a otimização: se um passo falha, loga e segue com Xp vigente.
-    """
+def _apply_preprocess(X: np.ndarray, steps: List[str] | None, sg_tuple: tuple[int, int, int] | None = None) -> np.ndarray:
+    """Nunca aborta a otimização: se um passo falhar, loga e segue."""
     steps = steps or []
     Xp = X
-
-    # defaults prudentes para SG
     w, p, d = (sg_tuple or (11, 2, 1))
-    # normaliza (garante janela ímpar etc.)
-    w, p, d = _normalize_sg_params([(w, p, d)])[0]
-
+    if w % 2 == 0:
+        w += 1
+    if p < d:
+        p = d
+    if w <= p:
+        w = p + 1 if (p + 1) % 2 else p + 2
     for s in steps:
         try:
             if s == "snv":
@@ -358,19 +356,20 @@ def _apply_preprocess(X: np.ndarray, steps: list[str] | None, sg_tuple: tuple[in
             elif s == "minmax":
                 Xp = minmax_norm(Xp)
             elif s == "sg1":
-                # 1ª derivada com (w,p) normalizados
                 Xp = sg_first_derivative(Xp, window=w, polyorder=p)
             elif s == "sg2":
-                # 2ª derivada com (w,p)
                 Xp = sg_second_derivative(Xp, window=w, polyorder=p)
             else:
                 logger.warning("Preprocesso desconhecido: %s (ignorado)", s)
-        except Exception as ex:
-            # Não derruba a grade; apenas registra e segue
-            logger.exception("Falha no passo de pré-processo '%s' (sg=%s) — passo ignorado.", s, (w, p, d))
-            # segue com Xp do passo anterior
+        except Exception:
+            logger.exception(
+                "Falha no passo de pré-processo '%s' (sg=(%s,%s,%s)) — passo ignorado.",
+                s,
+                w,
+                p,
+                d,
+            )
             continue
-
     return Xp
 
 
@@ -2688,8 +2687,8 @@ def optimize_grid(req: OptimizeGridRequest):
     base_k_grid = list(range(max(1, req.n_components_min), k_grid_max + 1))
     logger.info("optimize: base_k_grid=%s", base_k_grid)
 
-    # normaliza SG
-    sg_grid = _normalize_sg_params(req.sg_params)
+    # grid enxuto de SG (pode ser ampliado futuramente)
+    sg_grid = [(11, 2, 1)]
 
     # CV estável
     strat = (task == "classification")
@@ -2718,9 +2717,6 @@ def optimize_grid(req: OptimizeGridRequest):
         for sg_t in (sg_grid or [None]):
             # aplica PP
             Xpp = _apply_preprocess(X[:, base_mask], steps, sg_tuple=sg_t)
-            if Xpp is None:
-                fail_counts["pp_none"] += 1
-                continue
             Xpp = sanitize_X(Xpp)
 
             # k_grid local respeitando o rank de Xpp
@@ -2731,6 +2727,9 @@ def optimize_grid(req: OptimizeGridRequest):
                 logger.debug("optimize: k_grid vazio para steps=%s sg=%s (k_local_max=%s)", steps, sg_t, k_local_max)
                 continue
 
+            patience = 3
+            best_k_score = -np.inf
+            no_improve = 0
             for k in k_grid:
                 if _safe_limit_ncomp(Xpp) < k:
                     fail_counts["rank_skip"] += 1
@@ -2757,6 +2756,14 @@ def optimize_grid(req: OptimizeGridRequest):
                 if score > best_score:
                     best_score = score
                     best = {"preprocess": steps, "sg": sg_t, "n_components": k, "mask_vars": int(base_mask.sum())}
+
+                if score > best_k_score + 1e-6:
+                    best_k_score = score
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                    if no_improve >= patience:
+                        break
 
     if not best:
         detail = {
@@ -2796,9 +2803,9 @@ def optimize_grid(req: OptimizeGridRequest):
         if proba_full is not None:
             thr_map = _optimize_class_thresholds(y, proba_full, classes_)
         else:
-            thr_map = {int(c): 0.5 for c in classes_}
+            thr_map = {i: 0.5 for i in range(len(classes_))}
     except Exception:
-        thr_map = {int(c): 0.5 for c in classes_}
+        thr_map = {i: 0.5 for i in range(len(classes_))}
 
     report = build_full_report_for_ui(
         Xbest, y, task,

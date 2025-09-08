@@ -1,4 +1,5 @@
 import numpy as np
+import math
 
 
 def snv(X: np.ndarray) -> np.ndarray:
@@ -20,22 +21,45 @@ def msc(X: np.ndarray) -> np.ndarray:
 
 
 def savgol_1d(X: np.ndarray, window: int = 11, polyorder: int = 2, deriv: int = 1) -> np.ndarray:
-    """
-    SG 1D rápido (sem scipy): usa np.convolve com coeficientes pré-computados.
-    Para estabilidade e simplicidade, refletimos nas bordas.
-    """
-    half = window // 2
-    x = np.arange(-half, half + 1).reshape(-1, 1)
-    V = np.hstack([x ** p for p in range(polyorder + 1)])
-    Vinv = np.linalg.pinv(V)
-    e = np.zeros((polyorder + 1, 1))
-    e[deriv, 0] = np.math.factorial(deriv)
-    coef = (Vinv.T @ e).ravel()
-    Xpad = np.pad(X, ((0, 0), (half, half)), mode="reflect")
-    out = np.empty_like(X, dtype=float)
-    for i in range(X.shape[0]):
-        out[i, :] = np.convolve(Xpad[i], coef[::-1], mode="valid")
-    return out
+    """Aplica Savitzky-Golay ao longo do eixo das variáveis (axis=1).
+    Garante parâmetros válidos e corrige uso de factorial."""
+
+    w = int(window)
+    p = int(polyorder)
+    d = int(deriv)
+
+    if w < 5:
+        w = 5
+    if w % 2 == 0:
+        w += 1
+    if p < d:
+        p = d
+    if w <= p:
+        w = p + 1 if (p + 1) % 2 == 1 else p + 2
+
+    try:
+        from scipy.signal import savgol_filter
+        return savgol_filter(
+            X,
+            window_length=w,
+            polyorder=p,
+            deriv=d,
+            axis=1,
+            mode="interp",
+        )
+    except Exception:
+        half = w // 2
+        x = np.arange(-half, half + 1).reshape(-1, 1)
+        V = np.hstack([x ** pp for pp in range(p + 1)])
+        Vinv = np.linalg.pinv(V)
+        e = np.zeros((p + 1, 1))
+        e[d, 0] = math.factorial(d)
+        coef = (Vinv.T @ e).ravel()
+        Xpad = np.pad(X, ((0, 0), (half, half)), mode="reflect")
+        out = np.empty_like(X, dtype=float)
+        for i in range(X.shape[0]):
+            out[i, :] = np.convolve(Xpad[i], coef[::-1], mode="valid")
+        return out
 
 
 def sg_first_derivative(X: np.ndarray, window: int = 11, polyorder: int = 2) -> np.ndarray:
