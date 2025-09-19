@@ -2651,7 +2651,186 @@ class OptimizeGridRequest(BaseModel):
 
 
 def build_full_report_for_ui(X, y, task, n_components, classifier, threshold_map, classes_, cv):
-    return {}
+    """Constrói blocos extras para o front a partir do melhor modelo."""
+
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y)
+    n_samples = X.shape[0]
+    if n_samples == 0:
+        return {}
+
+    safe_k = max(1, min(int(n_components or 1), _safe_limit_ncomp(X)))
+
+    def _decode_class(idx: int):
+        if classes_ is None:
+            return int(idx)
+        try:
+            return classes_[int(idx)]
+        except Exception:
+            return classes_[int(idx) % len(classes_)] if classes_ else int(idx)
+
+    def _resolve_threshold(key):
+        if threshold_map is None:
+            return None
+        candidates = [key, str(key)]
+        try:
+            candidates.append(int(key))
+        except Exception:
+            pass
+        for cand in candidates:
+            if cand in threshold_map:
+                return float(threshold_map[cand])
+        return None
+
+    def _histogram(values: np.ndarray, bins: int = 20):
+        values = np.asarray(values, dtype=float)
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            return {"counts": [], "bin_edges": []}
+        hist, edges = np.histogram(values, bins=bins)
+        return {
+            "counts": hist.astype(float).tolist(),
+            "bin_edges": edges.astype(float).tolist(),
+        }
+
+    result: dict[str, Any] = {"task": task, "n_components": safe_k}
+
+    sample_index = list(range(n_samples))
+
+    pls_model = PLSRegression(n_components=safe_k)
+
+    y_pred_cont = None
+    y_pred_labels = None
+    proba = None
+
+    if task == "classification":
+        uniq = np.unique(y.astype(int))
+        n_classes = int(len(uniq))
+        if n_classes <= 2:
+            y_float = y.astype(float)
+            pls_model.fit(X, y_float)
+            scores = pls_model.predict(X).ravel()
+            proba_pos = np.clip(scores, 0.0, 1.0)
+            proba = np.column_stack([1.0 - proba_pos, proba_pos])
+            thr = _resolve_threshold(1) or 0.5
+            y_pred_int = (proba_pos >= float(thr)).astype(int)
+            y_pred_cont = proba_pos
+        else:
+            Y = np.zeros((n_samples, n_classes), dtype=float)
+            for j, c in enumerate(uniq):
+                Y[:, j] = (y == c).astype(float)
+            pls_model.fit(X, Y)
+            scores = pls_model.predict(X)
+            scores = np.clip(scores, 0.0, None)
+            row_sum = scores.sum(axis=1, keepdims=True)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                proba = np.divide(scores, row_sum, out=np.zeros_like(scores), where=row_sum > 0)
+            y_pred_int = np.argmax(proba, axis=1)
+            y_pred_cont = np.take_along_axis(proba, y.astype(int).reshape(-1, 1), axis=1).ravel()
+
+        y_pred_labels = [str(_decode_class(v)) for v in y_pred_int]
+        y_true_labels = [str(_decode_class(v)) for v in y.astype(int)]
+
+        if proba is None:
+            proba = np.zeros((n_samples, 2), dtype=float)
+
+        if y_pred_cont is None:
+            y_pred_cont = np.take_along_axis(proba, y.astype(int).reshape(-1, 1), axis=1).ravel()
+
+        if proba.shape[1] == 2:
+            proba_pos = proba[:, 1]
+            y_binary = y.astype(int)
+            residuals = y_binary.astype(float) - proba_pos
+            predicted_for_plot = proba_pos
+        else:
+            residuals = 1.0 - y_pred_cont
+            predicted_for_plot = y_pred_cont
+
+    else:
+        pls_model.fit(X, y.reshape(-1, 1))
+        y_pred_cont = pls_model.predict(X).ravel()
+        residuals = y - y_pred_cont
+        predicted_for_plot = y_pred_cont
+        y_true_labels = y.astype(float).tolist()
+        y_pred_labels = y_pred_cont.tolist()
+        proba = None
+
+    T = getattr(pls_model, "x_scores_", None)
+    if T is None:
+        leverage = np.zeros(n_samples, dtype=float)
+    else:
+        T = np.asarray(T)
+        if T.ndim == 1:
+            T = T[:, None]
+        try:
+            Rt = np.linalg.pinv(T.T @ T)
+            leverage = np.sum((T @ Rt) * T, axis=1)
+        except Exception:
+            leverage = np.sum(T**2, axis=1)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        denom = np.sqrt(np.maximum(1e-12, 1.0 - leverage))
+    resid_std = np.std(residuals, ddof=1) if residuals.size else 0.0
+    if resid_std <= 0 or not np.isfinite(resid_std):
+        resid_std = 1.0
+    standardized = residuals / (resid_std * denom)
+
+    res_threshold = 3.0
+    leverage_threshold = float(3.0 * safe_k / max(1, n_samples))
+
+    t2_data = _compute_t2_q(X, pls_model).get("T2", np.zeros(n_samples))
+    try:
+        hotelling_threshold = float(np.nanpercentile(t2_data, 95))
+    except Exception:
+        hotelling_threshold = float("nan")
+
+    residual_block = {
+        "raw": residuals.astype(float).tolist(),
+        "standardized": standardized.astype(float).tolist(),
+        "predicted": np.asarray(predicted_for_plot, dtype=float).tolist(),
+        "sample_index": sample_index,
+        "std_threshold": float(res_threshold),
+        "outliers": [int(sample_index[i]) for i in np.where(np.abs(standardized) > res_threshold)[0].tolist()],
+        "y_true": y_true_labels,
+        "y_pred": y_pred_labels,
+    }
+
+    influence_block = {
+        "leverage": leverage.astype(float).tolist(),
+        "leverage_threshold": float(leverage_threshold),
+        "high_leverage": [int(sample_index[i]) for i in np.where(leverage > leverage_threshold)[0].tolist()],
+        "hotelling_t2": np.asarray(t2_data, dtype=float).tolist(),
+        "hotelling_t2_threshold": hotelling_threshold,
+        "hotelling_outliers": [int(sample_index[i]) for i in np.where(t2_data > hotelling_threshold)[0].tolist()],
+    }
+
+    distributions_block: dict[str, Any] = {}
+    if task == "classification":
+        labels = [str(_decode_class(i)) for i in range(proba.shape[1])]
+        prob_hists = {}
+        for j, label in enumerate(labels):
+            prob_hists[label] = _histogram(proba[:, j])
+        distributions_block["probabilities"] = prob_hists
+    else:
+        distributions_block["predicted"] = _histogram(y_pred_cont)
+
+    predictions_block = {
+        "y_true": y_true_labels,
+        "y_pred": y_pred_labels,
+        "continuous": np.asarray(y_pred_cont, dtype=float).tolist() if y_pred_cont is not None else None,
+        "probabilities": proba.tolist() if proba is not None else None,
+        "sample_index": sample_index,
+    }
+
+    if task == "classification":
+        predictions_block["class_labels"] = [str(_decode_class(i)) for i in range(proba.shape[1])]
+
+    result["residuals"] = residual_block
+    result["influence"] = influence_block
+    result["distributions"] = distributions_block
+    result["predictions"] = predictions_block
+
+    return result
 
 
 @app.post("/optimize")
