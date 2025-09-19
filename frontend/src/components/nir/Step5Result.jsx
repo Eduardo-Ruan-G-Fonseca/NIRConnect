@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import Plotly from "plotly.js-dist-min";
 import { postReport, downloadReport } from "../../services/api";
 
 export default function Step5Result({ result, onBack, onNew }) {
@@ -74,32 +75,34 @@ export default function Step5Result({ result, onBack, onNew }) {
     );
   }
 
+  const renderPlot = (ref, traces, layout, config = { responsive: true }) => {
+    if (!ref?.current) return () => {};
+    Plotly.newPlot(ref.current, traces, layout, config);
+    return () => {
+      try {
+        Plotly.purge(ref.current);
+      } catch {
+        /* ignore */
+      }
+    };
+  };
+
   // VIP chart
   useEffect(() => {
-    const Plotly = window.Plotly;
-    if (!Plotly || !vipRef.current) return;
-
     const trace = {
       x: features,
       y: vip,
       type: "bar",
     };
-    Plotly.newPlot(
-      vipRef.current,
-      [trace],
-      { title: "VIP Scores", margin: { t: 40, r: 20, l: 40, b: 80 } },
-      { responsive: true }
-    );
-
-    return () => {
-      try { Plotly.purge(vipRef.current); } catch { /* ignore */ }
-    };
+    return renderPlot(vipRef, [trace], {
+      title: "VIP Scores",
+      margin: { t: 40, r: 20, l: 40, b: 80 },
+    });
   }, [features, vip]);
 
   // Scatter / Scores / Real vs Pred
   useEffect(() => {
-    const Plotly = window.Plotly;
-    if (!Plotly || !scatterRef.current) return;
+    if (!scatterRef.current) return;
 
     if (isClass && scores?.length) {
       const xs = scores.map((s) => s[0]);
@@ -112,11 +115,14 @@ export default function Step5Result({ result, onBack, onNew }) {
         marker: { color: y_real },
         text: y_real,
       };
-      Plotly.newPlot(
-        scatterRef.current,
+      return renderPlot(
+        scatterRef,
         [trace],
-        { title: "Scores PLS", xaxis: { title: "Comp 1" }, yaxis: { title: "Comp 2" } },
-        { responsive: true }
+        {
+          title: "Scores PLS",
+          xaxis: { title: "Comp 1" },
+          yaxis: { title: "Comp 2" },
+        }
       );
     } else if (!isClass && y_real?.length && y_pred?.length) {
       const trace = {
@@ -125,25 +131,28 @@ export default function Step5Result({ result, onBack, onNew }) {
         mode: "markers",
         type: "scatter",
       };
-      Plotly.newPlot(
-        scatterRef.current,
+      return renderPlot(
+        scatterRef,
         [trace],
-        { title: "y_real vs y_previsto", xaxis: { title: "y_real" }, yaxis: { title: "y_previsto" } },
-        { responsive: true }
+        {
+          title: "y_real vs y_previsto",
+          xaxis: { title: "y_real" },
+          yaxis: { title: "y_previsto" },
+        }
       );
     } else {
+      try {
+        Plotly.purge(scatterRef.current);
+      } catch {
+        /* ignore */
+      }
       scatterRef.current.innerHTML = "<div class='text-sm text-gray-500'>Sem dados para o gráfico.</div>";
     }
-
-    return () => {
-      try { Plotly.purge(scatterRef.current); } catch { /* ignore */ }
-    };
   }, [isClass, scores, y_real, y_pred]);
 
   // Confusion Matrix (se houver)
   useEffect(() => {
-    const Plotly = window.Plotly;
-    if (!Plotly || !cmRef.current) return;
+    if (!cmRef.current) return;
 
     const cm = metrics?.ConfusionMatrix;
     if (isClass && cm && cm.length) {
@@ -163,14 +172,15 @@ export default function Step5Result({ result, onBack, onNew }) {
         yaxis: { title: "Real" },
         margin: { t: 40, r: 20, l: 40, b: 40 },
       };
-      Plotly.newPlot(cmRef.current, [heat], layout, { responsive: true });
+      return renderPlot(cmRef, [heat], layout);
     } else {
+      try {
+        Plotly.purge(cmRef.current);
+      } catch {
+        /* ignore */
+      }
       cmRef.current.innerHTML = "";
     }
-
-    return () => {
-      try { Plotly.purge(cmRef.current); } catch { /* ignore */ }
-    };
   }, [isClass, metrics, classLabels]);
 
   async function handleDownloadPDF() {
