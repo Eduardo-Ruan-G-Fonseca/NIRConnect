@@ -184,6 +184,15 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
       ).map((i) => i.value);
 
       const rangesStr = ranges.map(([a, b]) => `${a}-${b}`).join(",");
+      const firstValidRange = ranges.find(([a, b]) =>
+        Number.isFinite(a) && Number.isFinite(b) && a !== b
+      );
+      const spectralRange = firstValidRange
+        ? {
+            min: Math.min(firstValidRange[0], firstValidRange[1]),
+            max: Math.max(firstValidRange[0], firstValidRange[1]),
+          }
+        : null;
 
       const dsId = getDatasetId();
       if (!dsId) throw new Error("Dataset não encontrado. Volte ao passo 1 e reenvie o arquivo.");
@@ -196,7 +205,7 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
         n_bootstrap: step2.n_bootstrap ?? 0,
         validation_method: step2.validation_method,
         validation_params: step2.validation_params || {},
-        spectral_ranges: rangesStr,
+        spectral_range: spectralRange,
         preprocess: checked,
       };
 
@@ -210,6 +219,7 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
       const fullParams = {
         ...step2,
         ranges: rangesStr,
+        spectral_range: spectralRange,
         preprocess_steps: preprocessSteps,
         range_used: data.range_used,
       };
