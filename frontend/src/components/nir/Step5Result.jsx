@@ -284,7 +284,7 @@ export default function Step5Result({ result, onBack, onNew }) {
 
       {/* AÇÕES */}
       <div className="flex gap-2 justify-end">
-        <button className="bg-gray-200 px-3 py-2 rounded" onClick={onBack}>
+        <button className="bg-gray-200 px-3 py-2 rounded" onClick={() => onBack?.()}>
           Voltar
         </button>
         <button

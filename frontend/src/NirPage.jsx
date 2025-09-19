@@ -85,7 +85,10 @@ export default function NirPage() {
             step2={step2}
             result={result}
             dataId={dataId}
-            onBack={() => setStep(3)}
+            onBack={(currentData, currentParams) => {
+              setResult({ data: currentData, params: currentParams });
+              setStep(3);
+            }}
             onContinue={(finalData, finalParams) => {
               setResult({ data: finalData, params: finalParams });
               setStep(5);
@@ -96,6 +99,9 @@ export default function NirPage() {
         {step === 5 && result && (
           <Step5Result
             result={result}
+            onBack={() => {
+              setStep(4);
+            }}
             onNew={() => resetAll()}
           />
         )}
