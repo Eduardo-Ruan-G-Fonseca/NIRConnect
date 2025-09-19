@@ -154,6 +154,15 @@ export default function Step2Parameters({ onBack, onNext }) {
   const [validationMethod, setValidationMethod] = useState("KFold");
   const [kfoldSplits, setKfoldSplits] = useState(5);
   const [testSize, setTestSize] = useState(0.3);
+  const [metricGoal, setMetricGoal] = useState("balanced_accuracy");
+  const [metricTarget, setMetricTarget] = useState(0.96);
+
+  useEffect(() => {
+    if (classification) {
+      setMetricGoal((prev) => (prev && prev !== "rmsecv" ? prev : "balanced_accuracy"));
+      setMetricTarget((prev) => (Number.isFinite(prev) ? prev : 0.96));
+    }
+  }, [classification]);
 
   useEffect(() => {
     const ds = localStorage.getItem("nir.datasetId");
@@ -214,6 +223,10 @@ export default function Step2Parameters({ onBack, onNext }) {
           ? { test_size: Number(testSize) }
           : {},
     };
+    if (classification) {
+      params.metric_goal = metricGoal || "balanced_accuracy";
+      params.min_score = Number(metricTarget);
+    }
     onNext(params);
   }
 
@@ -290,6 +303,43 @@ export default function Step2Parameters({ onBack, onNext }) {
             value={threshold}
             onChange={setThreshold}
           />
+        )}
+
+        {classification && (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Meta de desempenho
+              </label>
+              <p className="text-xs text-gray-600">
+                Defina a métrica-alvo para receber avisos. Bases reais podem não alcançar 0,96 de balanced accuracy — o sistema irá sinalizar quando a meta não for atingida.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Métrica da meta
+                </label>
+                <select
+                  className="mt-1 w-full border rounded p-2 bg-white !text-gray-800 !border-gray-300"
+                  value={metricGoal}
+                  onChange={(e) => setMetricGoal(e.target.value)}
+                >
+                  <option value="balanced_accuracy">Balanced Accuracy (recomendado)</option>
+                  <option value="accuracy">Accuracy</option>
+                </select>
+              </div>
+              <DecimalChooser
+                label="Alvo mínimo"
+                min={0}
+                max={1}
+                step={0.01}
+                value={metricTarget}
+                onChange={setMetricTarget}
+                hint="Quando o modelo ficar abaixo desse valor, sugeriremos ajustes (mais componentes, pré-processamentos, novos dados)."
+              />
+            </div>
+          </div>
         )}
 
         {/* validação */}

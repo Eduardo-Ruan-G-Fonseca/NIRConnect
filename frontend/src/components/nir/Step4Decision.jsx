@@ -19,6 +19,8 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
   const [currentParams, setCurrentParams] = useState(baseParams);
   const [optLoading, setOptLoading] = useState(false);
   const [bestInfo, setBestInfo] = useState(null);
+  const [goalInfo, setGoalInfo] = useState(null);
+  const [goalWarning, setGoalWarning] = useState(null);
 
   useEffect(() => {
     setTrainRes(baseTrainRes);
@@ -32,6 +34,12 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
 
   const metricsTrain = data.metrics || {};
   const metricsValid = data.cv_metrics || data.metrics_valid || {};
+
+  const formatMetric = (metric) => {
+    if (!metric) return "";
+    const label = String(metric).replace(/_/g, " ");
+    return label.charAt(0).toUpperCase() + label.slice(1);
+  };
 
   function MetricsCard({ title, metrics }) {
     const entries = Object.entries(metrics || {});
@@ -116,8 +124,12 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
       combinedParams?.spectral_range ??
       null;
     const nBootstrap = Number(combinedParams?.n_bootstrap ?? 0) || 0;
+    const minScoreValue = Number(combinedParams?.min_score);
+    const hasMinScore = Number.isFinite(minScoreValue);
 
     setOptLoading(true);
+    setGoalInfo(null);
+    setGoalWarning(null);
     try {
       const optPayload = {
         dataset_id: ds,
@@ -131,10 +143,17 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
       if (Number.isFinite(nSplits)) {
         optPayload.n_splits = nSplits;
       }
+      if (combinedParams.metric_goal) {
+        optPayload.metric_goal = combinedParams.metric_goal;
+      }
+      if (hasMinScore) {
+        optPayload.min_score = minScoreValue;
+      }
 
       const opt = await postOptimize(optPayload);
 
-      const bestK = opt?.best_params?.n_components;
+      const bestParams = opt?.best?.params || opt?.best_params || {};
+      const bestK = bestParams?.n_components;
       if (bestK) {
         const trained = await postTrain({
           dataset_id: ds,
@@ -149,7 +168,10 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
           spectral_ranges: spectralRanges,
         });
         setTrainRes(trained);
-        setBestInfo({ k: bestK, score: opt?.best_score });
+        const scoreValue = opt?.best?.score ?? opt?.best_score ?? null;
+        setBestInfo({ k: bestK, score: scoreValue });
+        setGoalInfo(opt?.goal || null);
+        setGoalWarning(opt?.goal_warning || null);
         setCurrentParams(() => {
           const nextPreprocessSteps = Array.isArray(combinedParams?.preprocess_steps)
             ? combinedParams.preprocess_steps
@@ -158,8 +180,9 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
             ...combinedParams,
             n_components: bestK,
             optimized: true,
-            best_score: opt?.best_score,
-            best_params: opt?.best_params,
+            best_score: scoreValue,
+            best_params: bestParams,
+            min_score: hasMinScore ? minScoreValue : combinedParams?.min_score,
             range_used: trained?.range_used ?? combinedParams?.range_used,
             preprocess_steps: nextPreprocessSteps,
           };
@@ -192,6 +215,18 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
 
   return (
     <div className="space-y-6">
+      {goalWarning && (
+        <div className="border border-amber-300 bg-amber-50 text-amber-900 rounded-lg p-4">
+          <h3 className="font-semibold text-sm">Meta de desempenho não atingida</h3>
+          <p className="text-sm mt-1">{goalWarning}</p>
+          <ul className="list-disc pl-5 text-xs mt-3 space-y-1">
+            <li>Experimente aumentar o número de componentes latentes avaliados.</li>
+            <li>Teste combinações adicionais de pré-processamentos espectrais.</li>
+            <li>Considere coletar mais dados representativos ou revisar a rotulagem.</li>
+          </ul>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <MetricsCard title="Treino" metrics={metricsTrain} />
         <MetricsCard title="Validação" metrics={metricsValid} />
@@ -221,7 +256,16 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
 
         {bestInfo && (
           <div className="text-sm text-gray-700">
-            Modelo otimizado: k = {bestInfo.k} (score: {bestInfo.score?.toFixed?.(3) ?? bestInfo.score})
+            Modelo otimizado: k = {bestInfo.k}
+            {bestInfo.score != null && Number.isFinite(Number(bestInfo.score)) && (
+              <> (score: {Number(bestInfo.score).toFixed(3)})</>
+            )}
+            {goalInfo?.target != null && (
+              <>
+                {" "}— meta ({formatMetric(goalInfo.metric || "balanced_accuracy")} {goalInfo.comparison || ">="}{" "}
+                {goalInfo.target.toFixed(3)})
+              </>
+            )}
           </div>
         )}
       </div>

@@ -2652,6 +2652,8 @@ class OptimizeGridRequest(BaseModel):
     ipls_interval_width: int = 20
     classifier: str = "plsda"  # "plsda" | "svm"
     spectral_range: Optional[Dict[str, float]] = None  # {"min":..., "max":...}
+    metric_goal: Optional[str] = None
+    min_score: Optional[float] = None
 
 
 def build_full_report_for_ui(X, y, task, n_components, classifier, threshold_map, classes_, cv):
@@ -2899,6 +2901,7 @@ def optimize_grid(req: OptimizeGridRequest):
     }
 
     # ===== LOOP DE BUSCA =====
+    selection_metric = "balanced_accuracy" if task == "classification" else "rmsecv"
     mask_vars = int(base_mask.sum())
     Xpp_cache: dict[tuple, np.ndarray] = {}
     combos = []
@@ -3069,12 +3072,49 @@ def optimize_grid(req: OptimizeGridRequest):
     report["thresholds_"] = thr_map
     report["n_selected_variables"] = int(base_mask.sum())
 
+    achieved_score = float(best_score if task == "classification" else -best_score)
+
+    goal_metric = (req.metric_goal or selection_metric or "").strip().lower()
+    target_score = float(req.min_score) if req.min_score is not None else None
+
+    def _prefers_higher(metric_name: str) -> bool:
+        m = metric_name.lower()
+        lower_keywords = ["rmse", "mse", "rmsec", "rmsecv", "rmsep", "mae", "error", "loss"]
+        return not any(kw in m for kw in lower_keywords)
+
+    goal_feedback = None
+    warnings = []
+    goal_warning = None
+    if target_score is not None:
+        prefers_higher = _prefers_higher(goal_metric or selection_metric)
+        comparison_ok = achieved_score >= target_score if prefers_higher else achieved_score <= target_score
+        goal_feedback = {
+            "metric": goal_metric or selection_metric,
+            "target": target_score,
+            "achieved": achieved_score,
+            "met": bool(comparison_ok),
+            "comparison": ">=" if prefers_higher else "<=",
+        }
+        if not comparison_ok:
+            metric_label = (goal_metric or selection_metric).replace("_", " ")
+            suggestion = (
+                "Considere testar mais componentes, aplicar pré-processamentos adicionais ou coletar mais dados."
+            )
+            goal_warning = (
+                f"Meta não atingida: {metric_label} ficou em {achieved_score:.3f}, "
+                f"abaixo do alvo de {target_score:.3f}. {suggestion}"
+            ) if prefers_higher else (
+                f"Meta não atingida: {metric_label} ficou em {achieved_score:.3f}, "
+                f"acima do limite de {target_score:.3f}. {suggestion}"
+            )
+            warnings.append(goal_warning)
+
     out = {
         "status": "ok",
-        "selection_metric": "balanced_accuracy" if task == "classification" else "rmsecv",
+        "selection_metric": selection_metric,
         "best": {
             "params": best,
-            "score": float(best_score if task == "classification" else -best_score),
+            "score": achieved_score,
             "report": report
         },
         "trials": trials,
@@ -3084,4 +3124,10 @@ def optimize_grid(req: OptimizeGridRequest):
             "speedup_estimate": speedup_est,
         },
     }
+    if goal_feedback is not None:
+        out["goal"] = goal_feedback
+    if goal_warning:
+        out["goal_warning"] = goal_warning
+    if warnings:
+        out["warnings"] = warnings
     return JSONResponse(content=_json_sanitize(out))
