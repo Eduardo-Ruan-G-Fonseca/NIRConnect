@@ -285,6 +285,21 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
 
       const bestParams = opt?.best?.params || opt?.best_params || {};
       const bestK = bestParams?.n_components;
+      const bestPreprocess = Array.isArray(bestParams?.preprocess)
+        ? bestParams.preprocess.filter(Boolean)
+        : [];
+      const [bestSgCandidate] = normalizeSgParams(
+        bestParams?.sg != null ? [bestParams.sg] : []
+      );
+      const fallbackPreprocess = preprocessList.filter(Boolean);
+      const finalPreprocess = bestPreprocess.length ? bestPreprocess : fallbackPreprocess;
+      const finalPreprocessGrid = finalPreprocess.length
+        ? [finalPreprocess]
+        : preprocessGrid;
+      const defaultSgCandidate = Array.isArray(normalizedSg) && normalizedSg.length ? normalizedSg[0] : null;
+      const finalSgTuple = bestSgCandidate || defaultSgCandidate || null;
+      const usesSgMethod = finalPreprocess.some((method) => method?.startsWith("sg"));
+      const sgForTraining = usesSgMethod && finalSgTuple ? finalSgTuple : null;
       if (bestK) {
         const trained = await postTrain({
           dataset_id: ds,
@@ -295,32 +310,51 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
           n_bootstrap: nBootstrap,
           threshold,
           n_components: bestK,
-          preprocess: preprocessList.filter(Boolean),
+          preprocess: finalPreprocess,
           spectral_range: spectralRange,
-          preprocess_grid: preprocessGrid,
+          preprocess_grid: finalPreprocessGrid,
+          sg: sgForTraining,
         });
         setTrainRes(trained);
         const scoreValue = opt?.best?.score ?? opt?.best_score ?? null;
-        setBestInfo({ k: bestK, score: scoreValue });
+        setBestInfo({
+          k: bestK,
+          score: scoreValue,
+          preprocess: finalPreprocess,
+          sg: sgForTraining,
+          usesSg: usesSgMethod,
+        });
         setGoalInfo(opt?.goal || null);
         setGoalWarning(opt?.goal_warning || null);
         setCurrentParams(() => {
-          const nextPreprocessSteps = Array.isArray(combinedParams?.preprocess_steps)
+          const fallbackSteps = Array.isArray(combinedParams?.preprocess_steps)
             ? combinedParams.preprocess_steps
-            : preprocessList.filter(Boolean).map((method) => ({ method }));
-          const nextPreprocessGrid = preprocessGrid.length
+            : fallbackPreprocess.map((method) => ({ method }));
+          const fallbackGrid = preprocessGrid.length
             ? preprocessGrid
-            : normalizePreprocessGrid(combinedParams?.preprocess_grid, preprocessList.filter(Boolean));
+            : normalizePreprocessGrid(combinedParams?.preprocess_grid, fallbackPreprocess);
+          const nextPreprocessSteps = finalPreprocess.length
+            ? finalPreprocess.map((method) => ({ method }))
+            : fallbackSteps;
+          const nextPreprocessGrid = finalPreprocess.length ? [finalPreprocess] : fallbackGrid;
+          const nextSgParams = usesSgMethod && finalSgTuple ? [finalSgTuple] : [];
           return {
             ...combinedParams,
             n_components: bestK,
             optimized: true,
             best_score: scoreValue,
-            best_params: bestParams,
+            best_params: {
+              ...bestParams,
+              preprocess: finalPreprocess,
+              sg: sgForTraining,
+            },
             min_score: hasMinScore ? minScoreValue : combinedParams?.min_score,
             range_used: trained?.range_used ?? combinedParams?.range_used,
+            preprocess: finalPreprocess,
             preprocess_steps: nextPreprocessSteps,
             preprocess_grid: nextPreprocessGrid,
+            sg: sgForTraining || undefined,
+            sg_params: nextSgParams,
             spectral_range: spectralRange ?? combinedParams?.spectral_range,
           };
         });
@@ -403,6 +437,29 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
                 {goalInfo.target.toFixed(3)})
               </>
             )}
+          </div>
+        )}
+
+        {Array.isArray(bestInfo?.preprocess) && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="card p-4">
+              <h3 className="card-title mb-2">Pré-processamento vencedor</h3>
+              <p className="text-sm text-gray-800">
+                {bestInfo.preprocess.length
+                  ? bestInfo.preprocess.join(" + ")
+                  : "Sem pré-processamento espectral"}
+              </p>
+              {bestInfo.sg && (
+                <p className="text-xs text-gray-600 mt-2">
+                  SG: janela {bestInfo.sg[0]}, ordem {bestInfo.sg[1]}, derivada {bestInfo.sg[2]}
+                </p>
+              )}
+              {bestInfo.usesSg && !bestInfo.sg && (
+                <p className="text-xs text-gray-600 mt-2">
+                  SG: parâmetros padrão (janela 11, ordem 2, derivada 1)
+                </p>
+              )}
+            </div>
           </div>
         )}
       </div>

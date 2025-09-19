@@ -227,6 +227,7 @@ export async function postTrain(payload) {
     spectral_range: spectralRange ?? undefined,
     preprocess: payload.preprocess,
     preprocess_grid: payload.preprocess_grid,
+    sg: payload.sg ?? (Array.isArray(payload.sg_params) && payload.sg_params.length ? payload.sg_params[0] : undefined),
   };
   return postJSON(`${API_BASE}/train`, body);
 }

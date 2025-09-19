@@ -142,17 +142,20 @@ def _hash_y(y: np.ndarray) -> str:
     return hashlib.sha1(yb.view(np.uint8)).hexdigest()
 
 
-def _get_cached_preproc(dataset_id, X, wavelengths, spectral_range, steps, apply_fn):
+def _get_cached_preproc(dataset_id, X, wavelengths, spectral_range, steps, apply_fn, sg_tuple=None):
     wmin = spectral_range["min"] if spectral_range else None
     wmax = spectral_range["max"] if spectral_range else None
-    key = (dataset_id, wmin, wmax, tuple(steps or []))
+    key = (dataset_id, wmin, wmax, tuple(steps or []), tuple(sg_tuple) if sg_tuple else None)
     if key in preproc_cache:
         return preproc_cache[key]
     Xcut = X
     if spectral_range and wavelengths is not None:
         m = (wavelengths >= wmin) & (wavelengths <= wmax)
         Xcut = X[:, m]
-    Xp = apply_fn(Xcut, steps or [])
+    if sg_tuple is not None:
+        Xp = apply_fn(Xcut, steps or [], sg_tuple=sg_tuple)
+    else:
+        Xp = apply_fn(Xcut, steps or [])
     preproc_cache[key] = Xp
     return Xp
 
@@ -2069,6 +2072,8 @@ class TrainRequest(BaseModel):
     threshold: float | None = None
     preprocess: List[str] | None = None
     spectral_range: Dict[str, float] | None = None
+    sg: Optional[Union[Tuple[int, int, int], List[int]]] = None
+    sg_params: Optional[List[Tuple[int, int, int]]] = None
 
 @app.post("/train-form")
 def deprecated_train_form():
@@ -2413,6 +2418,22 @@ def train(req: TrainRequest):
         wavelengths_arr = np.asarray(wavelengths_raw, dtype=float)
     except (TypeError, ValueError):
         wavelengths_arr = np.asarray([], dtype=float)
+    sg_tuple = None
+    if getattr(req, "sg", None) is not None:
+        try:
+            sg_norm = _normalize_sg_params([getattr(req, "sg")])
+            if sg_norm:
+                sg_tuple = tuple(sg_norm[0])
+        except Exception:
+            sg_tuple = None
+    elif getattr(req, "sg_params", None):
+        try:
+            sg_norm = _normalize_sg_params(getattr(req, "sg_params"))
+            if sg_norm:
+                sg_tuple = tuple(sg_norm[0])
+        except Exception:
+            sg_tuple = None
+
     X = _get_cached_preproc(
         req.dataset_id,
         X,
@@ -2420,6 +2441,7 @@ def train(req: TrainRequest):
         req.spectral_range,
         req.preprocess,
         _apply_preprocess,
+        sg_tuple=sg_tuple,
     )
 
     # ajusta lista de comprimentos de onda conforme range
