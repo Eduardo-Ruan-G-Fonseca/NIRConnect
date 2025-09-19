@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 
 
@@ -29,7 +31,7 @@ def savgol_1d(X: np.ndarray, window: int = 11, polyorder: int = 2, deriv: int = 
     V = np.hstack([x ** p for p in range(polyorder + 1)])
     Vinv = np.linalg.pinv(V)
     e = np.zeros((polyorder + 1, 1))
-    e[deriv, 0] = np.math.factorial(deriv)
+    e[deriv, 0] = math.factorial(deriv)
     coef = (Vinv.T @ e).ravel()
     Xpad = np.pad(X, ((0, 0), (half, half)), mode="reflect")
     out = np.empty_like(X, dtype=float)
