@@ -181,7 +181,6 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
       const checked = Array.from(
         document.querySelectorAll('input[name="pp-method"]:checked')
       ).map((i) => i.value);
-      const method = checked[0] || null;
 
       const rangesStr = ranges.map(([a, b]) => `${a}-${b}`).join(",");
 
@@ -197,19 +196,20 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
         validation_method: step2.validation_method,
         validation_params: step2.validation_params || {},
         spectral_ranges: rangesStr,
-        preprocess: method ? [method] : [],
+        preprocess: checked,
       };
 
       const data = await postTrain(payload);
       console.debug('[Step3] rangesStr =', rangesStr);
-      console.debug('[Step3] method =', method);
+      console.debug('[Step3] preprocess =', checked);
       console.debug('[Step3] step2 =', step2);
       console.debug('[Step3] data.range_used =', data?.range_used);
 
+      const preprocessSteps = checked.map((method) => ({ method }));
       const fullParams = {
         ...step2,
         ranges: rangesStr,
-        preprocess_steps: method ? [{ method }] : [],
+        preprocess_steps: preprocessSteps,
         range_used: data.range_used,
       };
 
