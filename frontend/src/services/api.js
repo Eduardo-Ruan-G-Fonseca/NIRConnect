@@ -25,19 +25,48 @@ export async function postAnalisar(fd) {
   return res.json();
 }
 
-export async function postOptimize(payload) {
-  return postJSON(`${API_BASE}/optimize`, {
-    dataset_id: payload.dataset_id || getDatasetId(),
-    target_name: payload.target_name || payload.target,
-    mode: payload.mode,
+export async function postOptimize(payload = {}) {
+  const datasetId = payload.dataset_id || getDatasetId();
+  const targetName = payload.target_name ?? payload.target;
+  const kMin = payload.k_min ?? payload.n_components_min ?? 1;
+  const kMax = payload.k_max ?? payload.n_components_max;
+  const resolvedMode =
+    payload.mode ??
+    (typeof payload.classification === "boolean"
+      ? payload.classification
+        ? "classification"
+        : "regression"
+      : undefined);
+
+  const body = {
+    ...payload,
+    dataset_id: datasetId,
+    target_name: targetName,
+    mode: resolvedMode,
     validation_method: payload.validation_method,
     n_splits: payload.n_splits,
+    repeats: payload.repeats,
     threshold: payload.threshold,
-    k_min: payload.k_min ?? 1,
-    k_max: payload.k_max ?? null,
+    n_components_min: kMin,
+    n_components_max: kMax,
     metric_goal: payload.metric_goal,
     min_score: payload.min_score,
-  });
+    spectral_range: payload.spectral_range,
+    preprocess_grid: payload.preprocess_grid,
+    sg_params: payload.sg_params,
+    use_ipls: payload.use_ipls,
+    ipls_max_intervals: payload.ipls_max_intervals,
+    ipls_interval_width: payload.ipls_interval_width,
+  };
+
+  delete body.target;
+  delete body.classification;
+
+  const cleaned = Object.fromEntries(
+    Object.entries(body).filter(([, value]) => value !== null && value !== undefined)
+  );
+
+  return postJSON(`${API_BASE}/optimize`, cleaned);
 }
 
 export async function getOptimizeStatus() {
