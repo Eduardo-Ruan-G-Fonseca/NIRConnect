@@ -8,9 +8,9 @@ import LatentCard from "./LatentCard";
 import PerClassMetricsCard from "./PerClassMetricsCard";
 import { normalizeTrainResult } from "../../services/normalizeTrainResult";
 
-export default function Step4Decision({ step2, result, dataId }) {
+export default function Step4Decision({ step2, result, dataId, onBack, onContinue }) {
   const [trainRes, setTrainRes] = useState(result?.data || result || {});
-  const params = result?.params || {};
+  const [currentParams, setCurrentParams] = useState(result?.params || {});
   const [optLoading, setOptLoading] = useState(false);
   const [bestInfo, setBestInfo] = useState(null);
 
@@ -72,11 +72,19 @@ export default function Step4Decision({ step2, result, dataId }) {
           n_splits: step2.n_splits,
           threshold: step2.threshold,
           n_components: bestK,
-          preprocess: params.preprocess_steps?.map(p => p.method) || [],
-          spectral_ranges: params.ranges || null,
+          preprocess: currentParams.preprocess_steps?.map((p) => p.method) || [],
+          spectral_ranges: currentParams.ranges || null,
         });
         setTrainRes(trained);
         setBestInfo({ k: bestK, score: opt?.best_score });
+        setCurrentParams((prev) => ({
+          ...prev,
+          n_components: bestK,
+          optimized: true,
+          best_score: opt?.best_score,
+          best_params: opt?.best_params,
+          range_used: trained?.range_used ?? prev?.range_used,
+        }));
         document.getElementById('cv-curve')?.scrollIntoView({ behavior: 'smooth' });
       } else {
         alert('Não foi possível sugerir k.');
@@ -93,6 +101,14 @@ export default function Step4Decision({ step2, result, dataId }) {
     } finally {
       setOptLoading(false);
     }
+  }
+
+  function handleBack() {
+    onBack?.(trainRes, currentParams);
+  }
+
+  function handleContinue() {
+    onContinue?.(trainRes, currentParams);
   }
 
   return (
@@ -114,20 +130,37 @@ export default function Step4Decision({ step2, result, dataId }) {
 
       <PerClassMetricsCard perClass={data.per_class} />
 
-      <button
-        onClick={handleOptimize}
-        className="bg-blue-600 hover:bg-blue-700 text-white py-3 px-5 rounded-lg shadow-sm flex items-center disabled:opacity-50"
-        disabled={optLoading}
-      >
-        {optLoading ? <i className="fas fa-spinner fa-spin mr-2"></i> : <i className="fas fa-cogs mr-2"></i>}
-        Otimizar Modelo
-      </button>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <button
+          onClick={handleOptimize}
+          className="bg-blue-600 hover:bg-blue-700 text-white py-3 px-5 rounded-lg shadow-sm flex items-center justify-center disabled:opacity-50"
+          disabled={optLoading}
+        >
+          {optLoading ? <i className="fas fa-spinner fa-spin mr-2"></i> : <i className="fas fa-cogs mr-2"></i>}
+          Otimizar Modelo
+        </button>
 
-      {bestInfo && (
-        <div className="mt-4 text-sm text-gray-700">
-          Modelo otimizado: k = {bestInfo.k} (score: {bestInfo.score?.toFixed?.(3) ?? bestInfo.score})
-        </div>
-      )}
+        {bestInfo && (
+          <div className="text-sm text-gray-700">
+            Modelo otimizado: k = {bestInfo.k} (score: {bestInfo.score?.toFixed?.(3) ?? bestInfo.score})
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
+        <button
+          onClick={handleBack}
+          className="bg-gray-200 hover:bg-gray-300 text-gray-800 py-2 px-4 rounded-lg"
+        >
+          Voltar
+        </button>
+        <button
+          onClick={handleContinue}
+          className="bg-emerald-700 hover:bg-emerald-800 text-white py-2 px-4 rounded-lg"
+        >
+          Continuar
+        </button>
+      </div>
     </div>
   );
 }
