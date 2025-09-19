@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { postOptimize, postTrain } from "../../services/api";
 import { getDatasetId } from "../../api/http";
 import VipTopCard from "./VipTopCard";
@@ -9,10 +9,24 @@ import PerClassMetricsCard from "./PerClassMetricsCard";
 import { normalizeTrainResult } from "../../services/normalizeTrainResult";
 
 export default function Step4Decision({ step2, result, dataId, onBack, onContinue }) {
-  const [trainRes, setTrainRes] = useState(result?.data || result || {});
-  const [currentParams, setCurrentParams] = useState(result?.params || {});
+  const baseTrainRes = useMemo(() => result?.data || result || {}, [result]);
+  const baseParams = useMemo(
+    () => ({ ...(step2 || {}), ...((result && result.params) || {}) }),
+    [step2, result]
+  );
+
+  const [trainRes, setTrainRes] = useState(baseTrainRes);
+  const [currentParams, setCurrentParams] = useState(baseParams);
   const [optLoading, setOptLoading] = useState(false);
   const [bestInfo, setBestInfo] = useState(null);
+
+  useEffect(() => {
+    setTrainRes(baseTrainRes);
+  }, [baseTrainRes]);
+
+  useEffect(() => {
+    setCurrentParams(baseParams);
+  }, [baseParams]);
 
   const data = useMemo(() => normalizeTrainResult(trainRes), [trainRes]);
 
@@ -49,42 +63,107 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
       alert("Dataset não encontrado — volte ao passo 1 e faça o upload.");
       return;
     }
+
+    const combinedParams = { ...(step2 || {}), ...(currentParams || {}) };
+    const validationMethod = combinedParams.validation_method;
+    const validationParams = combinedParams.validation_params || {};
+
+    const extractNSplits = () => {
+      if (validationMethod !== "KFold" && validationMethod !== "StratifiedKFold") {
+        const fallback = Number(combinedParams?.n_splits);
+        return Number.isFinite(fallback) && fallback > 0 ? fallback : null;
+      }
+      const candidates = [
+        validationParams?.n_splits,
+        validationParams?.nSplits,
+        validationParams?.folds,
+        validationParams?.k,
+        validationParams?.nFolds,
+        combinedParams?.n_splits,
+      ];
+      for (const value of candidates) {
+        const num = Number(value);
+        if (Number.isFinite(num) && num > 0) {
+          return num;
+        }
+      }
+      return null;
+    };
+
+    const nSplits = extractNSplits();
+    const threshold =
+      combinedParams.classification && combinedParams.threshold != null
+        ? combinedParams.threshold
+        : undefined;
+    const kMaxCandidate =
+      combinedParams?.k_max ??
+      combinedParams?.n_components_max ??
+      combinedParams?.n_components ??
+      null;
+    const parsedKMax =
+      kMaxCandidate !== null && kMaxCandidate !== undefined ? Number(kMaxCandidate) : null;
+    const kMax =
+      parsedKMax !== null && Number.isFinite(parsedKMax) && parsedKMax > 0 ? parsedKMax : null;
+
+    const preprocessList = Array.isArray(combinedParams?.preprocess_steps)
+      ? combinedParams.preprocess_steps.map((p) => (typeof p === "string" ? p : p?.method))
+      : Array.isArray(combinedParams?.preprocess)
+      ? combinedParams.preprocess
+      : [];
+    const spectralRanges =
+      combinedParams?.spectral_ranges ??
+      combinedParams?.ranges ??
+      combinedParams?.spectral_range ??
+      null;
+    const nBootstrap = Number(combinedParams?.n_bootstrap ?? 0) || 0;
+
     setOptLoading(true);
     try {
-      const opt = await postOptimize({
+      const optPayload = {
         dataset_id: ds,
-        target_name: step2.target,
-        mode: step2.classification ? "classification" : "regression",
-        validation_method: step2.validation_method,
-        n_splits: step2.n_splits,
-        threshold: step2.threshold,
+        target_name: combinedParams.target,
+        mode: combinedParams.classification ? "classification" : "regression",
+        validation_method: validationMethod,
+        threshold,
         k_min: 1,
-        k_max: step2.n_components_max || null,
-      });
+        k_max: kMax,
+      };
+      if (Number.isFinite(nSplits)) {
+        optPayload.n_splits = nSplits;
+      }
+
+      const opt = await postOptimize(optPayload);
 
       const bestK = opt?.best_params?.n_components;
       if (bestK) {
         const trained = await postTrain({
           dataset_id: ds,
-          target_name: step2.target,
-          mode: step2.classification ? "classification" : "regression",
-          validation_method: step2.validation_method,
-          n_splits: step2.n_splits,
-          threshold: step2.threshold,
+          target_name: combinedParams.target,
+          mode: combinedParams.classification ? "classification" : "regression",
+          validation_method: validationMethod,
+          validation_params: validationParams,
+          n_bootstrap: nBootstrap,
+          threshold,
           n_components: bestK,
-          preprocess: currentParams.preprocess_steps?.map((p) => p.method) || [],
-          spectral_ranges: currentParams.ranges || null,
+          preprocess: preprocessList.filter(Boolean),
+          spectral_ranges: spectralRanges,
         });
         setTrainRes(trained);
         setBestInfo({ k: bestK, score: opt?.best_score });
-        setCurrentParams((prev) => ({
-          ...prev,
-          n_components: bestK,
-          optimized: true,
-          best_score: opt?.best_score,
-          best_params: opt?.best_params,
-          range_used: trained?.range_used ?? prev?.range_used,
-        }));
+        setCurrentParams(() => {
+          const nextPreprocessSteps = Array.isArray(combinedParams?.preprocess_steps)
+            ? combinedParams.preprocess_steps
+            : preprocessList.filter(Boolean).map((method) => ({ method }));
+          return {
+            ...combinedParams,
+            n_components: bestK,
+            optimized: true,
+            best_score: opt?.best_score,
+            best_params: opt?.best_params,
+            range_used: trained?.range_used ?? combinedParams?.range_used,
+            preprocess_steps: nextPreprocessSteps,
+          };
+        });
         document.getElementById('cv-curve')?.scrollIntoView({ behavior: 'smooth' });
       } else {
         alert('Não foi possível sugerir k.');
