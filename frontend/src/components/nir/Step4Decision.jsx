@@ -98,26 +98,56 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
   };
 
   const normalizePreprocessGrid = (grid, fallbackPipeline) => {
+    const safeFallback = Array.isArray(fallbackPipeline)
+      ? fallbackPipeline.map((step) => (typeof step === "string" ? step : step?.method)).filter(Boolean)
+      : [];
+
     if (Array.isArray(grid) && grid.length) {
       const mapped = grid
         .map((pipeline) => {
           if (Array.isArray(pipeline)) {
-            return pipeline.map((step) => (typeof step === "string" ? step : step?.method)).filter(Boolean);
+            const steps = pipeline
+              .map((step) => (typeof step === "string" ? step : step?.method))
+              .filter((step) => typeof step === "string" && step);
+            return steps.length ? steps : [];
           }
-          if (typeof pipeline === "string") {
+          if (typeof pipeline === "string" && pipeline) {
             return [pipeline];
           }
           return [];
         })
-        .filter((pipeline) => pipeline.length);
+        .filter((pipeline) => Array.isArray(pipeline));
       if (mapped.length) {
         return mapped;
       }
     }
-    if (fallbackPipeline && fallbackPipeline.length) {
-      return [fallbackPipeline];
+
+    if (safeFallback.length) {
+      return [safeFallback];
     }
-    return [];
+
+    return [[]];
+  };
+
+  const normalizeSgParams = (params) => {
+    if (!Array.isArray(params)) return [];
+    return params
+      .map((entry) => {
+        if (Array.isArray(entry)) {
+          const [w, p, d] = entry;
+          const parsed = [w, p, d].map((value) => (Number.isFinite(value) ? value : Number(value)));
+          return parsed.every((value) => Number.isFinite(value)) ? parsed.map((value) => Math.trunc(value)) : null;
+        }
+        if (entry && typeof entry === "object") {
+          const window = entry.window ?? entry.window_length ?? entry[0];
+          const poly = entry.poly ?? entry.polyorder ?? entry[1];
+          const deriv = entry.deriv ?? entry.derivative ?? entry[2];
+          const parsed = [window, poly, deriv].map((value) => (Number.isFinite(value) ? value : Number(value)));
+          return parsed.every((value) => Number.isFinite(value)) ? parsed.map((value) => Math.trunc(value)) : null;
+        }
+        return null;
+      })
+      .filter(Boolean);
   };
 
   function MetricsCard({ title, metrics }) {
@@ -235,8 +265,20 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
       if (hasMinScore) {
         optPayload.min_score = minScoreValue;
       }
-      if (preprocessGrid.length) {
-        optPayload.preprocess_grid = preprocessGrid;
+      optPayload.preprocess_grid = preprocessGrid;
+
+      const sgCandidates =
+        Array.isArray(combinedParams?.sg_params) && combinedParams.sg_params.length
+          ? combinedParams.sg_params
+          : Array.isArray(combinedParams?.sg_grid)
+          ? combinedParams.sg_grid
+          : [];
+      const normalizedSg = normalizeSgParams(sgCandidates);
+      const hasSgMethod = preprocessGrid.some((pipeline) => pipeline.some((method) => method?.startsWith("sg")));
+      if (!hasSgMethod) {
+        optPayload.sg_params = [];
+      } else if (normalizedSg.length) {
+        optPayload.sg_params = normalizedSg;
       }
 
       const opt = await postOptimize(optPayload);
