@@ -39,5 +39,9 @@ export function normalizeTrainResult(res) {
     wavelengths: res?.wavelengths || [],
     latent: res?.latent || null,
     oof: res?.oof || null,
+    residuals: res?.residuals || null,
+    influence: res?.influence || null,
+    distributions: res?.distributions || null,
+    predictions: res?.predictions || null,
   };
 }

@@ -127,7 +127,10 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
       yaxis: { range: [ymin - pad, ymax + pad] },
     };
 
-    Plotly.react(chartRef.current, traces, layout, { responsive: true, displayModeBar: false });
+    const node = chartRef.current;
+    if (!node) return () => {};
+
+    Plotly.react(node, traces, layout, { responsive: true, displayModeBar: false });
 
     const onSelected = (ev) => {
       if (ev?.range?.x) {
@@ -138,16 +141,14 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
         setLambdaMax(bR);
         setRanges([[Math.min(aR, bR), Math.max(aR, bR)]]);
       }
-      Plotly.relayout(chartRef.current, { dragmode: "select" });
+      Plotly.relayout(node, { dragmode: "select" });
     };
 
-    chartRef.current.on("plotly_selected", onSelected);
+    node.on("plotly_selected", onSelected);
 
     return () => {
-      if (chartRef.current) {
-        chartRef.current.removeAllListeners?.("plotly_selected");
-        try { Plotly.purge(chartRef.current); } catch { /* ignore */ }
-      }
+      node?.removeAllListeners?.("plotly_selected");
+      try { Plotly.purge(node); } catch { /* ignore */ }
     };
   }, [wavelengths, series, meanLine, showMean, ranges]);
 

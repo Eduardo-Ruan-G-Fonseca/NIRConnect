@@ -2,12 +2,14 @@ import React, { useMemo } from "react";
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 export default function LatentCard({ latent, labels }) {
-  const scores = latent?.scores || []; // [n, up to 3]
-  const data = useMemo(() => scores.map((row, i) => ({
+  const scoreMatrix = useMemo(() => (
+    Array.isArray(latent?.scores) ? latent.scores : []
+  ), [latent?.scores]);
+  const data = useMemo(() => scoreMatrix.map((row, i) => ({
     lv1: row[0] ?? 0, lv2: row[1] ?? 0, label: labels?.[i] ?? ""
-  })), [scores, labels]);
+  })), [scoreMatrix, labels]);
 
-  if (!scores.length) {
+  if (!scoreMatrix.length) {
     return <div className="card dashed h-64 flex items-center justify-center"><p>Sem variáveis latentes.</p></div>;
   }
 
