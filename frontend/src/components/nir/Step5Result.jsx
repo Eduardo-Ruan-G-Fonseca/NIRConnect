@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-dist-min";
 import { postReport, downloadReport } from "../../services/api";
 import { normalizeTrainResult } from "../../services/normalizeTrainResult";
@@ -64,6 +64,79 @@ function PerClassTable({ perClass }) {
 export default function Step5Result({ result, onBack, onNew }) {
   const rawData = useMemo(() => result?.data || result || {}, [result]);
   const data = useMemo(() => normalizeTrainResult(rawData), [rawData]);
+  const params = result?.params || {};
+
+  const preprocessSteps = useMemo(() => {
+    if (Array.isArray(params?.preprocess_steps) && params.preprocess_steps.length) {
+      return params.preprocess_steps
+        .map((step) => (typeof step === "string" ? step : step?.method))
+        .filter(Boolean);
+    }
+    if (Array.isArray(params?.preprocess) && params.preprocess.length) {
+      return params.preprocess.filter(Boolean);
+    }
+    if (Array.isArray(params?.best_params?.preprocess) && params.best_params.preprocess.length) {
+      return params.best_params.preprocess.filter(Boolean);
+    }
+    if (Array.isArray(rawData?.preprocess_applied) && rawData.preprocess_applied.length) {
+      return rawData.preprocess_applied.filter(Boolean);
+    }
+    if (Array.isArray(rawData?.best?.params?.preprocess) && rawData.best.params.preprocess.length) {
+      return rawData.best.params.preprocess.filter(Boolean);
+    }
+    return [];
+  }, [
+    params?.best_params?.preprocess,
+    params?.preprocess,
+    params?.preprocess_steps,
+    rawData?.best?.params?.preprocess,
+    rawData?.preprocess_applied,
+  ]);
+
+  const preprocessLabel = preprocessSteps.length
+    ? preprocessSteps.join(" + ")
+    : "Sem pré-processamento espectral";
+  const usesSg = preprocessSteps.some((step) => step?.startsWith("sg"));
+
+  const normalizeSg = useCallback((value) => {
+    if (!value) return null;
+    if (Array.isArray(value)) {
+      const parsed = value.map((entry) => Number(entry));
+      return parsed.every((num) => Number.isFinite(num))
+        ? parsed.map((num) => Math.trunc(num))
+        : null;
+    }
+    if (typeof value === "object") {
+      const window = value.window ?? value.window_length ?? value[0];
+      const poly = value.poly ?? value.polyorder ?? value[1];
+      const deriv = value.deriv ?? value.derivative ?? value[2];
+      const parsed = [window, poly, deriv].map((entry) => Number(entry));
+      return parsed.every((num) => Number.isFinite(num))
+        ? parsed.map((num) => Math.trunc(num))
+        : null;
+    }
+    return null;
+  }, []);
+
+  const resolvedSg = useMemo(() => {
+    const candidates = [
+      params?.sg,
+      params?.best_params?.sg,
+      Array.isArray(params?.sg_params) && params.sg_params.length ? params.sg_params[0] : null,
+      rawData?.best?.params?.sg,
+    ];
+    for (const candidate of candidates) {
+      const normalized = normalizeSg(candidate);
+      if (normalized) return normalized;
+    }
+    return null;
+  }, [normalizeSg, params?.best_params?.sg, params?.sg, params?.sg_params, rawData?.best?.params?.sg]);
+
+  const sgDescription = usesSg
+    ? resolvedSg
+      ? `Savitzky-Golay (janela ${resolvedSg[0]}, ordem ${resolvedSg[1]}, derivada ${resolvedSg[2]})`
+      : "Savitzky-Golay com parâmetros padrão."
+    : "Sem Savitzky-Golay.";
 
   const {
     task,
@@ -90,6 +163,54 @@ export default function Step5Result({ result, onBack, onNew }) {
   const leverageThreshold = influence?.leverage_threshold ?? null;
   const stdThreshold = residuals?.std_threshold ?? null;
   const hotellingThreshold = influence?.hotelling_t2_threshold ?? null;
+
+  const summaryCards = useMemo(() => {
+    return [
+      {
+        key: "preprocess",
+        title: "Pré-processamento final",
+        value: preprocessLabel,
+        description: sgDescription,
+        tone: "info",
+      },
+      {
+        key: "residual",
+        title: "Resíduos extremos",
+        value: residualOutliers,
+        description: stdThreshold
+          ? `|resíduo padronizado| > ${Number(stdThreshold).toFixed(1)}`
+          : "|resíduo padronizado| > 3",
+        tone: residualOutliers ? "alert" : "success",
+      },
+      {
+        key: "leverage",
+        title: "Leverage elevado",
+        value: highLeverage,
+        description: leverageThreshold
+          ? `Leverage > ${Number(leverageThreshold).toFixed(3)}`
+          : "Acima do limite recomendado",
+        tone: highLeverage ? "alert" : "success",
+      },
+      {
+        key: "hotelling",
+        title: "Hotelling T²",
+        value: hotellingOutliers,
+        description: hotellingThreshold
+          ? `Acima de ${Number(hotellingThreshold).toFixed(2)}`
+          : "Acima do percentil 95%",
+        tone: hotellingOutliers ? "alert" : "success",
+      },
+    ];
+  }, [
+    highLeverage,
+    hotellingOutliers,
+    hotellingThreshold,
+    leverageThreshold,
+    preprocessLabel,
+    residualOutliers,
+    sgDescription,
+    stdThreshold,
+  ]);
 
   const sampleIndex = useMemo(() => {
     const base = residuals?.sample_index ?? predictions?.sample_index ?? [];
@@ -422,39 +543,26 @@ export default function Step5Result({ result, onBack, onNew }) {
         </div>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {[
-          {
-            title: "Resíduos extremos",
-            value: residualOutliers,
-            description: stdThreshold
-              ? `|resíduo padronizado| > ${Number(stdThreshold).toFixed(1)}`
-              : "|resíduo padronizado| > 3",
-          },
-          {
-            title: "Leverage elevado",
-            value: highLeverage,
-            description: leverageThreshold
-              ? `Leverage > ${Number(leverageThreshold).toFixed(3)}`
-              : "Acima do limite recomendado",
-          },
-          {
-            title: "Hotelling T²",
-            value: hotellingOutliers,
-            description: hotellingThreshold
-              ? `Acima de ${Number(hotellingThreshold).toFixed(2)}`
-              : "Acima do percentil 95%",
-          },
-        ].map((card) => (
-          <div
-            key={card.title}
-            className={`card p-4 border ${card.value ? "border-red-300 bg-red-50" : "border-green-200 bg-green-50"}`}
-          >
-            <h3 className="text-lg font-semibold text-gray-700">{card.title}</h3>
-            <p className="text-3xl font-bold text-gray-900">{card.value}</p>
-            <p className="text-sm text-gray-600">{card.description}</p>
-          </div>
-        ))}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {summaryCards.map((card) => {
+          const toneClass =
+            card.tone === "alert"
+              ? "border-red-300 bg-red-50"
+              : card.tone === "success"
+              ? "border-green-200 bg-green-50"
+              : "border-blue-200 bg-blue-50";
+          const valueClass =
+            typeof card.value === "number"
+              ? "text-3xl font-bold text-gray-900"
+              : "text-base font-semibold text-gray-900";
+          return (
+            <div key={card.key} className={`card p-4 border ${toneClass}`}>
+              <h3 className="text-lg font-semibold text-gray-700">{card.title}</h3>
+              <p className={valueClass}>{card.value}</p>
+              {card.description && <p className="text-sm text-gray-600">{card.description}</p>}
+            </div>
+          );
+        })}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
