@@ -35,6 +35,8 @@ export async function postOptimize(payload) {
     threshold: payload.threshold,
     k_min: payload.k_min ?? 1,
     k_max: payload.k_max ?? null,
+    metric_goal: payload.metric_goal,
+    min_score: payload.min_score,
   });
 }
 
