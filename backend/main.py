@@ -1197,6 +1197,7 @@ def post_columns(file: UploadFile):
     dataset_store.save(dataset_id, {
         "X": X_plot,                 # usa o mesmo domínio do gráfico (como no legado)
         "columns": cols_str,
+        "wavelengths": np.asarray(wavelengths, dtype=float).tolist(),
         "y_df": y_df,
         "targets": list(y_df.columns),
     })
@@ -2405,7 +2406,13 @@ def train(req: TrainRequest):
         raise HTTPException(status_code=400, detail="Após alinhamento, não há amostras válidas para o alvo.")
 
     # pré-processamento com cache
-    wavelengths_arr = np.asarray(ds.get("wavelengths") or ds.get("columns") or [])
+    wavelengths_raw = ds.get("wavelengths")
+    if wavelengths_raw is None:
+        wavelengths_raw = ds.get("columns")
+    try:
+        wavelengths_arr = np.asarray(wavelengths_raw, dtype=float)
+    except (TypeError, ValueError):
+        wavelengths_arr = np.asarray([], dtype=float)
     X = _get_cached_preproc(
         req.dataset_id,
         X,
@@ -2845,7 +2852,14 @@ def optimize_grid(req: OptimizeGridRequest):
     if not ds:
         raise HTTPException(404, "Dataset não encontrado.")
     X = ds["X"]
-    w = ds.get("wavelengths", None)
+    w_raw = ds.get("wavelengths", None)
+    if w_raw is not None:
+        try:
+            w = np.asarray(w_raw, dtype=float)
+        except (TypeError, ValueError):
+            w = None
+    else:
+        w = None
 
     from utils.targets import load_target_or_fail
     from utils.sanitize import sanitize_X, sanitize_y, align_X_y
