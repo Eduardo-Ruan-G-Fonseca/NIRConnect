@@ -130,8 +130,62 @@ export async function postPreprocess(payload) {
 }
 
 
+function normalizeSpectralRange(value) {
+  if (!value) return null;
+
+  const toNumber = (v) => {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    if (v === null || v === undefined) return null;
+    const s = String(v).trim().replace(',', '.');
+    if (s === '') return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (Array.isArray(entry) && entry.length >= 2) {
+        const min = toNumber(entry[0]);
+        const max = toNumber(entry[1]);
+        if (min !== null && max !== null && min !== max) {
+          return { min: Math.min(min, max), max: Math.max(min, max) };
+        }
+      }
+    }
+    return null;
+  }
+
+  if (typeof value === 'object') {
+    const min = toNumber(value.min ?? value[0]);
+    const max = toNumber(value.max ?? value[1]);
+    if (min !== null && max !== null && min !== max) {
+      return { min: Math.min(min, max), max: Math.max(min, max) };
+    }
+    return null;
+  }
+
+  if (typeof value === 'string') {
+    const candidates = value.split(',');
+    for (const candidate of candidates) {
+      const [a, b] = candidate.split(/[-–—]/);
+      const min = toNumber(a);
+      const max = toNumber(b);
+      if (min !== null && max !== null && min !== max) {
+        return { min: Math.min(min, max), max: Math.max(min, max) };
+      }
+    }
+  }
+
+  return null;
+}
+
 export async function postTrain(payload) {
   const ds = payload?.dataset_id || getDatasetId();  // sua função util que guarda o id do passo 2
+  const spectralRange =
+    normalizeSpectralRange(payload?.spectral_range) ||
+    normalizeSpectralRange(payload?.spectral_ranges) ||
+    normalizeSpectralRange(payload?.ranges);
+
   const body = {
     dataset_id: ds,
     target_name: payload.target_name ?? payload.target,     // compat
@@ -141,8 +195,9 @@ export async function postTrain(payload) {
     n_bootstrap: payload.n_bootstrap ?? 0,
     validation_method: payload.validation_method,
     validation_params: payload.validation_params,
-    spectral_ranges: payload.spectral_ranges,
+    spectral_range: spectralRange ?? undefined,
     preprocess: payload.preprocess,
+    preprocess_grid: payload.preprocess_grid,
   };
   return postJSON(`${API_BASE}/train`, body);
 }

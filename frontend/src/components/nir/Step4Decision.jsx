@@ -41,6 +41,85 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
     return label.charAt(0).toUpperCase() + label.slice(1);
   };
 
+  const normalizeSpectralRange = (value) => {
+    if (!value) return null;
+
+    const toNumber = (v) => {
+      if (typeof v === "number") return Number.isFinite(v) ? v : null;
+      if (v === null || v === undefined) return null;
+      const s = String(v).trim().replace(",", ".");
+      if (s === "") return null;
+      const n = Number(s);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    if (Array.isArray(value)) {
+      if (value.length >= 2 && !Array.isArray(value[0])) {
+        const min = toNumber(value[0]);
+        const max = toNumber(value[1]);
+        if (min !== null && max !== null && min !== max) {
+          return { min: Math.min(min, max), max: Math.max(min, max) };
+        }
+      }
+      for (const entry of value) {
+        if (Array.isArray(entry) && entry.length >= 2) {
+          const min = toNumber(entry[0]);
+          const max = toNumber(entry[1]);
+          if (min !== null && max !== null && min !== max) {
+            return { min: Math.min(min, max), max: Math.max(min, max) };
+          }
+        }
+      }
+      return null;
+    }
+
+    if (typeof value === "object") {
+      const min = toNumber(value.min ?? value[0]);
+      const max = toNumber(value.max ?? value[1]);
+      if (min !== null && max !== null && min !== max) {
+        return { min: Math.min(min, max), max: Math.max(min, max) };
+      }
+      return null;
+    }
+
+    if (typeof value === "string") {
+      const candidates = value.split(",");
+      for (const candidate of candidates) {
+        const [a, b] = candidate.split(/[-–—]/);
+        const min = toNumber(a);
+        const max = toNumber(b);
+        if (min !== null && max !== null && min !== max) {
+          return { min: Math.min(min, max), max: Math.max(min, max) };
+        }
+      }
+    }
+
+    return null;
+  };
+
+  const normalizePreprocessGrid = (grid, fallbackPipeline) => {
+    if (Array.isArray(grid) && grid.length) {
+      const mapped = grid
+        .map((pipeline) => {
+          if (Array.isArray(pipeline)) {
+            return pipeline.map((step) => (typeof step === "string" ? step : step?.method)).filter(Boolean);
+          }
+          if (typeof pipeline === "string") {
+            return [pipeline];
+          }
+          return [];
+        })
+        .filter((pipeline) => pipeline.length);
+      if (mapped.length) {
+        return mapped;
+      }
+    }
+    if (fallbackPipeline && fallbackPipeline.length) {
+      return [fallbackPipeline];
+    }
+    return [];
+  };
+
   function MetricsCard({ title, metrics }) {
     const entries = Object.entries(metrics || {});
     if (!entries.length) return (
@@ -118,11 +197,15 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
       : Array.isArray(combinedParams?.preprocess)
       ? combinedParams.preprocess
       : [];
-    const spectralRanges =
-      combinedParams?.spectral_ranges ??
-      combinedParams?.ranges ??
-      combinedParams?.spectral_range ??
-      null;
+    const spectralRange =
+      normalizeSpectralRange(combinedParams?.spectral_range) ||
+      normalizeSpectralRange(combinedParams?.spectral_ranges) ||
+      normalizeSpectralRange(combinedParams?.ranges) ||
+      normalizeSpectralRange(combinedParams?.range_used);
+    const preprocessGrid = normalizePreprocessGrid(
+      combinedParams?.preprocess_grid,
+      preprocessList.filter(Boolean)
+    );
     const nBootstrap = Number(combinedParams?.n_bootstrap ?? 0) || 0;
     const minScoreValue = Number(combinedParams?.min_score);
     const hasMinScore = Number.isFinite(minScoreValue);
@@ -140,6 +223,9 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
         k_min: 1,
         k_max: kMax,
       };
+      if (spectralRange) {
+        optPayload.spectral_range = spectralRange;
+      }
       if (Number.isFinite(nSplits)) {
         optPayload.n_splits = nSplits;
       }
@@ -148,6 +234,9 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
       }
       if (hasMinScore) {
         optPayload.min_score = minScoreValue;
+      }
+      if (preprocessGrid.length) {
+        optPayload.preprocess_grid = preprocessGrid;
       }
 
       const opt = await postOptimize(optPayload);
@@ -165,7 +254,8 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
           threshold,
           n_components: bestK,
           preprocess: preprocessList.filter(Boolean),
-          spectral_ranges: spectralRanges,
+          spectral_range: spectralRange,
+          preprocess_grid: preprocessGrid,
         });
         setTrainRes(trained);
         const scoreValue = opt?.best?.score ?? opt?.best_score ?? null;
@@ -176,6 +266,9 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
           const nextPreprocessSteps = Array.isArray(combinedParams?.preprocess_steps)
             ? combinedParams.preprocess_steps
             : preprocessList.filter(Boolean).map((method) => ({ method }));
+          const nextPreprocessGrid = preprocessGrid.length
+            ? preprocessGrid
+            : normalizePreprocessGrid(combinedParams?.preprocess_grid, preprocessList.filter(Boolean));
           return {
             ...combinedParams,
             n_components: bestK,
@@ -185,6 +278,8 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
             min_score: hasMinScore ? minScoreValue : combinedParams?.min_score,
             range_used: trained?.range_used ?? combinedParams?.range_used,
             preprocess_steps: nextPreprocessSteps,
+            preprocess_grid: nextPreprocessGrid,
+            spectral_range: spectralRange ?? combinedParams?.spectral_range,
           };
         });
         document.getElementById('cv-curve')?.scrollIntoView({ behavior: 'smooth' });
