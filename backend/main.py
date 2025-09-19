@@ -3090,9 +3090,9 @@ def optimize_grid(req: OptimizeGridRequest):
         if proba_full is not None:
             thr_map = _optimize_class_thresholds(y, proba_full, classes_)
         else:
-            thr_map = {int(c): 0.5 for c in classes_}
+            thr_map = {c: 0.5 for c in classes_} if classes_ is not None else {}
     except Exception:
-        thr_map = {int(c): 0.5 for c in classes_}
+        thr_map = {c: 0.5 for c in classes_} if classes_ is not None else {}
 
     report = build_full_report_for_ui(
         Xbest, y, task,
