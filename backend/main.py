@@ -115,6 +115,10 @@ from joblib import Parallel, delayed, cpu_count
 N_JOBS = max(1, min(cpu_count(), 8))
 JOBLIB_KW = dict(n_jobs=N_JOBS, prefer="threads", require="sharedmem")
 
+# Paralelismo para otimização de grade (com limite configurável)
+OPTIMIZE_GRID_WORKERS = int(os.getenv("OPTIMIZE_GRID_WORKERS", max(1, min(cpu_count(), 4))))
+GRID_JOBLIB_KW = dict(n_jobs=OPTIMIZE_GRID_WORKERS, prefer="threads", require="sharedmem")
+
 # ==== NOVAS CONSTANTES ====
 MAX_PLS_COMPONENTS = 15          # teto de variáveis latentes
 MAX_K_FOR_CURVE_DEFAULT = 15     # curva sempre 1..15
@@ -2870,7 +2874,7 @@ def optimize_grid(req: OptimizeGridRequest):
     # normaliza SG
     sg_grid = _normalize_sg_params(req.sg_params)
 
-    # CV estável
+    # CV estável (splits reutilizados em toda a busca)
     strat = (task == "classification")
     cv = build_cv_opt(req.validation_method, y=y, n_splits=req.n_splits or 5, stratified=strat, repeats=req.repeats or 1)
 
@@ -2883,6 +2887,8 @@ def optimize_grid(req: OptimizeGridRequest):
                                           k_grid=base_k_grid)
         if base_mask.sum() < 5:
             base_mask = np.ones(X.shape[1], dtype=bool)
+
+    cv_splits = list(cv.split(X[:, base_mask], y))
     trials = []
     best, best_score = None, -np.inf
     fail_counts = {
@@ -2893,16 +2899,30 @@ def optimize_grid(req: OptimizeGridRequest):
     }
 
     # ===== LOOP DE BUSCA =====
-    for steps in (req.preprocess_grid or [[]]):
-        for sg_t in (sg_grid or [None]):
-            # aplica PP
-            Xpp = _apply_preprocess(X[:, base_mask], steps, sg_tuple=sg_t)
-            if Xpp is None:
-                fail_counts["pp_none"] += 1
-                continue
-            Xpp = sanitize_X(Xpp)
+    mask_vars = int(base_mask.sum())
+    Xpp_cache: dict[tuple, np.ndarray] = {}
+    combos = []
 
-            # k_grid local respeitando o rank de Xpp
+    for steps in (req.preprocess_grid or [[]]):
+        steps = steps or []
+        steps_key = tuple(steps)
+        for sg_t in (sg_grid or [None]):
+            sg_key = tuple(sg_t) if sg_t else None
+            cache_key = (steps_key, sg_key)
+
+            if cache_key not in Xpp_cache:
+                Xpp = _apply_preprocess(X[:, base_mask], steps, sg_tuple=sg_t)
+                if Xpp is None:
+                    fail_counts["pp_none"] += 1
+                    continue
+                Xpp = sanitize_X(Xpp)
+                if Xpp.size == 0:
+                    fail_counts["pp_none"] += 1
+                    continue
+                Xpp_cache[cache_key] = Xpp
+            else:
+                Xpp = Xpp_cache[cache_key]
+
             k_local_max = _hard_cap_k(k_grid_max, Xpp)
             k_grid = [k for k in base_k_grid if k <= k_local_max]
             if not k_grid:
@@ -2910,32 +2930,85 @@ def optimize_grid(req: OptimizeGridRequest):
                 logger.debug("optimize: k_grid vazio para steps=%s sg=%s (k_local_max=%s)", steps, sg_t, k_local_max)
                 continue
 
-            for k in k_grid:
-                if _safe_limit_ncomp(Xpp) < k:
-                    fail_counts["rank_skip"] += 1
-                    continue
+            rank_cap = _safe_limit_ncomp(Xpp)
+            valid_k = [k for k in k_grid if k <= rank_cap]
+            skipped = len(k_grid) - len(valid_k)
+            if skipped:
+                fail_counts["rank_skip"] += skipped
+            if not valid_k:
+                continue
 
-                t0 = time.time()
-                try:
-                    cvm = _compute_cv_metrics(Xpp, y, task, cv,
-                                              n_components=k,
-                                              classifier=req.classifier,
-                                              threshold=0.5,
-                                              classes_=classes_)
-                    score = float(cvm.get("balanced_accuracy") or 0.0) if task == "classification" else float(-cvm.get("rmsecv", 1e9))
-                except Exception as ex:
-                    fail_counts["cv_error"] += 1
-                    logger.exception("optimize: cv_metrics falhou k=%s steps=%s sg=%s", k, steps, sg_t)
-                    continue
-
-                trials.append({
-                    "params": {"preprocess": steps, "sg": sg_t, "n_components": k, "mask_vars": int(base_mask.sum())},
-                    "cv_metrics": cvm,
-                    "elapsed_ms": int((time.time() - t0) * 1000),
+            for k in valid_k:
+                combos.append({
+                    "steps": steps,
+                    "steps_key": steps_key,
+                    "sg": sg_t,
+                    "sg_key": sg_key,
+                    "n_components": k,
                 })
-                if score > best_score:
-                    best_score = score
-                    best = {"preprocess": steps, "sg": sg_t, "n_components": k, "mask_vars": int(base_mask.sum())}
+
+    sequential_ms = 0
+    wall_start = time.time()
+
+    def _eval_combo(combo):
+        steps = combo["steps"]
+        sg_t = combo["sg"]
+        k = combo["n_components"]
+        cache_key = (combo["steps_key"], combo["sg_key"])
+        Xpp = Xpp_cache[cache_key]
+        t0 = time.time()
+        try:
+            cvm = _compute_cv_metrics(
+                Xpp,
+                y,
+                task,
+                cv_splits,
+                n_components=k,
+                classifier=req.classifier,
+                threshold=0.5,
+                classes_=classes_,
+            )
+            score = (
+                float(cvm.get("balanced_accuracy") or 0.0)
+                if task == "classification"
+                else float(-cvm.get("rmsecv", 1e9))
+            )
+            elapsed = int((time.time() - t0) * 1000)
+            trial = {
+                "params": {"preprocess": steps, "sg": sg_t, "n_components": k, "mask_vars": mask_vars},
+                "cv_metrics": cvm,
+                "elapsed_ms": elapsed,
+            }
+            return {"status": "ok", "trial": trial, "score": score, "elapsed_ms": elapsed}
+        except Exception:
+            elapsed = int((time.time() - t0) * 1000)
+            logger.exception("optimize: cv_metrics falhou k=%s steps=%s sg=%s", k, steps, sg_t)
+            return {
+                "status": "error",
+                "elapsed_ms": elapsed,
+                "params": {"preprocess": steps, "sg": sg_t, "n_components": k},
+            }
+
+    if combos:
+        results = Parallel(**GRID_JOBLIB_KW)(delayed(_eval_combo)(c) for c in combos)
+    else:
+        results = []
+
+    total_wall_ms = int((time.time() - wall_start) * 1000)
+
+    for res in results:
+        sequential_ms += int(res.get("elapsed_ms", 0))
+        if res.get("status") == "ok":
+            trials.append(res["trial"])
+            if res["score"] > best_score:
+                best_score = res["score"]
+                best = res["trial"]["params"]
+        else:
+            fail_counts["cv_error"] += 1
+
+    speedup_est = None
+    if sequential_ms > 0 and total_wall_ms > 0:
+        speedup_est = float(sequential_ms / total_wall_ms)
 
     if not best:
         detail = {
@@ -2951,19 +3024,22 @@ def optimize_grid(req: OptimizeGridRequest):
     logger.info("optimize: OK best=%s score=%.4f trials=%d", best, (best_score if task=="classification" else -best_score), len(trials))
 
     # ===== RETREINO DO MELHOR =====
-    Xbest = _apply_preprocess(X[:, base_mask], best["preprocess"], sg_tuple=best["sg"])
-    Xbest = sanitize_X(Xbest)
+    best_key = (tuple(best.get("preprocess") or []), tuple(best.get("sg")) if best.get("sg") else None)
+    Xbest = Xpp_cache.get(best_key)
+    if Xbest is None:
+        Xbest = _apply_preprocess(X[:, base_mask], best["preprocess"], sg_tuple=best["sg"])
+        Xbest = sanitize_X(Xbest)
     k_star = int(best["n_components"])
 
     # curva 1..15
     curve_kmax = _hard_cap_k(MAX_K_FOR_CURVE_DEFAULT, Xbest)
-    curve = _compute_cv_curve(Xbest, y, task, cv,
+    curve = _compute_cv_curve(Xbest, y, task, cv_splits,
                               threshold=0.5, max_k=curve_kmax)
     k_recommended = _best_k_from_curve(curve, task) or k_star
     k_recommended = _hard_cap_k(k_recommended, Xbest)
 
     # métricas de validação do melhor
-    cv_best = _compute_cv_metrics(Xbest, y, task, cv,
+    cv_best = _compute_cv_metrics(Xbest, y, task, cv_splits,
                                   n_components=k_recommended,
                                   classifier=req.classifier,
                                   classes_=classes_,
@@ -3001,6 +3077,11 @@ def optimize_grid(req: OptimizeGridRequest):
             "score": float(best_score if task == "classification" else -best_score),
             "report": report
         },
-        "trials": trials
+        "trials": trials,
+        "timing": {
+            "wall_ms": total_wall_ms,
+            "sequential_ms": sequential_ms,
+            "speedup_estimate": speedup_est,
+        },
     }
     return JSONResponse(content=_json_sanitize(out))
