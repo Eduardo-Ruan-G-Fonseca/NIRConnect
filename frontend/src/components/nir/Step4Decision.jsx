@@ -284,6 +284,8 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
       const opt = await postOptimize(optPayload);
 
       const bestParams = opt?.best?.params || opt?.best_params || {};
+      const bestReport =
+        opt?.best?.report && typeof opt.best.report === "object" ? opt.best.report : {};
       const bestK = bestParams?.n_components;
       const bestPreprocess = Array.isArray(bestParams?.preprocess)
         ? bestParams.preprocess.filter(Boolean)
@@ -316,7 +318,26 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
           preprocess_grid: finalPreprocessGrid,
           sg: sgForTraining,
         });
-        setTrainRes(trained);
+        const enriched = {
+          ...trained,
+          ...bestReport,
+        };
+        if (Object.keys(bestReport || {}).length) {
+          enriched.best_report = bestReport;
+        }
+        if (!enriched.residuals && trained?.residuals) {
+          enriched.residuals = trained.residuals;
+        }
+        if (!enriched.influence && trained?.influence) {
+          enriched.influence = trained.influence;
+        }
+        if (!enriched.distributions && trained?.distributions) {
+          enriched.distributions = trained.distributions;
+        }
+        if (!enriched.predictions && trained?.predictions) {
+          enriched.predictions = trained.predictions;
+        }
+        setTrainRes(enriched);
         const scoreValue = opt?.best?.score ?? opt?.best_score ?? null;
         setBestInfo({
           k: bestK,
@@ -349,6 +370,7 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
               preprocess: finalPreprocess,
               sg: sgForTraining,
             },
+            best_report: bestReport,
             min_score: hasMinScore ? minScoreValue : combinedParams?.min_score,
             range_used: trained?.range_used ?? combinedParams?.range_used,
             preprocess: finalPreprocess,
@@ -357,6 +379,9 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
             sg: sgForTraining || undefined,
             sg_params: nextSgParams,
             spectral_range: spectralRange ?? combinedParams?.spectral_range,
+            thresholds: bestReport?.thresholds ?? combinedParams?.thresholds,
+            n_selected_variables:
+              bestReport?.n_selected_variables ?? combinedParams?.n_selected_variables,
           };
         });
         document.getElementById('cv-curve')?.scrollIntoView({ behavior: 'smooth' });
