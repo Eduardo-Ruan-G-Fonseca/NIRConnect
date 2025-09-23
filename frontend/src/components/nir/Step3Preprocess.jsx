@@ -196,6 +196,27 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
 
       const dsId = getDatasetId();
       if (!dsId) throw new Error("Dataset não encontrado. Volte ao passo 1 e reenvie o arquivo.");
+      const validationMethod = step2.validation_method;
+      const validationParams = step2.validation_params || {};
+      let nSplits = null;
+      if (validationMethod === "KFold" || validationMethod === "StratifiedKFold") {
+        const candidates = [
+          validationParams?.n_splits,
+          validationParams?.nSplits,
+          validationParams?.folds,
+          validationParams?.k,
+          validationParams?.nFolds,
+          step2?.n_splits,
+        ];
+        for (const candidate of candidates) {
+          const numeric = Number(candidate);
+          if (Number.isFinite(numeric) && numeric > 0) {
+            nSplits = numeric;
+            break;
+          }
+        }
+      }
+
       const payload = {
         dataset_id: dsId,
         target_name: step2.target,               // backend espera 'target_name'
@@ -203,8 +224,9 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
         n_components: step2.n_components,
         threshold: step2.classification && step2.threshold != null ? step2.threshold : undefined,
         n_bootstrap: step2.n_bootstrap ?? 0,
-        validation_method: step2.validation_method,
-        validation_params: step2.validation_params || {},
+        validation_method: validationMethod,
+        validation_params: validationParams,
+        n_splits: nSplits ?? undefined,
         spectral_range: spectralRange,
         preprocess: checked,
       };
@@ -222,6 +244,7 @@ export default function Step3Preprocess({ meta, step2, onBack, onAnalyzed }) {
         spectral_range: spectralRange,
         preprocess_steps: preprocessSteps,
         range_used: data.range_used,
+        ...(Number.isFinite(nSplits) ? { n_splits: nSplits } : {}),
       };
 
       onAnalyzed?.(data, fullParams);

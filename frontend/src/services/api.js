@@ -229,6 +229,19 @@ export async function postTrain(payload) {
     preprocess_grid: payload.preprocess_grid,
     sg: payload.sg ?? (Array.isArray(payload.sg_params) && payload.sg_params.length ? payload.sg_params[0] : undefined),
   };
+  if (body.n_splits === undefined) {
+    const nSplitsCandidate =
+      payload?.n_splits ??
+      payload?.validation_params?.n_splits ??
+      payload?.validation_params?.nSplits ??
+      payload?.validation_params?.folds ??
+      payload?.validation_params?.k ??
+      payload?.validation_params?.nFolds;
+    const parsedNSplits = Number(nSplitsCandidate);
+    if (Number.isFinite(parsedNSplits) && parsedNSplits > 0) {
+      body.n_splits = parsedNSplits;
+    }
+  }
   return postJSON(`${API_BASE}/train`, body);
 }
 
