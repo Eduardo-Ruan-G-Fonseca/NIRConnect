@@ -307,6 +307,7 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
           mode: combinedParams.classification ? "classification" : "regression",
           validation_method: validationMethod,
           validation_params: validationParams,
+          n_splits: nSplits ?? undefined,
           n_bootstrap: nBootstrap,
           threshold,
           n_components: bestK,
