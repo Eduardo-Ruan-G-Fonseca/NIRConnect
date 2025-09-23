@@ -63,8 +63,38 @@ function PerClassTable({ perClass }) {
 
 export default function Step5Result({ result, onBack, onNew }) {
   const rawData = useMemo(() => result?.data || result || {}, [result]);
-  const data = useMemo(() => normalizeTrainResult(rawData), [rawData]);
   const params = result?.params || {};
+
+  const bestReport = useMemo(() => {
+    const candidates = [params?.best_report, rawData?.best_report, rawData?.best?.report];
+    for (const candidate of candidates) {
+      if (candidate && typeof candidate === "object") {
+        return candidate;
+      }
+    }
+    return null;
+  }, [params?.best_report, rawData]);
+
+  const resolvedRawData = useMemo(() => {
+    if (bestReport) {
+      const merged = {
+        ...rawData,
+        ...bestReport,
+      };
+      merged.residuals = bestReport?.residuals ?? rawData?.residuals ?? merged.residuals;
+      merged.influence = bestReport?.influence ?? rawData?.influence ?? merged.influence;
+      merged.distributions =
+        bestReport?.distributions ?? rawData?.distributions ?? merged.distributions;
+      merged.predictions = bestReport?.predictions ?? rawData?.predictions ?? merged.predictions;
+      if (!merged.best_report) {
+        merged.best_report = bestReport;
+      }
+      return merged;
+    }
+    return rawData;
+  }, [bestReport, rawData]);
+
+  const data = useMemo(() => normalizeTrainResult(resolvedRawData), [resolvedRawData]);
 
   const preprocessSteps = useMemo(() => {
     if (Array.isArray(params?.preprocess_steps) && params.preprocess_steps.length) {
@@ -78,19 +108,22 @@ export default function Step5Result({ result, onBack, onNew }) {
     if (Array.isArray(params?.best_params?.preprocess) && params.best_params.preprocess.length) {
       return params.best_params.preprocess.filter(Boolean);
     }
-    if (Array.isArray(rawData?.preprocess_applied) && rawData.preprocess_applied.length) {
-      return rawData.preprocess_applied.filter(Boolean);
+    if (Array.isArray(resolvedRawData?.preprocess_applied) && resolvedRawData.preprocess_applied.length) {
+      return resolvedRawData.preprocess_applied.filter(Boolean);
     }
-    if (Array.isArray(rawData?.best?.params?.preprocess) && rawData.best.params.preprocess.length) {
-      return rawData.best.params.preprocess.filter(Boolean);
+    if (
+      Array.isArray(resolvedRawData?.best?.params?.preprocess) &&
+      resolvedRawData.best.params.preprocess.length
+    ) {
+      return resolvedRawData.best.params.preprocess.filter(Boolean);
     }
     return [];
   }, [
     params?.best_params?.preprocess,
     params?.preprocess,
     params?.preprocess_steps,
-    rawData?.best?.params?.preprocess,
-    rawData?.preprocess_applied,
+    resolvedRawData?.best?.params?.preprocess,
+    resolvedRawData?.preprocess_applied,
   ]);
 
   const preprocessLabel = preprocessSteps.length
@@ -123,14 +156,20 @@ export default function Step5Result({ result, onBack, onNew }) {
       params?.sg,
       params?.best_params?.sg,
       Array.isArray(params?.sg_params) && params.sg_params.length ? params.sg_params[0] : null,
-      rawData?.best?.params?.sg,
+      resolvedRawData?.best?.params?.sg,
     ];
     for (const candidate of candidates) {
       const normalized = normalizeSg(candidate);
       if (normalized) return normalized;
     }
     return null;
-  }, [normalizeSg, params?.best_params?.sg, params?.sg, params?.sg_params, rawData?.best?.params?.sg]);
+  }, [
+    normalizeSg,
+    params?.best_params?.sg,
+    params?.sg,
+    params?.sg_params,
+    resolvedRawData?.best?.params?.sg,
+  ]);
 
   const sgDescription = usesSg
     ? resolvedSg
@@ -476,10 +515,10 @@ export default function Step5Result({ result, onBack, onNew }) {
         ...Object.fromEntries(Object.entries(metrics || {}).map(([k, v]) => [`Treino - ${k}`, v])),
         ...Object.fromEntries(Object.entries(cvMetrics || {}).map(([k, v]) => [`Validação - ${k}`, v])),
       };
-      const curvesRaw = Array.isArray(rawData?.curves)
-        ? rawData.curves
-        : rawData?.curves
-        ? [rawData.curves]
+      const curvesRaw = Array.isArray(resolvedRawData?.curves)
+        ? resolvedRawData.curves
+        : resolvedRawData?.curves
+        ? [resolvedRawData.curves]
         : [];
       if (!curvesRaw.length && data?.cv_curve?.points) {
         curvesRaw.push(data.cv_curve);
@@ -487,10 +526,12 @@ export default function Step5Result({ result, onBack, onNew }) {
       const payload = {
         metrics: metricPayload,
         params: result?.params || {},
-        validation_used: rawData?.validation_used || data?.cv?.validation?.method,
-        n_splits_effective: rawData?.n_splits_effective || data?.cv?.validation?.splits,
-        range_used: rawData?.range_used,
-        best: rawData?.best,
+        validation_used:
+          resolvedRawData?.validation_used || data?.cv?.validation?.method,
+        n_splits_effective:
+          resolvedRawData?.n_splits_effective || data?.cv?.validation?.splits,
+        range_used: resolvedRawData?.range_used,
+        best: resolvedRawData?.best,
         per_class: perClass,
         curves: curvesRaw,
       };
