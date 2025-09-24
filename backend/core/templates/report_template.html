@@ -26,20 +26,20 @@
 <h2>Melhor modelo</h2>
 <table border="1" cellspacing="0" cellpadding="3">
 <tr><th>Pré-processo</th><th>VL</th><th>Métrica</th><th>Valor</th></tr>
-{% if best.val_metrics %}
-{% for k, v in best.val_metrics.items() %}
-<tr><td>{{ best.preprocess }}</td><td>{{ best.n_components }}</td><td>{{ k }}</td><td>{{ v }}</td></tr>
+{% if best_metrics_rows %}
+{% for metric in best_metrics_rows %}
+<tr><td>{{ best.preprocess }}</td><td>{{ best.n_components }}</td><td>{{ metric.name }}</td><td>{{ metric.value }}</td></tr>
 {% endfor %}
 {% endif %}
 </table>
 {% endif %}
 
-{% if per_class %}
+{% if per_class_rows %}
 <h3>Métricas por classe</h3>
 <table border="1" cellspacing="0" cellpadding="3">
 <tr><th>Classe</th><th>Precisão</th><th>Revocação</th><th>F1</th><th>Suporte</th></tr>
-{% for cls, met in per_class.items() %}
-<tr><td>{{ cls }}</td><td>{{ met.precision }}</td><td>{{ met.recall }}</td><td>{{ met.f1 }}</td><td>{{ met.support }}</td></tr>
+{% for row in per_class_rows %}
+<tr><td>{{ row.label }}</td><td>{{ row.precision }}</td><td>{{ row.recall }}</td><td>{{ row.f1 }}</td><td>{{ row.support }}</td></tr>
 {% endfor %}
 </table>
 {% endif %}
