@@ -20,6 +20,7 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
   const [optLoading, setOptLoading] = useState(false);
   const [optStatus, setOptStatus] = useState({ current: 0, total: 0 });
   const [statusSamples, setStatusSamples] = useState([]);
+  const [etaCountdown, setEtaCountdown] = useState(null);
   const [lastDuration, setLastDuration] = useState(null);
   const [lastSummary, setLastSummary] = useState(null);
   const [bestInfo, setBestInfo] = useState(null);
@@ -27,6 +28,7 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
   const [goalWarning, setGoalWarning] = useState(null);
   const optStartRef = useRef(null);
   const lastStatusRef = useRef({ current: 0, total: 0 });
+  const etaBaseRef = useRef({ seconds: null, timestamp: null });
 
   useEffect(() => {
     setTrainRes(baseTrainRes);
@@ -250,6 +252,8 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
     setLastDuration(null);
     setLastSummary(null);
     setStatusSamples([]);
+    setEtaCountdown(null);
+    etaBaseRef.current = { seconds: null, timestamp: null };
     setOptStatus({ current: 0, total: 0 });
     setOptLoading(true);
     setGoalInfo(null);
@@ -504,6 +508,8 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
       lastStatusRef.current = { current: 0, total: 0 };
       setOptStatus({ current: 0, total: 0 });
       setStatusSamples([]);
+      setEtaCountdown(null);
+      etaBaseRef.current = { seconds: null, timestamp: null };
     }
 
     return () => {
@@ -517,6 +523,93 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
     };
   }, [optLoading]);
 
+  useEffect(() => {
+    if (!optLoading) {
+      setEtaCountdown(null);
+      etaBaseRef.current = { seconds: null, timestamp: null };
+      return;
+    }
+
+    const { current, total } = optStatus;
+    if (!total) {
+      setEtaCountdown(null);
+      etaBaseRef.current = { seconds: null, timestamp: null };
+      return;
+    }
+
+    if (current >= total) {
+      setEtaCountdown(0);
+      etaBaseRef.current = { seconds: 0, timestamp: Date.now() };
+      return;
+    }
+
+    if (statusSamples.length < 2) {
+      return;
+    }
+
+    const first = statusSamples[0];
+    const last = statusSamples[statusSamples.length - 1];
+    const deltaC = last.current - first.current;
+    const deltaT = (last.time - first.time) / 1000;
+    if (deltaC <= 0 || deltaT <= 0) {
+      return;
+    }
+
+    const remaining = Math.max(0, total - last.current);
+    if (!remaining) {
+      setEtaCountdown(0);
+      etaBaseRef.current = { seconds: 0, timestamp: Date.now() };
+      return;
+    }
+
+    const secondsPerCombo = deltaT / deltaC;
+    if (!Number.isFinite(secondsPerCombo) || secondsPerCombo <= 0) {
+      return;
+    }
+
+    const seconds = remaining * secondsPerCombo;
+    etaBaseRef.current = { seconds, timestamp: Date.now() };
+    setEtaCountdown(seconds);
+  }, [optLoading, optStatus, statusSamples]);
+
+  useEffect(() => {
+    if (!optLoading) {
+      return () => {};
+    }
+
+    let cancelled = false;
+    let timeoutId;
+
+    const updateCountdown = () => {
+      if (cancelled) return;
+      const { seconds, timestamp } = etaBaseRef.current;
+      if (seconds == null || timestamp == null) {
+        timeoutId = setTimeout(updateCountdown, 1000);
+        return;
+      }
+      const elapsed = (Date.now() - timestamp) / 1000;
+      const next = Math.max(0, seconds - elapsed);
+      setEtaCountdown((prev) => {
+        const roundedPrev = prev == null ? null : Math.round(prev * 2) / 2;
+        const roundedNext = Math.round(next * 2) / 2;
+        if (roundedPrev === roundedNext) {
+          return prev;
+        }
+        return next;
+      });
+      timeoutId = setTimeout(updateCountdown, 1000);
+    };
+
+    timeoutId = setTimeout(updateCountdown, 1000);
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [optLoading, statusSamples]);
+
   const progressPercent = useMemo(() => {
     if (!optLoading) return null;
     const { current, total } = optStatus;
@@ -526,39 +619,9 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
     return 5;
   }, [optLoading, optStatus]);
 
-  const etaSeconds = useMemo(() => {
-    if (!optLoading) return null;
-    const { current, total } = optStatus;
-    if (!total) {
-      return null;
-    }
-    if (current >= total) {
-      return 0;
-    }
-    if (statusSamples.length < 2) {
-      return null;
-    }
-    const first = statusSamples[0];
-    const last = statusSamples[statusSamples.length - 1];
-    const deltaC = last.current - first.current;
-    const deltaT = (last.time - first.time) / 1000;
-    if (deltaC <= 0 || deltaT <= 0) {
-      return null;
-    }
-    const remaining = Math.max(0, total - last.current);
-    if (!remaining) {
-      return 0;
-    }
-    const secondsPerCombo = deltaT / deltaC;
-    if (!Number.isFinite(secondsPerCombo) || secondsPerCombo <= 0) {
-      return null;
-    }
-    return remaining * secondsPerCombo;
-  }, [optLoading, optStatus, statusSamples]);
-
   const formatDuration = (value, isMilliseconds = false) => {
     if (value == null) return null;
-    const seconds = isMilliseconds ? Math.round(value / 1000) : Math.round(value);
+    const seconds = isMilliseconds ? Math.round(value / 1000) : Math.ceil(value);
     const safeSeconds = Math.max(0, seconds);
     const minutes = Math.floor(safeSeconds / 60);
     const rem = safeSeconds % 60;
@@ -611,9 +674,9 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
               Otimizando combinações
               {optStatus.total ? ` (${optStatus.current} de ${optStatus.total})` : "..."}
             </span>
-            {etaSeconds !== null && etaSeconds !== undefined && (
+            {etaCountdown !== null && etaCountdown !== undefined && (
               <span>
-                Tempo estimado: {etaSeconds === 0 ? "quase lá" : `~${formatDuration(etaSeconds)}`}
+                Tempo estimado: {etaCountdown === 0 ? "quase lá" : `~${formatDuration(etaCountdown)}`}
               </span>
             )}
           </div>

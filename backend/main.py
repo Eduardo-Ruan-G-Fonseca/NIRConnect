@@ -1840,8 +1840,33 @@ def generate_report(payload: dict) -> str:
         "best": payload.get("best"),
         "per_class": payload.get("per_class"),
         "curves": payload.get("curves"),
+        "goal": payload.get("goal"),
+        "goal_warning": payload.get("goal_warning"),
+        "vip": payload.get("vip"),
+        "confusion_matrix": payload.get("confusion_matrix"),
+        "residuals": payload.get("residuals"),
+        "influence": payload.get("influence"),
+        "distributions": payload.get("distributions"),
+        "predictions": payload.get("predictions"),
+        "latent": payload.get("latent"),
+        "task": payload.get("task"),
     }
-    pdf.add_metrics(payload.get("metrics", {}), params=payload.get("params"), result=result)
+    pdf.add_metrics(
+        payload.get("metrics", {}),
+        params=payload.get("params"),
+        result=result,
+        train_metrics=payload.get("metrics_train"),
+        validation_metrics=payload.get("metrics_validation"),
+        vip_data=payload.get("vip"),
+        confusion_matrix=payload.get("confusion_matrix"),
+        residuals=payload.get("residuals"),
+        influence=payload.get("influence"),
+        distributions=payload.get("distributions"),
+        predictions=payload.get("predictions"),
+        latent=payload.get("latent"),
+        task=payload.get("task"),
+        user_inputs=payload.get("user_inputs"),
+    )
     path = os.path.join(REPORT_DIR, f"relatorio_{uuid.uuid4().hex}.pdf")
     pdf.output(path)
     return path

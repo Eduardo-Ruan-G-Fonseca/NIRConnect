@@ -6,47 +6,170 @@
 </head>
 <body>
 <h1>{{ title }}</h1>
+<p><strong>Data:</strong> {{ date }}{% if user %} &nbsp; <strong>Usuário:</strong> {{ user }}{% endif %}</p>
 
-{% if validation_used %}
-<h2>Validação</h2>
-<p>Validação: {{ validation_used }} {% if validation_used == "LOO" %}(N={{ n_splits_effective }}){% else %}(splits={{ n_splits_effective }}){% endif %}</p>
-{% endif %}
-
-{% if range_used %}
-<h2>Faixa usada</h2>
-<p>{{ "%.2f"|format(range_used[0]) }}–{{ "%.2f"|format(range_used[1]) }} nm</p>
-{% endif %}
-
-{% if preprocess_list %}
-<h2>Pré-processadores testados</h2>
-<ul>{% for p in preprocess_list %}<li>{{ p }}</li>{% endfor %}</ul>
-{% endif %}
-
-{% if best %}
-<h2>Melhor modelo</h2>
-<table border="1" cellspacing="0" cellpadding="3">
-<tr><th>Pré-processo</th><th>VL</th><th>Métrica</th><th>Valor</th></tr>
-{% if best_metrics_rows %}
-{% for metric in best_metrics_rows %}
-<tr><td>{{ best.preprocess }}</td><td>{{ best.n_components }}</td><td>{{ metric.name }}</td><td>{{ metric.value }}</td></tr>
+{% if summary_rows %}
+<h2>Resumo do projeto</h2>
+<table border="1" cellspacing="0" cellpadding="4" width="100%">
+<tr><th align="left">Item</th><th align="left">Valor</th></tr>
+{% for row in summary_rows %}
+<tr><td>{{ row.label }}</td><td>{{ row.value }}</td></tr>
 {% endfor %}
-{% endif %}
 </table>
 {% endif %}
 
+{% if goal_text or goal_warning %}
+<h2>Meta de desempenho</h2>
+{% if goal_text %}<p><strong>Meta alvo:</strong> {{ goal_text }}</p>{% endif %}
+{% if goal_warning %}<p><strong>Observação:</strong> {{ goal_warning }}</p>{% endif %}
+{% endif %}
+
+{% if preprocess_list or preprocess_grid_rows or sg_description %}
+<h2>Pré-processamentos</h2>
+{% if preprocess_list %}
+<p><strong>Pipeline final:</strong></p>
+<ul>
+{% for item in preprocess_list %}
+<li>{{ item }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% if preprocess_grid_rows %}
+<p><strong>Combinações avaliadas:</strong></p>
+<ul>
+{% for item in preprocess_grid_rows %}
+<li>{{ item }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% if sg_description %}<p><strong>Filtro SG:</strong> {{ sg_description }}</p>{% endif %}
+{% endif %}
+
+{% if train_metrics_rows or validation_metrics_rows %}
+<h2>Métricas do modelo</h2>
+<table border="1" cellspacing="0" cellpadding="4" width="100%">
+<tr><th align="left">Conjunto</th><th align="left">Métrica</th><th align="left">Valor</th></tr>
+{% for row in train_metrics_rows %}
+<tr><td>Treino</td><td>{{ row.name }}</td><td>{{ row.value }}</td></tr>
+{% endfor %}
+{% for row in validation_metrics_rows %}
+<tr><td>Validação</td><td>{{ row.name }}</td><td>{{ row.value }}</td></tr>
+{% endfor %}
+</table>
+{% endif %}
+
+{% if metrics_rows %}
+<h3>Resumo adicional de métricas</h3>
+<table border="1" cellspacing="0" cellpadding="4" width="100%">
+<tr><th align="left">Métrica</th><th align="left">Valor</th></tr>
+{% for row in metrics_rows %}
+<tr><td>{{ row.name }}</td><td>{{ row.value }}</td></tr>
+{% endfor %}
+</table>
+{% endif %}
+
+{% if best %}
+<h2>Melhor configuração otimizada</h2>
+<table border="1" cellspacing="0" cellpadding="4" width="100%">
+<tr><th align="left">Pré-processamento</th><th align="left">VL</th><th align="left">Score</th></tr>
+<tr>
+<td>{{ best.preprocess }}</td>
+<td>{{ best.n_components }}</td>
+<td>{% if best.score %}{{ best.score }}{% else %}-{% endif %}</td>
+</tr>
+</table>
+{% if best_metrics_rows %}
+<table border="1" cellspacing="0" cellpadding="4" width="100%">
+<tr><th align="left">Métrica</th><th align="left">Valor</th></tr>
+{% for metric in best_metrics_rows %}
+<tr><td>{{ metric.name }}</td><td>{{ metric.value }}</td></tr>
+{% endfor %}
+</table>
+{% endif %}
+{% endif %}
+
 {% if per_class_rows %}
-<h3>Métricas por classe</h3>
-<table border="1" cellspacing="0" cellpadding="3">
-<tr><th>Classe</th><th>Precisão</th><th>Revocação</th><th>F1</th><th>Suporte</th></tr>
+<h2>Métricas por classe</h2>
+<table border="1" cellspacing="0" cellpadding="4" width="100%">
+<tr><th align="left">Classe</th><th align="left">Precisão</th><th align="left">Recall</th><th align="left">F1</th><th align="left">Suporte</th></tr>
 {% for row in per_class_rows %}
 <tr><td>{{ row.label }}</td><td>{{ row.precision }}</td><td>{{ row.recall }}</td><td>{{ row.f1 }}</td><td>{{ row.support }}</td></tr>
 {% endfor %}
 </table>
 {% endif %}
 
+{% if vip_rows %}
+<h2>Principais variáveis importantes</h2>
+<table border="1" cellspacing="0" cellpadding="4" width="100%">
+<tr><th align="left">λ (nm)</th><th align="left">Score VIP</th></tr>
+{% for row in vip_rows %}
+<tr><td>{{ row.wavelength }}</td><td>{{ row.score }}</td></tr>
+{% endfor %}
+</table>
+{% endif %}
+
+{% if diagnostic_summary %}
+<h2>Diagnóstico de resíduos e influência</h2>
+<table border="1" cellspacing="0" cellpadding="4" width="100%">
+<tr><th align="left">Indicador</th><th align="left">Valor</th><th align="left">Detalhe</th></tr>
+{% for item in diagnostic_summary %}
+<tr><td>{{ item.label }}</td><td>{{ item.value }}</td><td>{{ item.description }}</td></tr>
+{% endfor %}
+</table>
+{% endif %}
+
+{% if confusion_rows %}
+<h2>Matriz de confusão</h2>
+<table border="1" cellspacing="0" cellpadding="4" width="100%">
+<tr><th></th>{% for label in confusion_labels %}<th align="center">{{ label }}</th>{% endfor %}</tr>
+{% for row in confusion_rows %}
+<tr><th align="left">{{ confusion_labels[loop.index0] }}</th>{% for value in row %}<td align="center">{{ value }}</td>{% endfor %}</tr>
+{% endfor %}
+</table>
+{% endif %}
+
 {% if curves_plot %}
-<h2>{{ curves_title }}</h2>
-<img src="{{ curves_plot }}" alt="Curvas" />
+<h2>{% if curves_title %}{{ curves_title }}{% else %}Curvas de validação{% endif %}</h2>
+<p><img src="{{ curves_plot }}" width="520" /></p>
+{% endif %}
+
+{% if vip_plot %}
+<h2>Gráfico de VIP</h2>
+<p><img src="{{ vip_plot }}" width="520" /></p>
+{% endif %}
+
+{% if confusion_plot %}
+<h2>Matriz de confusão (visual)</h2>
+<p><img src="{{ confusion_plot }}" width="520" /></p>
+{% endif %}
+
+{% if residual_plot or std_residual_plot or leverage_plot %}
+<h2>Diagnóstico gráfico</h2>
+{% if residual_plot %}<p><strong>Resíduos × previsto</strong><br /><img src="{{ residual_plot }}" width="520" /></p>{% endif %}
+{% if std_residual_plot %}<p><strong>Resíduos padronizados</strong><br /><img src="{{ std_residual_plot }}" width="520" /></p>{% endif %}
+{% if leverage_plot %}<p><strong>Leverage</strong><br /><img src="{{ leverage_plot }}" width="520" /></p>{% endif %}
+{% endif %}
+
+{% if distribution_plot %}
+<h2>Distribuição das previsões</h2>
+<p><img src="{{ distribution_plot }}" width="520" /></p>
+{% endif %}
+
+{% if latent_plot or latent_r2_rows %}
+<h2>Latentes</h2>
+{% if latent_plot %}<p><img src="{{ latent_plot }}" width="520" /></p>{% endif %}
+{% if latent_r2_rows %}
+<table border="1" cellspacing="0" cellpadding="4" width="100%">
+<tr><th align="left">Componente</th><th align="left">R²X (cumulativo)</th><th align="left">R²Y (cumulativo)</th></tr>
+{% for row in latent_r2_rows %}
+<tr><td>{{ row.component }}</td><td>{{ row.r2x }}</td><td>{{ row.r2y }}</td></tr>
+{% endfor %}
+</table>
+{% endif %}
+{% endif %}
+
+{% if range_used_display %}
+<p><strong>Faixa espectral considerada:</strong> {{ range_used_display }}</p>
 {% endif %}
 
 </body>
