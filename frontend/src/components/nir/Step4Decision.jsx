@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { postOptimize, postTrain } from "../../services/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { postOptimize, postTrain, getOptimizeStatus } from "../../services/api";
 import { getDatasetId } from "../../api/http";
 import VipTopCard from "./VipTopCard";
 import ConfusionMatrixCard from "./ConfusionMatrixCard";
@@ -18,9 +18,14 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
   const [trainRes, setTrainRes] = useState(baseTrainRes);
   const [currentParams, setCurrentParams] = useState(baseParams);
   const [optLoading, setOptLoading] = useState(false);
+  const [optStatus, setOptStatus] = useState({ current: 0, total: 0 });
+  const [statusSamples, setStatusSamples] = useState([]);
+  const [lastDuration, setLastDuration] = useState(null);
+  const [lastSummary, setLastSummary] = useState(null);
   const [bestInfo, setBestInfo] = useState(null);
   const [goalInfo, setGoalInfo] = useState(null);
   const [goalWarning, setGoalWarning] = useState(null);
+  const optStartRef = useRef(null);
 
   useEffect(() => {
     setTrainRes(baseTrainRes);
@@ -240,6 +245,11 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
     const minScoreValue = Number(combinedParams?.min_score);
     const hasMinScore = Number.isFinite(minScoreValue);
 
+    optStartRef.current = Date.now();
+    setLastDuration(null);
+    setLastSummary(null);
+    setStatusSamples([]);
+    setOptStatus({ current: 0, total: 0 });
     setOptLoading(true);
     setGoalInfo(null);
     setGoalWarning(null);
@@ -346,6 +356,17 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
           sg: sgForTraining,
           usesSg: usesSgMethod,
         });
+        const fallbackCombos = (preprocessGrid.length || 1) * (kMax || bestK || 1);
+        const totalCombos =
+          opt?.total_combinations ??
+          opt?.total ??
+          opt?.trials ??
+          optStatus.total ??
+          fallbackCombos;
+        setLastSummary({
+          totalCombos: Number.isFinite(totalCombos) && totalCombos > 0 ? totalCombos : null,
+          finishedAt: new Date(),
+        });
         setGoalInfo(opt?.goal || null);
         setGoalWarning(opt?.goal_warning || null);
         setCurrentParams(() => {
@@ -399,8 +420,98 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
       alert(msg);
     } finally {
       setOptLoading(false);
+      if (optStartRef.current) {
+        setLastDuration(Date.now() - optStartRef.current);
+        optStartRef.current = null;
+      }
     }
   }
+
+  useEffect(() => {
+    let timer;
+    let cancelled = false;
+    if (optLoading) {
+      const poll = async () => {
+        try {
+          const status = await getOptimizeStatus();
+          if (cancelled) return;
+          setOptStatus((prev) => {
+            const current = Number(status.current) || 0;
+            const total = Number(status.total) || 0;
+            if (prev.current === current && prev.total === total) {
+              return prev;
+            }
+            return { current, total };
+          });
+          setStatusSamples((prev) => {
+            const sample = { time: Date.now(), current: Number(status.current) || 0 };
+            const next = [...prev, sample];
+            return next.slice(-10);
+          });
+        } catch (err) {
+          console.warn("Não foi possível consultar o status da otimização", err);
+        }
+      };
+      poll();
+      timer = setInterval(poll, 1000);
+    } else {
+      setStatusSamples([]);
+    }
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearInterval(timer);
+      }
+    };
+  }, [optLoading]);
+
+  const progressPercent = useMemo(() => {
+    if (!optLoading) return null;
+    const { current, total } = optStatus;
+    if (total > 0) {
+      return Math.max(0, Math.min(100, Math.round((current / total) * 100)));
+    }
+    return 5;
+  }, [optLoading, optStatus]);
+
+  const etaSeconds = useMemo(() => {
+    if (!optLoading) return null;
+    const { current, total } = optStatus;
+    if (!total) {
+      return null;
+    }
+    if (current >= total) {
+      return 0;
+    }
+    if (statusSamples.length < 2) {
+      return null;
+    }
+    const first = statusSamples[0];
+    const last = statusSamples[statusSamples.length - 1];
+    const deltaC = last.current - first.current;
+    const deltaT = (last.time - first.time) / 1000;
+    if (deltaC <= 0 || deltaT <= 0) {
+      return null;
+    }
+    const remaining = Math.max(0, total - last.current);
+    if (!remaining) {
+      return 0;
+    }
+    const secondsPerCombo = deltaT / deltaC;
+    if (!Number.isFinite(secondsPerCombo) || secondsPerCombo <= 0) {
+      return null;
+    }
+    return remaining * secondsPerCombo;
+  }, [optLoading, optStatus, statusSamples]);
+
+  const formatDuration = (value, isMilliseconds = false) => {
+    if (value == null) return null;
+    const seconds = isMilliseconds ? Math.round(value / 1000) : Math.round(value);
+    const safeSeconds = Math.max(0, seconds);
+    const minutes = Math.floor(safeSeconds / 60);
+    const rem = safeSeconds % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(rem).padStart(2, "0")}`;
+  };
 
   function handleBack() {
     onBack?.(trainRes, currentParams);
@@ -441,6 +552,28 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
 
       <PerClassMetricsCard perClass={data.per_class} />
 
+      {optLoading && (
+        <div className="card p-4 bg-slate-50 border border-slate-200">
+          <div className="flex items-center justify-between text-sm text-slate-700 mb-2">
+            <span>
+              Otimizando combinações
+              {optStatus.total ? ` (${optStatus.current} de ${optStatus.total})` : "..."}
+            </span>
+            {etaSeconds !== null && etaSeconds !== undefined && (
+              <span>
+                Tempo estimado: {etaSeconds === 0 ? "quase lá" : `~${formatDuration(etaSeconds)}`}
+              </span>
+            )}
+          </div>
+          <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-blue-600 transition-all duration-500"
+              style={{ width: `${progressPercent ?? 5}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <button
           onClick={handleOptimize}
@@ -463,6 +596,16 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
                 {goalInfo.target.toFixed(3)})
               </>
             )}
+          </div>
+        )}
+
+        {!optLoading && lastDuration != null && (
+          <div className="text-xs text-slate-600">
+            Última otimização: {formatDuration(lastDuration, true)}
+            {lastSummary?.totalCombos ? ` • ${lastSummary.totalCombos} combinações avaliadas` : ""}
+            {lastSummary?.finishedAt
+              ? ` • concluída às ${lastSummary.finishedAt.toLocaleTimeString()}`
+              : ""}
           </div>
         )}
 

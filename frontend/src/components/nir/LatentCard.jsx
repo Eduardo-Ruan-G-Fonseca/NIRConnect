@@ -14,8 +14,41 @@ export default function LatentCard({ latent, labels }) {
   }
 
   // Paleta simples por classe
-  const uniq = Array.from(new Set(data.map(d => d.label)));
-  const colors = ["#2563eb","#16a34a","#f59e0b","#ef4444","#7c3aed","#0ea5e9","#84cc16","#d946ef","#fb7185","#22c55e"];
+  const uniq = useMemo(() => Array.from(new Set(data.map((d) => d.label))), [data]);
+  const colorMap = useMemo(() => {
+    const basePalette = [
+      "#2563eb",
+      "#16a34a",
+      "#f97316",
+      "#db2777",
+      "#14b8a6",
+      "#a855f7",
+      "#facc15",
+      "#0ea5e9",
+      "#ef4444",
+      "#22c55e",
+      "#6366f1",
+      "#fb7185",
+      "#2dd4bf",
+      "#f59e0b",
+      "#10b981",
+      "#e11d48",
+      "#8b5cf6",
+      "#06b6d4",
+      "#f973ab",
+      "#84cc16",
+    ];
+    const map = new Map();
+    uniq.forEach((label, idx) => {
+      let color = basePalette[idx];
+      if (!color) {
+        const hue = (idx * 137.508) % 360;
+        color = `hsl(${hue.toFixed(1)}, 68%, 55%)`;
+      }
+      map.set(label, color);
+    });
+    return map;
+  }, [uniq]);
 
   return (
     <div className="card p-4">
@@ -28,9 +61,20 @@ export default function LatentCard({ latent, labels }) {
               <XAxis type="number" dataKey="lv1" name="LV1" />
               <YAxis type="number" dataKey="lv2" name="LV2" />
               <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-              <Legend />
-              {uniq.map((c, idx) => (
-                <Scatter key={c} name={c} data={data.filter(d => d.label === c)} fill={colors[idx % colors.length]} />
+              <Legend
+                verticalAlign="top"
+                align="center"
+                iconType="circle"
+                wrapperStyle={{ paddingBottom: 12, maxWidth: "100%" }}
+              />
+              {uniq.map((c) => (
+                <Scatter
+                  key={c}
+                  name={c}
+                  data={data.filter((d) => d.label === c)}
+                  fill={colorMap.get(c) || "#4b5563"}
+                  stroke={colorMap.get(c) || "#4b5563"}
+                />
               ))}
             </ScatterChart>
           </ResponsiveContainer>

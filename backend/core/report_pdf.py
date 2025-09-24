@@ -90,6 +90,68 @@ class PDFReport:
             "per_class": result.get("per_class"),
         }
 
+        per_class_rows: list[dict[str, float | str | int]] = []
+        per_class_data = result.get("per_class")
+        if isinstance(per_class_data, dict):
+            for cls, values in per_class_data.items():
+                if isinstance(values, dict):
+                    per_class_rows.append(
+                        {
+                            "label": cls,
+                            "precision": values.get("precision") or values.get("prec"),
+                            "recall": values.get("recall") or values.get("sens"),
+                            "f1": values.get("f1") or values.get("f1_score"),
+                            "support": values.get("support"),
+                        }
+                    )
+        elif isinstance(per_class_data, list):
+            for row in per_class_data:
+                if isinstance(row, dict):
+                    per_class_rows.append(
+                        {
+                            "label": row.get("label")
+                            or row.get("classe")
+                            or row.get("class")
+                            or row.get("Classe"),
+                            "precision": row.get("precision"),
+                            "recall": row.get("recall"),
+                            "f1": row.get("f1"),
+                            "support": row.get("support"),
+                        }
+                    )
+        context["per_class_rows"] = [row for row in per_class_rows if row.get("label")]
+
+        best_raw = result.get("best")
+        best_copy: dict | None = None
+        best_metrics_rows: list[dict[str, float | str]] = []
+        if isinstance(best_raw, dict) and best_raw:
+            best_copy = dict(best_raw)
+            preprocess_value = best_copy.get("preprocess")
+            if isinstance(preprocess_value, (list, tuple)):
+                steps = [str(step) for step in preprocess_value if step]
+                best_copy["preprocess"] = " + ".join(steps) if steps else "Sem pré-processamento"
+            elif preprocess_value is None:
+                best_copy["preprocess"] = "Sem pré-processamento"
+
+            raw_val_metrics = (
+                best_copy.get("val_metrics")
+                or best_copy.get("metrics")
+                or metrics
+            )
+            if isinstance(raw_val_metrics, dict):
+                for name, value in raw_val_metrics.items():
+                    best_metrics_rows.append({"name": str(name), "value": value})
+            elif isinstance(raw_val_metrics, list):
+                for entry in raw_val_metrics:
+                    if isinstance(entry, dict):
+                        name = entry.get("metric") or entry.get("name")
+                        value = entry.get("value") or entry.get("score")
+                        if name is not None:
+                            best_metrics_rows.append({"name": str(name), "value": value})
+            best_copy["val_metrics"] = best_metrics_rows
+        context["best"] = best_copy
+        context["best_metrics_rows"] = best_metrics_rows
+
         curves = result.get("curves")
         curves_plot = ""
         curves_title = ""
