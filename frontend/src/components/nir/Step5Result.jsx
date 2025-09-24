@@ -5,6 +5,39 @@ import { normalizeTrainResult } from "../../services/normalizeTrainResult";
 
 function formatProbaSummary(values, classLabels) {
   if (!Array.isArray(values) || !values.length) {
+    if (values && typeof values === "object") {
+      const summaryEntries = Object.entries(values.summary || {}).map(([label, stats]) => ({
+        label,
+        mean: Number(stats?.mean ?? 0),
+        std: Number(stats?.std ?? 0),
+      }));
+      summaryEntries.sort((a, b) => b.mean - a.mean);
+      const topSummary = summaryEntries
+        .slice(0, Math.min(3, summaryEntries.length))
+        .map((item) => `${item.label}: ${item.mean.toFixed(3)}±${item.std.toFixed(3)}`)
+        .join("; ");
+      const top2List = Array.isArray(values.top2) ? values.top2.filter(Boolean) : [];
+      const tooltipParts = [];
+      if (summaryEntries.length) {
+        tooltipParts.push(
+          summaryEntries
+            .map((item) => `${item.label}: média ${item.mean.toFixed(4)}, desvio ${item.std.toFixed(4)}`)
+            .join(" • ")
+        );
+      }
+      if (top2List.length) {
+        tooltipParts.push(`Amostras: ${top2List.slice(0, 10).join(" • ")}`);
+      }
+      const tooltip = tooltipParts.filter(Boolean).join(" \n");
+      const preview = topSummary || top2List.slice(0, 3).join("; ") || "–";
+      const extra = Math.max(0, top2List.length - 3);
+      return (
+        <span title={tooltip || undefined}>
+          {preview}
+          {extra > 0 ? ` (+${extra})` : ""}
+        </span>
+      );
+    }
     return "–";
   }
   const rows = values
