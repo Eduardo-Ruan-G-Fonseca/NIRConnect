@@ -525,6 +525,8 @@ export default function Step5Result({ result, onBack, onNew }) {
       }
       const payload = {
         metrics: metricPayload,
+        metrics_train: metrics || {},
+        metrics_validation: cvMetrics || {},
         params: result?.params || {},
         validation_used:
           resolvedRawData?.validation_used || data?.cv?.validation?.method,
@@ -534,6 +536,17 @@ export default function Step5Result({ result, onBack, onNew }) {
         best: resolvedRawData?.best,
         per_class: perClass,
         curves: curvesRaw,
+        vip: data?.vip,
+        confusion_matrix: data?.cm,
+        residuals: data?.residuals,
+        influence: data?.influence,
+        distributions: data?.distributions,
+        predictions: data?.predictions,
+        latent: data?.latent,
+        task: data?.task,
+        user_inputs: params,
+        goal: resolvedRawData?.goal || params?.goal,
+        goal_warning: resolvedRawData?.goal_warning || params?.goal_warning,
       };
       const resp = await postReport(payload);
       if (resp?.path) {
