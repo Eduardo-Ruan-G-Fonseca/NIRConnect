@@ -120,7 +120,7 @@ OPTIMIZE_GRID_WORKERS = int(os.getenv("OPTIMIZE_GRID_WORKERS", max(1, min(cpu_co
 GRID_JOBLIB_KW = dict(n_jobs=OPTIMIZE_GRID_WORKERS, prefer="threads", require="sharedmem")
 
 # ==== NOVAS CONSTANTES ====
-MAX_PLS_COMPONENTS = 15          # teto de variáveis latentes
+MAX_PLS_COMPONENTS = 25          # teto de variáveis latentes (ajustado conforme grade padrão)
 MAX_K_FOR_CURVE_DEFAULT = 15     # curva sempre 1..15
 PLATEAU_TOL = 0.01               # 1% de platô para sugerir k menor
 RANDOM_STATE = 2025
@@ -241,6 +241,40 @@ def _finite(x):
         return x if np.isfinite(x) else None
     except Exception:
         return None
+
+
+def _format_probability_row(row: np.ndarray, labels: List[Any], top_k: int = 2) -> str:
+    if row.ndim != 1 or row.size == 0:
+        return ""
+    order = np.argsort(row)[::-1]
+    pieces = []
+    limit = min(top_k, order.size)
+    for idx in order[:limit]:
+        label = str(labels[idx]) if idx < len(labels) else str(idx)
+        pieces.append(f"{label}:{row[idx]:.3f}")
+    remaining = order.size - limit
+    if remaining > 0:
+        pieces.append(f"(+{remaining})")
+    return " | ".join(pieces)
+
+
+def _probability_summary(proba: np.ndarray, labels: List[Any]) -> Dict[str, Dict[str, float]]:
+    if proba.ndim != 2 or proba.size == 0:
+        return {}
+    summary: Dict[str, Dict[str, float]] = {}
+    for j in range(proba.shape[1]):
+        col = proba[:, j]
+        col = col[np.isfinite(col)]
+        if col.size == 0:
+            continue
+        mean = float(np.mean(col))
+        std = float(np.std(col))
+        label = str(labels[j]) if j < len(labels) else str(j)
+        summary[label] = {
+            "mean": round(mean, 3),
+            "std": round(std, 3),
+        }
+    return summary
 
 def _fold_worker(X, y, tr, te, task, k_eff, threshold, classes):
     """
@@ -388,7 +422,17 @@ def _compute_cv_metrics(X, y, task, cv_or_splits, n_components: int, threshold: 
         if proba_chunks:
             try:
                 proba_oof = np.vstack(proba_chunks)
-                out["proba_oof"] = proba_oof.tolist()
+                label_names = []
+                if classes_ is not None and len(classes_) == proba_oof.shape[1]:
+                    label_names = [str(c) for c in classes_]
+                elif classes is not None and len(classes) == proba_oof.shape[1]:
+                    label_names = [str(c) for c in classes]
+                else:
+                    label_names = [str(i) for i in range(proba_oof.shape[1])]
+                top2_preview = [_format_probability_row(row, label_names) for row in proba_oof]
+                summary = _probability_summary(proba_oof, label_names)
+                out["proba_oof"] = {"top2": top2_preview, "summary": summary}
+                out["_proba_oof_full"] = proba_oof
             except Exception:
                 pass
 
@@ -439,27 +483,76 @@ def _apply_preprocess(X: np.ndarray, steps: list[str] | None, sg_tuple: tuple[in
     w, p, d = _normalize_sg_params([(w, p, d)])[0]
 
     for s in steps:
+        raw = s
+        local_wpd = None
+        if isinstance(s, str):
+            raw = s.strip().lower()
+            if raw.startswith("sg(") and raw.endswith(")"):
+                try:
+                    params = tuple(int(float(val.strip())) for val in raw[3:-1].split(",")[:3])
+                    local_wpd = _normalize_sg_params([params])[0]
+                    raw = "sg"
+                except Exception:
+                    raw = "sg1"
+            elif raw.startswith("sg") and len(raw) > 2 and raw[2] == "(":
+                try:
+                    inside = raw[3:].strip("()")
+                    params = tuple(int(float(val.strip())) for val in inside.split(",")[:3])
+                    local_wpd = _normalize_sg_params([params])[0]
+                    raw = "sg"
+                except Exception:
+                    raw = raw[:3]
+        elif isinstance(s, (tuple, list)) and len(s) >= 3:
+            try:
+                local_wpd = _normalize_sg_params([(int(s[0]), int(s[1]), int(s[2]))])[0]
+                raw = "sg"
+            except Exception:
+                raw = "sg1"
+        elif isinstance(s, dict):
+            method = str(s.get("method") or s.get("name") or s.get("step") or "").lower()
+            raw = method or "sg"
+            params = s.get("params") or (
+                s.get("window"),
+                s.get("poly") or s.get("polyorder"),
+                s.get("deriv") or s.get("derivative") or s.get("order"),
+            )
+            try:
+                if params and all(val is not None for val in params[:3]):
+                    local_wpd = _normalize_sg_params([(int(params[0]), int(params[1]), int(params[2]))])[0]
+            except Exception:
+                local_wpd = None
+
+        step_name = raw if isinstance(raw, str) else str(raw).lower()
+        if local_wpd is not None:
+            w, p, d = local_wpd
+
         try:
-            if s == "snv":
+            if step_name in {"snv", "standard normal variate"}:
                 Xp = snv(Xp)
-            elif s == "msc":
+            elif step_name in {"msc", "multiplicative scatter correction"}:
                 Xp = msc(Xp)
-            elif s == "zscore":
+            elif step_name in {"zscore", "z-score"}:
                 Xp = zscore(Xp)
-            elif s == "minmax":
+            elif step_name in {"minmax", "min-max"}:
                 Xp = minmax_norm(Xp)
-            elif s == "sg1":
-                # 1ª derivada com (w,p) normalizados
-                Xp = sg_first_derivative(Xp, window=w, polyorder=p)
-            elif s == "sg2":
-                # 2ª derivada com (w,p)
+            elif step_name in {"sg", "sg1", "sg0"}:
+                if d >= 2:
+                    Xp = sg_second_derivative(Xp, window=w, polyorder=p)
+                elif d <= 0:
+                    # Savitzky-Golay smoothing (derivada 0) -> aproxima pela 1ª derivada suave
+                    Xp = sg_first_derivative(Xp, window=w, polyorder=p)
+                else:
+                    Xp = sg_first_derivative(Xp, window=w, polyorder=p)
+            elif step_name == "sg2":
                 Xp = sg_second_derivative(Xp, window=w, polyorder=p)
             else:
                 logger.warning("Preprocesso desconhecido: %s (ignorado)", s)
-        except Exception as ex:
-            # Não derruba a grade; apenas registra e segue
-            logger.exception("Falha no passo de pré-processo '%s' (sg=%s) — passo ignorado.", s, (w, p, d))
-            # segue com Xp do passo anterior
+        except Exception:
+            logger.exception(
+                "Falha no passo de pré-processo '%s' (sg=%s) — passo ignorado.",
+                s,
+                (w, p, d),
+            )
             continue
 
     return Xp
@@ -2175,7 +2268,7 @@ class TrainRequest(BaseModel):
     dataset_id: Optional[str] = None
     target_name: str
     mode: str | None = None
-    n_components: int
+    n_components: Optional[int] = None
     validation_method: str | None = None
     n_splits: int | None = None
     threshold: float | None = None
@@ -2599,7 +2692,31 @@ def train(req: TrainRequest):
     else:
         wavelengths = wavelengths_arr.tolist()
 
-    safe_n = min(int(req.n_components), _safe_limit_ncomp(X))
+    last_opt = ds.get("last_optimization") if isinstance(ds, dict) else None
+    best_params_opt = (last_opt or {}).get("best_params") if isinstance(last_opt, dict) else {}
+    preprocess_match = tuple(best_params_opt.get("preprocess") or []) == tuple(req.preprocess or [])
+    vip_mask_indices = None
+    if preprocess_match:
+        vip_mask_indices = best_params_opt.get("vip_mask_indices") or (last_opt or {}).get("vip_mask_indices")
+        if vip_mask_indices:
+            idx = [int(i) for i in vip_mask_indices if isinstance(i, (int, float))]
+            idx = [i for i in idx if 0 <= i < X.shape[1]]
+            if idx:
+                try:
+                    X = X[:, idx]
+                    if len(wavelengths) >= max(idx) + 1:
+                        wavelengths = [wavelengths[i] for i in idx]
+                except Exception:
+                    pass
+
+    requested_n = req.n_components
+    if requested_n is None:
+        fallback_nc = (
+            best_params_opt.get("n_components")
+            or (last_opt or {}).get("recommended_n_components")
+        )
+        requested_n = fallback_nc if fallback_nc is not None else _safe_limit_ncomp(X)
+    safe_n = min(int(requested_n), _safe_limit_ncomp(X)) if requested_n is not None else _safe_limit_ncomp(X)
     splits = _get_cached_cv(
         req.dataset_id,
         req.validation_method or "KFold",
@@ -2651,9 +2768,15 @@ def train(req: TrainRequest):
 
         for tr, te in splits:
             Xtr, Xte, ytr, yte = X[tr], X[te], y[tr], y[te]
+            imputer = SimpleImputer(strategy="median")
+            scaler = StandardScaler()
+            Xtr_proc = imputer.fit_transform(Xtr)
+            Xte_proc = imputer.transform(Xte)
+            Xtr_proc = scaler.fit_transform(Xtr_proc)
+            Xte_proc = scaler.transform(Xte_proc)
             if K == 2:
-                pls = PLSRegression(n_components=safe_n).fit(Xtr, ytr)
-                s = pls.predict(Xte).ravel()
+                pls = PLSRegression(n_components=safe_n).fit(Xtr_proc, ytr)
+                s = pls.predict(Xte_proc).ravel()
                 yp = (s >= (getattr(req, "threshold", 0.5) or 0.5)).astype(int)
                 scores_all.append(s.reshape(-1, 1))
             else:
@@ -2661,8 +2784,8 @@ def train(req: TrainRequest):
                 scores = np.zeros((Xte.shape[0], K))
                 for k in labels:
                     yk = (ytr == k).astype(int)
-                    pls_k = PLSRegression(n_components=safe_n).fit(Xtr, yk)
-                    scores[:, k] = pls_k.predict(Xte).ravel()
+                    pls_k = PLSRegression(n_components=safe_n).fit(Xtr_proc, yk)
+                    scores[:, k] = pls_k.predict(Xte_proc).ravel()
                 yp = np.argmax(scores, axis=1)
                 scores_all.append(scores)
             y_true_all.append(yte); y_pred_all.append(yp)
@@ -2808,19 +2931,25 @@ class OptimizeGridRequest(BaseModel):
     dataset_id: str
     target_name: str
     mode: str = "classification"
-    validation_method: str = "RepeatedStratifiedKFold"  # default mais estável
+    validation_method: str = "StratifiedKFold"
     n_splits: Optional[int] = 5
-    repeats: Optional[int] = 2
+    repeats: Optional[int] = 1
     n_components_min: int = 1
     n_components_max: Optional[int] = None
     threshold_grid: Optional[List[float]] = Field(default_factory=lambda: [0.3, 0.4, 0.5, 0.6, 0.7])
     preprocess_grid: Optional[List[List[str]]] = Field(
         default_factory=lambda: [
-            [], ["snv"], ["msc"], ["sg1"], ["sg2"], ["snv","sg1"], ["snv","sg2"]
+            [],
+            ["snv"],
+            ["msc"],
+            ["snv", "sg(11,2,1)"],
+            ["snv", "sg(15,2,1)"],
+            ["msc", "sg(11,2,1)"],
+            ["msc", "sg(15,2,1)"],
         ]
     )
-    sg_params: Optional[List[Tuple[int,int,int]]] = Field(
-        default_factory=lambda: [(9,2,1), (11,2,1), (15,2,1)]
+    sg_params: Optional[List[Tuple[int, int, int]]] = Field(
+        default_factory=lambda: [(11, 2, 1), (15, 2, 1)]
     )
     use_ipls: bool = False
     ipls_max_intervals: int = 2
@@ -3088,10 +3217,64 @@ def optimize_grid(req: OptimizeGridRequest):
     Xpp_cache: dict[tuple, np.ndarray] = {}
     combos = []
 
+    def _extract_explicit_sg(steps_seq: List[Any]) -> Tuple[int, int, int] | None:
+        for token in steps_seq:
+            if isinstance(token, str):
+                txt = token.strip().lower()
+                if txt.startswith("sg(") and txt.endswith(")"):
+                    try:
+                        parts = [float(val.strip()) for val in txt[3:-1].split(",")[:3]]
+                        ints = tuple(int(p) for p in parts)
+                        return _normalize_sg_params([ints])[0]
+                    except Exception:
+                        continue
+            elif isinstance(token, (tuple, list)) and len(token) >= 3:
+                try:
+                    ints = tuple(int(float(v)) for v in token[:3])
+                    return _normalize_sg_params([ints])[0]
+                except Exception:
+                    continue
+            elif isinstance(token, dict):
+                params = token.get("params") or (
+                    token.get("window"),
+                    token.get("poly") or token.get("polyorder"),
+                    token.get("deriv") or token.get("derivative") or token.get("order"),
+                )
+                try:
+                    if params and all(v is not None for v in params[:3]):
+                        ints = tuple(int(float(v)) for v in params[:3])
+                        return _normalize_sg_params([ints])[0]
+                except Exception:
+                    continue
+        return None
+
+    def _requires_sg_grid(steps_seq: List[Any]) -> bool:
+        for token in steps_seq:
+            if isinstance(token, str):
+                txt = token.strip().lower()
+                if txt.startswith("sg"):
+                    if "(" in txt and ")" in txt:
+                        return False
+                    return True
+            elif isinstance(token, (tuple, list)) and len(token) >= 3:
+                return False
+            elif isinstance(token, dict) and token.get("method"):
+                return False
+        return False
+
     for steps in (req.preprocess_grid or [[]]):
-        steps = steps or []
+        steps = [s for s in (steps or []) if s is not None]
         steps_key = tuple(steps)
-        for sg_t in (sg_grid or [None]):
+        explicit_sg = _extract_explicit_sg(steps)
+
+        if explicit_sg is not None:
+            sg_options = [explicit_sg]
+        elif _requires_sg_grid(steps):
+            sg_options = sg_grid or [None]
+        else:
+            sg_options = [None]
+
+        for sg_t in sg_options:
             sg_key = tuple(sg_t) if sg_t else None
             cache_key = (steps_key, sg_key)
 
@@ -3216,25 +3399,116 @@ def optimize_grid(req: OptimizeGridRequest):
         Xbest = sanitize_X(Xbest)
     k_star = int(best["n_components"])
 
+    vip_scores_array = None
+    vip_indices: List[int] | None = None
+    Xvip = Xbest
+    try:
+        if task == "classification":
+            uniq = np.unique(y)
+            if uniq.size <= 2:
+                pls_vip = PLSRegression(n_components=k_star).fit(Xbest, y.astype(float))
+                vip_scores_array = compute_vip_pls(pls_vip, Xbest, y.astype(float))
+            else:
+                models = []
+                Ybin = np.zeros((Xbest.shape[0], uniq.size), dtype=int)
+                for idx, cls in enumerate(uniq):
+                    ybin = (y == cls).astype(int)
+                    Ybin[:, idx] = ybin
+                    model = PLSRegression(n_components=k_star)
+                    model.fit(Xbest, ybin)
+                    models.append(model)
+                vip_scores_array = compute_vip_ovr_mean(models, Xbest, Ybin)
+        else:
+            pls_vip = PLSRegression(n_components=k_star).fit(Xbest, y)
+            vip_scores_array = compute_vip_pls(pls_vip, Xbest, y)
+    except Exception:
+        vip_scores_array = None
+
+    if vip_scores_array is not None:
+        with np.errstate(invalid="ignore"):
+            vip_mask = np.asarray(vip_scores_array, dtype=float) > 1.0
+        if np.count_nonzero(vip_mask) >= max(3, min(k_star, Xbest.shape[1])):
+            vip_indices = np.where(vip_mask)[0].tolist()
+            Xvip = Xbest[:, vip_mask]
+            vip_kmax = _hard_cap_k(k_grid_max, Xvip)
+            vip_grid = [k for k in base_k_grid if k <= vip_kmax]
+            if not vip_grid:
+                vip_grid = list(range(1, vip_kmax + 1))
+            best_vip_metric = None
+            best_vip_score = -np.inf if task == "classification" else np.inf
+            best_vip_k = None
+            for k in vip_grid:
+                metrics_vip = _compute_cv_metrics(
+                    Xvip,
+                    y,
+                    task,
+                    cv_splits,
+                    n_components=k,
+                    classifier=req.classifier,
+                    classes_=classes_,
+                    threshold=0.5,
+                )
+                if task == "classification":
+                    score_val = float(metrics_vip.get("balanced_accuracy") or 0.0)
+                    is_better = score_val > best_vip_score
+                else:
+                    score_val = float(metrics_vip.get("rmsecv") or 1e9)
+                    is_better = score_val < best_vip_score
+                if is_better:
+                    best_vip_score = score_val
+                    best_vip_metric = metrics_vip
+                    best_vip_k = k
+            if best_vip_metric is not None and best_vip_k is not None:
+                Xbest = Xvip
+                k_star = int(best_vip_k)
+                cv_best = best_vip_metric
+                best_score = best_vip_score if task == "classification" else -best_vip_score
+            else:
+                cv_best = None
+        else:
+            vip_indices = None
+            cv_best = None
+    else:
+        cv_best = None
+
     # curva 1..15
     curve_kmax = _hard_cap_k(MAX_K_FOR_CURVE_DEFAULT, Xbest)
     curve = _compute_cv_curve(Xbest, y, task, cv_splits,
                               threshold=0.5, max_k=curve_kmax)
     k_recommended = _best_k_from_curve(curve, task) or k_star
     k_recommended = _hard_cap_k(k_recommended, Xbest)
+    best["n_components"] = int(k_recommended)
+    if vip_indices is not None:
+        best["vip_mask_indices"] = vip_indices
 
     # métricas de validação do melhor
-    cv_best = _compute_cv_metrics(Xbest, y, task, cv_splits,
-                                  n_components=k_recommended,
-                                  classifier=req.classifier,
-                                  classes_=classes_,
-                                  threshold=0.5)
+    if cv_best is None or int(cv_best.get("n_components", 0) or 0) != k_recommended:
+        cv_best = _compute_cv_metrics(Xbest, y, task, cv_splits,
+                                      n_components=k_recommended,
+                                      classifier=req.classifier,
+                                      classes_=classes_,
+                                      threshold=0.5)
+    if isinstance(cv_best, dict):
+        cv_best["n_components"] = int(k_recommended)
 
     # thresholds por classe
+    proba_full = cv_best.pop("_proba_oof_full", None)
+    proba_arr = None
+    if proba_full is not None:
+        proba_arr = np.asarray(proba_full, dtype=float)
+    elif isinstance(cv_best.get("proba_oof"), list):
+        try:
+            proba_arr = np.asarray(cv_best["proba_oof"], dtype=float)
+            label_source = classes_ if classes_ is not None else np.unique(y)
+            label_names = [str(c) for c in label_source]
+            top2_preview = [_format_probability_row(row, label_names) for row in proba_arr]
+            summary = _probability_summary(proba_arr, label_names)
+            cv_best["proba_oof"] = {"top2": top2_preview, "summary": summary}
+        except Exception:
+            proba_arr = None
     try:
-        proba_full = cv_best.get("proba_oof")
-        if proba_full is not None:
-            thr_map = _optimize_class_thresholds(y, np.asarray(proba_full, dtype=float), classes_)
+        if proba_arr is not None:
+            thr_map = _optimize_class_thresholds(y, np.asarray(proba_arr, dtype=float), classes_)
         else:
             thr_map = {c: 0.5 for c in classes_} if classes_ is not None else {}
     except Exception:
@@ -3252,7 +3526,7 @@ def optimize_grid(req: OptimizeGridRequest):
     report["cv_metrics"] = cv_best
     report["recommended_n_components"] = k_recommended
     report["thresholds_"] = thr_map
-    report["n_selected_variables"] = int(base_mask.sum())
+    report["n_selected_variables"] = int(Xbest.shape[1])
 
     achieved_score = float(best_score if task == "classification" else -best_score)
 
@@ -3290,6 +3564,27 @@ def optimize_grid(req: OptimizeGridRequest):
                 f"acima do limite de {target_score:.3f}. {suggestion}"
             )
             warnings.append(goal_warning)
+
+    ds_last = ds.setdefault("last_optimization", {}) if isinstance(ds, dict) else {}
+    try:
+        if isinstance(ds_last, dict):
+            ds_last.update(
+                {
+                    "timestamp": float(time.time()),
+                    "task": task,
+                    "best_params": _json_sanitize(best),
+                    "cv_metrics": _json_sanitize(cv_best),
+                    "cv_curve": _json_sanitize(curve),
+                    "recommended_n_components": int(k_recommended),
+                    "vip_scores": _json_sanitize(vip_scores_array.tolist()) if vip_scores_array is not None else None,
+                    "vip_mask_indices": vip_indices,
+                    "n_selected_variables": int(Xbest.shape[1]),
+                    "proba_oof_full": _json_sanitize(proba_arr.tolist()) if proba_arr is not None else None,
+                    "classes": _json_sanitize(list(classes_)) if classes_ is not None else None,
+                }
+            )
+    except Exception:
+        logger.exception("Falha ao salvar resumo da última otimização no DatasetStore")
 
     out = {
         "status": "ok",
