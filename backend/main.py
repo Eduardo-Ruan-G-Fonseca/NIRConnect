@@ -2714,7 +2714,7 @@ def build_full_report_for_ui(X, y, task, n_components, classifier, threshold_map
     """Constrói blocos extras para o front a partir do melhor modelo."""
 
     X = np.asarray(X, dtype=float)
-    y = np.asarray(y)
+    y = np.asarray(y).ravel()
     n_samples = X.shape[0]
     if n_samples == 0:
         return {}
