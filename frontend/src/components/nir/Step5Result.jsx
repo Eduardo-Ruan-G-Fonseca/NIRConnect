@@ -3,8 +3,67 @@ import Plotly from "plotly.js-dist-min";
 import { postReport, downloadReport } from "../../services/api";
 import { normalizeTrainResult } from "../../services/normalizeTrainResult";
 
-function MetricsTable({ title, metrics }) {
+function formatProbaSummary(values, classLabels) {
+  if (!Array.isArray(values) || !values.length) {
+    return "–";
+  }
+  const rows = values
+    .map((row) => (Array.isArray(row) ? row.map((v) => Number(v)) : [Number(row)]))
+    .filter((row) => row.some((v) => Number.isFinite(v)));
+  if (!rows.length) return "–";
+  const nClasses = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  if (!nClasses) return "–";
+  const stats = [];
+  for (let j = 0; j < nClasses; j += 1) {
+    const col = rows
+      .map((row) => row[j])
+      .filter((value) => Number.isFinite(value));
+    if (!col.length) continue;
+    const mean = col.reduce((acc, cur) => acc + cur, 0) / col.length;
+    const variance = col.reduce((acc, cur) => acc + (cur - mean) ** 2, 0) / col.length;
+    const std = Math.sqrt(Math.max(variance, 0));
+    const label =
+      (Array.isArray(classLabels) && classLabels[j] != null && classLabels[j] !== "")
+        ? String(classLabels[j])
+        : `Classe ${j + 1}`;
+    stats.push({ label, mean, std });
+  }
+  if (!stats.length) return "–";
+  stats.sort((a, b) => b.mean - a.mean);
+  const top = stats.slice(0, Math.min(3, stats.length));
+  const summary = top
+    .map((item) => `${item.label}: ${item.mean.toFixed(3)}±${item.std.toFixed(3)}`)
+    .join("; ");
+  const extra = stats.length - top.length;
+  const tooltip = stats
+    .map((item) => `${item.label}: média ${item.mean.toFixed(4)}, desvio ${item.std.toFixed(4)}`)
+    .join(" • ");
+  return (
+    <span title={tooltip}>{summary}{extra > 0 ? ` +${extra}` : ""}</span>
+  );
+}
+
+function MetricsTable({ title, metrics, classLabels }) {
   const entries = Object.entries(metrics || {}).filter(([, v]) => v !== null && v !== undefined);
+
+  const renderValue = (key, value) => {
+    if (Number.isFinite(value)) {
+      return Number(value).toFixed(4);
+    }
+    if (key === "proba_oof") {
+      return formatProbaSummary(value, classLabels);
+    }
+    if (Array.isArray(value)) {
+      return <span title={JSON.stringify(value).slice(0, 500)}>{`[${value.length} itens]`}</span>;
+    }
+    if (typeof value === "object") {
+      return <span title={JSON.stringify(value).slice(0, 500)}>objeto</span>;
+    }
+    if (value === null || value === undefined) {
+      return "–";
+    }
+    return String(value);
+  };
   return (
     <div className="card p-4 space-y-3">
       <h3 className="card-title">{title}</h3>
@@ -14,7 +73,7 @@ function MetricsTable({ title, metrics }) {
             {entries.map(([k, v]) => (
               <tr key={k}>
                 <th className="font-medium text-gray-600">{k}</th>
-                <td>{Number.isFinite(v) ? Number(v).toFixed(4) : String(v)}</td>
+                <td>{renderValue(k, v)}</td>
               </tr>
             ))}
           </tbody>
@@ -126,10 +185,31 @@ export default function Step5Result({ result, onBack, onNew }) {
     resolvedRawData?.preprocess_applied,
   ]);
 
-  const preprocessLabel = preprocessSteps.length
-    ? preprocessSteps.join(" + ")
-    : "Sem pré-processamento espectral";
-  const usesSg = preprocessSteps.some((step) => step?.startsWith("sg"));
+  const formatPreprocessPipeline = useCallback((steps, sgTuple) => {
+    if (!Array.isArray(steps) || !steps.length) {
+      return "Sem pré-processamento espectral";
+    }
+    const formatted = steps
+      .map((step) => {
+        if (!step) return null;
+        const label = String(step).trim();
+        if (!label) return null;
+        const lower = label.toLowerCase();
+        if (lower.startsWith("sg") && Array.isArray(sgTuple) && sgTuple.length >= 3) {
+          const parsed = sgTuple.map((value) => {
+            const num = Number(value);
+            return Number.isFinite(num) ? Math.trunc(num) : value;
+          });
+          return `SG(${parsed[0]},${parsed[1]},${parsed[2]})`;
+        }
+        return label.toUpperCase();
+      })
+      .filter(Boolean);
+    return formatted.length ? formatted.join(" + ") : "Sem pré-processamento espectral";
+  }, []);
+
+  const preprocessLabel = formatPreprocessPipeline(preprocessSteps, resolvedSg);
+  const usesSg = preprocessSteps.some((step) => String(step).toLowerCase().startsWith("sg"));
 
   const normalizeSg = useCallback((value) => {
     if (!value) return null;
@@ -173,7 +253,7 @@ export default function Step5Result({ result, onBack, onNew }) {
 
   const sgDescription = usesSg
     ? resolvedSg
-      ? `Savitzky-Golay (janela ${resolvedSg[0]}, ordem ${resolvedSg[1]}, derivada ${resolvedSg[2]})`
+      ? `Savitzky-Golay com janela ${resolvedSg[0]}, ordem ${resolvedSg[1]} e derivada ${resolvedSg[2]}.`
       : "Savitzky-Golay com parâmetros padrão."
     : "Sem Savitzky-Golay.";
 
@@ -187,6 +267,19 @@ export default function Step5Result({ result, onBack, onNew }) {
     predictions,
     per_class: perClass,
   } = data;
+
+  const classLabels = useMemo(() => {
+    if (Array.isArray(predictions?.class_labels) && predictions.class_labels.length) {
+      return predictions.class_labels;
+    }
+    if (Array.isArray(data?.cm?.labels) && data.cm.labels.length) {
+      return data.cm.labels;
+    }
+    if (Array.isArray(perClass) && perClass.length) {
+      return perClass.map((row) => row.label);
+    }
+    return null;
+  }, [predictions?.class_labels, data?.cm?.labels, perClass]);
 
   const residualRef = useRef(null);
   const stdResidualRef = useRef(null);
@@ -620,8 +713,8 @@ export default function Step5Result({ result, onBack, onNew }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <MetricsTable title="Métricas de Treino" metrics={metrics} />
-        <MetricsTable title="Métricas de Validação" metrics={cvMetrics} />
+        <MetricsTable title="Métricas de Treino" metrics={metrics} classLabels={classLabels} />
+        <MetricsTable title="Métricas de Validação" metrics={cvMetrics} classLabels={classLabels} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

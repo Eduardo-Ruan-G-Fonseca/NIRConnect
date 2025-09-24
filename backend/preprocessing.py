@@ -32,29 +32,59 @@ def sg0(X: np.ndarray, window: int = 11, poly: int = 2) -> np.ndarray:
     return savgol_filter(X, window_length=window, polyorder=poly, deriv=0, axis=1)
 
 
+def _validate_sg_params(window: int, poly: int) -> tuple[int, int]:
+    if window is None or poly is None:
+        raise ValueError("Parâmetros Savitzky-Golay incompletos.")
+    if window < 3:
+        raise ValueError("window_length deve ser pelo menos 3.")
+    if window % 2 == 0:
+        raise ValueError("window_length deve ser ímpar.")
+    if window <= poly:
+        raise ValueError("window_length deve ser maior que polyorder.")
+    return int(window), int(poly)
+
+
+def _safe_apply(func, X, *args, **kwargs):
+    try:
+        return func(X, *args, **kwargs)
+    except Exception:
+        return X
+
+
 def apply_preprocessing(X: np.ndarray, ops: dict) -> np.ndarray:
-    """Apply selected preprocessing operations to ``X``.
+    """Apply selected preprocessing operations to ``X`` with robust fallbacks."""
 
-    ``ops`` is a mapping where keys such as ``"SNV"``, ``"MSC"``, ``"SG1```` and
-    ``"SG0"`` enable the respective operations. Values associated with ``SG1`` or
-    ``SG0`` may themselves be dictionaries specifying ``window`` and ``poly``
-    parameters. The result is always a float ``ndarray`` where infinite values are
-    converted to ``NaN``.
-    """
+    if X is None:
+        return None
 
-    Z = X
+    Z = np.array(X, dtype=float, copy=True)
+
     if ops.get("SNV"):
-        Z = snv(Z)
+        Z = _safe_apply(snv, Z)
     if ops.get("MSC"):
-        Z = msc(Z)
-    if ops.get("SG1"):
-        c = ops["SG1"] or {}
-        Z = sg1(Z, window=int(c.get("window", 11)), poly=int(c.get("poly", 2)))
-    if ops.get("SG0"):
-        c = ops["SG0"] or {}
-        Z = sg0(Z, window=int(c.get("window", 11)), poly=int(c.get("poly", 2)))
+        Z = _safe_apply(msc, Z)
 
-    Z = np.array(Z, dtype=float)
+    if ops.get("SG1"):
+        cfg = ops.get("SG1") or {}
+        window = int(cfg.get("window", cfg.get("window_length", 11)))
+        poly = int(cfg.get("poly", cfg.get("polyorder", 2)))
+        try:
+            w, p = _validate_sg_params(window, poly)
+            Z = _safe_apply(sg1, Z, window=w, poly=p)
+        except Exception:
+            pass
+
+    if ops.get("SG0"):
+        cfg = ops.get("SG0") or {}
+        window = int(cfg.get("window", cfg.get("window_length", 11)))
+        poly = int(cfg.get("poly", cfg.get("polyorder", 2)))
+        try:
+            w, p = _validate_sg_params(window, poly)
+            Z = _safe_apply(sg0, Z, window=w, poly=p)
+        except Exception:
+            pass
+
+    Z = np.asarray(Z, dtype=float)
     Z[np.isinf(Z)] = np.nan
     return Z
 
