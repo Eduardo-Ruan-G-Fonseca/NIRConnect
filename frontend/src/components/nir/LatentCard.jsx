@@ -9,11 +9,6 @@ export default function LatentCard({ latent, labels }) {
     lv1: row[0] ?? 0, lv2: row[1] ?? 0, label: labels?.[i] ?? ""
   })), [scoreMatrix, labels]);
 
-  if (!scoreMatrix.length) {
-    return <div className="card dashed h-64 flex items-center justify-center"><p>Sem variáveis latentes.</p></div>;
-  }
-
-  // Paleta simples por classe
   const uniq = useMemo(() => Array.from(new Set(data.map((d) => d.label))), [data]);
   const colorMap = useMemo(() => {
     const basePalette = [
@@ -49,6 +44,10 @@ export default function LatentCard({ latent, labels }) {
     });
     return map;
   }, [uniq]);
+
+  if (!scoreMatrix.length) {
+    return <div className="card dashed h-64 flex items-center justify-center"><p>Sem variáveis latentes.</p></div>;
+  }
 
   return (
     <div className="card p-4">
