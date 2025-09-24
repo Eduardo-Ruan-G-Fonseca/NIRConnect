@@ -85,9 +85,9 @@ from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, Repeate
 from sklearn.metrics import (
     accuracy_score, balanced_accuracy_score, f1_score, confusion_matrix,
     precision_recall_fscore_support, cohen_kappa_score, matthews_corrcoef,
-    roc_auc_score,
+    roc_auc_score, roc_curve,
 )
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, label_binarize
 from sklearn.svm import SVC
 from sklearn.multiclass import OneVsRestClassifier
 from ml.vip import compute_vip_pls, compute_vip_ovr_mean
@@ -244,34 +244,73 @@ def _finite(x):
 
 def _fold_worker(X, y, tr, te, task, k_eff, threshold, classes):
     """
-    Retorna tupla:
-      - classificação: ("clf", y_true, y_pred)
-      - regressão:     ("reg", y_true, y_pred)
+    Executa o treino/validação de um fold e retorna um dicionário com
+    previsões e probabilidades (quando aplicável).
     """
     Xtr, Xte = X[tr], X[te]
     ytr, yte = y[tr], y[te]
 
     if task == "classification":
-        uniq = classes  # ordem das classes global (estável entre folds)
-        if len(uniq) == 2:
-            # binário: alvo 1D
-            pls = PLSRegression(n_components=k_eff).fit(Xtr, ytr)
-            s = pls.predict(Xte).ravel()
-            yp = (s >= float(threshold)).astype(ytr.dtype)
-            return ("clf", yte, yp)
-        else:
-            # multiclasse: PLS multialvo (uma única fit por fold)
-            # Ytr multialvo = one-hot nas classes "uniq"
-            Ytr = (ytr[:, None] == uniq[None, :]).astype(float)
-            pls = PLSRegression(n_components=k_eff).fit(Xtr, Ytr)
-            S = pls.predict(Xte)  # (n_te, n_classes)
-            yp_idx = np.argmax(S, axis=1)
-            yp = uniq[yp_idx]
-            return ("clf", yte, yp)
-    else:
-        pls = PLSRegression(n_components=k_eff).fit(Xtr, ytr)
-        yp = pls.predict(Xte).ravel()
-        return ("reg", yte, yp)
+        classes_arr = np.asarray(classes) if classes is not None else np.unique(y)
+        if classes_arr.size == 0:
+            classes_arr = np.unique(y)
+
+        if classes_arr.size == 2:
+            neg_cls, pos_cls = classes_arr[0], classes_arr[1]
+            ytr_bin = (ytr == pos_cls).astype(int)
+            pls = PLSRegression(n_components=k_eff).fit(Xtr, ytr_bin)
+            scores_tr = np.clip(pls.predict(Xtr).ravel(), 0.0, 1.0)
+            scores_te = np.clip(pls.predict(Xte).ravel(), 0.0, 1.0)
+            thr_eff = _optimize_binary_threshold(ytr_bin, scores_tr, default=threshold)
+            yp_bin = (scores_te >= thr_eff).astype(int)
+            yp = np.where(yp_bin == 1, pos_cls, neg_cls).astype(ytr.dtype)
+            proba = np.zeros((scores_te.shape[0], classes_arr.size), dtype=float)
+            class_index = {c: idx for idx, c in enumerate(classes_arr)}
+            proba[:, class_index[pos_cls]] = scores_te
+            proba[:, class_index[neg_cls]] = 1.0 - scores_te
+            return {
+                "kind": "clf",
+                "y_true": yte,
+                "y_pred": yp,
+                "proba": proba,
+                "threshold": float(thr_eff),
+            }
+
+        # multiclasse: ajusta um único PLS multialvo seguindo a ordem global
+        uniq_tr = np.unique(ytr)
+        present_mask = np.isin(classes_arr, uniq_tr)
+        effective_classes = classes_arr[present_mask]
+        if effective_classes.size == 0:
+            effective_classes = classes_arr
+            present_mask = np.ones_like(classes_arr, dtype=bool)
+
+        Ytr = np.zeros((ytr.size, effective_classes.size), dtype=float)
+        for idx, cls in enumerate(effective_classes):
+            Ytr[:, idx] = (ytr == cls).astype(float)
+
+        pls = PLSRegression(n_components=k_eff).fit(Xtr, Ytr)
+        scores_partial = np.clip(pls.predict(Xte), 0.0, None)
+        row_sum = scores_partial.sum(axis=1, keepdims=True)
+        proba_partial = np.divide(scores_partial, row_sum, out=np.zeros_like(scores_partial), where=row_sum > 0)
+
+        proba = np.zeros((Xte.shape[0], classes_arr.size), dtype=float)
+        proba[:, present_mask] = proba_partial
+        yp_idx = np.argmax(proba, axis=1)
+        yp = classes_arr[yp_idx]
+        return {
+            "kind": "clf",
+            "y_true": yte,
+            "y_pred": yp.astype(ytr.dtype),
+            "proba": proba,
+        }
+
+    pls = PLSRegression(n_components=k_eff).fit(Xtr, ytr)
+    yp = pls.predict(Xte).ravel()
+    return {
+        "kind": "reg",
+        "y_true": yte,
+        "y_pred": yp,
+    }
 
 
 def _compute_cv_metrics(X, y, task, cv_or_splits, n_components: int, threshold: float = 0.5,
@@ -296,10 +335,34 @@ def _compute_cv_metrics(X, y, task, cv_or_splits, n_components: int, threshold: 
     )
 
     if task == "classification":
-        yt, yp = [], []
-        for _, yte, ypred in results:
-            yt.append(yte); yp.append(ypred)
-        yt = np.concatenate(yt); yp = np.concatenate(yp)
+        yt, yp, proba_chunks, thresholds = [], [], [], []
+        for res in results:
+            if not res or res.get("kind") != "clf":
+                continue
+            yt.append(res["y_true"])
+            yp.append(res["y_pred"])
+            proba = res.get("proba")
+            if proba is not None:
+                proba_chunks.append(proba)
+            thr = res.get("threshold")
+            if thr is not None:
+                thresholds.append(thr)
+
+        if not yt or not yp:
+            return {
+                "accuracy": None,
+                "kappa": None,
+                "f1_macro": None,
+                "f1_micro": None,
+                "macro_precision": None,
+                "macro_recall": None,
+                "macro_f1": None,
+                "balanced_accuracy": None,
+                "mcc": None,
+            }
+
+        yt = np.concatenate(yt)
+        yp = np.concatenate(yp)
         acc = _finite(accuracy_score(yt, yp))
         bacc = _finite(balanced_accuracy_score(yt, yp))
         f1_ma = _finite(f1_score(yt, yp, average="macro"))
@@ -309,7 +372,8 @@ def _compute_cv_metrics(X, y, task, cv_or_splits, n_components: int, threshold: 
         )
         kappa = _finite(cohen_kappa_score(yt, yp))
         mcc = _finite(matthews_corrcoef(yt, yp))
-        return {
+
+        out = {
             "accuracy": acc,
             "kappa": kappa,
             "f1_macro": _finite(f1_ma),
@@ -320,16 +384,36 @@ def _compute_cv_metrics(X, y, task, cv_or_splits, n_components: int, threshold: 
             "balanced_accuracy": bacc,
             "mcc": mcc,
         }
-    else:
-        yt, yp = [], []
-        for _, yte, ypred in results:
-            yt.append(yte); yp.append(ypred)
-        yt = np.concatenate(yt); yp = np.concatenate(yp)
-        rmse = _finite(np.sqrt(np.mean((yt - yp) ** 2)))
-        ss_tot = float(np.var(yt) * yt.size)
-        ss_res = float(np.sum((yt - yp) ** 2))
-        r2 = _finite(1.0 - ss_res / ss_tot) if ss_tot > 0 else None
-        return {"rmsecv": rmse, "r2cv": r2}
+
+        if proba_chunks:
+            try:
+                proba_oof = np.vstack(proba_chunks)
+                out["proba_oof"] = proba_oof.tolist()
+            except Exception:
+                pass
+
+        if thresholds:
+            out["thresholds"] = [float(t) for t in thresholds if np.isfinite(t)]
+
+        return out
+
+    yt, yp = [], []
+    for res in results:
+        if not res or res.get("kind") != "reg":
+            continue
+        yt.append(res["y_true"])
+        yp.append(res["y_pred"])
+
+    if not yt or not yp:
+        return {"rmsecv": None, "r2cv": None}
+
+    yt = np.concatenate(yt)
+    yp = np.concatenate(yp)
+    rmse = _finite(np.sqrt(np.mean((yt - yp) ** 2)))
+    ss_tot = float(np.var(yt) * yt.size)
+    ss_res = float(np.sum((yt - yp) ** 2))
+    r2 = _finite(1.0 - ss_res / ss_tot) if ss_tot > 0 else None
+    return {"rmsecv": rmse, "r2cv": r2}
 
 
 def apply_preprocess(X: np.ndarray, method: str) -> np.ndarray:
@@ -2207,44 +2291,38 @@ def _compute_cv_curve(X, y, task, cv_or_splits, threshold=0.5, max_k=None):
     valid_counts = {"acc": 0, "bacc": 0, "f1m": 0, "auc": 0, "rmse": 0, "r2": 0}
     total_k = len(ks)
 
+    classes_global = np.unique(y) if task == "classification" else None
+
     for k in ks:
-        y_true_all, y_pred_all = [], []
+        y_true_all, y_pred_all, proba_all = [], [], []
         y_true_reg, y_pred_reg = [], []
 
         folds_ok = 0
         for tr, te in splits:
-            Xtr, Xte = X[tr], X[te]
-            ytr, yte = y[tr], y[te]
-
-            # k efetivo por fold (com LOO o rank cai!)
+            Xtr = X[tr]
             k_eff = min(k, _safe_limit_ncomp(Xtr))
             if k_eff < 1:
                 continue
 
             try:
-                if task == "classification":
-                    classes = np.unique(ytr)
-                    K = len(classes)
-                    if K == 2:
-                        pls = PLSRegression(n_components=k_eff).fit(Xtr, ytr)
-                        s = pls.predict(Xte).ravel()
-                        yp = (s >= float(threshold)).astype(ytr.dtype)
-                    else:
-                        # um-vs-rest com scores
-                        S = np.zeros((Xte.shape[0], K))
-                        for idx, c in enumerate(classes):
-                            pls_k = PLSRegression(n_components=k_eff).fit(Xtr, (ytr == c).astype(int))
-                            S[:, idx] = pls_k.predict(Xte).ravel()
-                        yp = classes[np.argmax(S, axis=1)]
-                    y_true_all.append(yte); y_pred_all.append(yp)
-                else:
-                    pls = PLSRegression(n_components=k_eff).fit(Xtr, ytr)
-                    pred = pls.predict(Xte).ravel()
-                    y_true_reg.append(yte); y_pred_reg.append(pred)
-                folds_ok += 1
+                res = _fold_worker(X, y, tr, te, task, k_eff, threshold, classes_global)
             except Exception:
-                # ignora fold ruim
                 continue
+
+            if not res:
+                continue
+
+            if res.get("kind") == "clf":
+                folds_ok += 1
+                y_true_all.append(res["y_true"])
+                y_pred_all.append(res["y_pred"])
+                proba = res.get("proba")
+                if proba is not None:
+                    proba_all.append(proba)
+            elif res.get("kind") == "reg":
+                folds_ok += 1
+                y_true_reg.append(res["y_true"])
+                y_pred_reg.append(res["y_pred"])
 
         # agrega
         acc = bacc = f1m = aucm = rmse = r2 = None
@@ -2257,18 +2335,22 @@ def _compute_cv_curve(X, y, task, cv_or_splits, threshold=0.5, max_k=None):
             f1m  = _finite(f1_score(y_true, y_pred, average="macro"))
             # AUC macro (se possível)
             try:
-                classes = np.unique(y)
-                if len(classes) == 2:
-                    # reexecuta scores binários para AUC
-                    y_true2_all, score_all = [], []
-                    for tr, te in splits:
-                        Xtr, Xte = X[tr], X[te]; ytr, yte = y[tr], y[te]
-                        k_eff = min(k, _safe_limit_ncomp(Xtr))
-                        pls = PLSRegression(n_components=k_eff).fit(Xtr, (ytr == classes[1]).astype(int))
-                        score_all.append(pls.predict(Xte).ravel())
-                        y_true2_all.append((yte == classes[1]).astype(int))
-                    y_true2 = np.concatenate(y_true2_all); score_all = np.concatenate(score_all)
-                    aucm = _finite(roc_auc_score(y_true2, score_all))
+                if proba_all:
+                    proba_concat = np.vstack(proba_all)
+                    classes = classes_global if classes_global is not None else np.unique(y)
+                    if proba_concat.shape[1] == 2:
+                        pos_cls = classes[-1]
+                        pos_idx = int(np.where(classes == pos_cls)[0][0]) if classes.size > 1 else 0
+                        y_true_bin = (y_true == pos_cls).astype(int)
+                        aucm = _finite(roc_auc_score(y_true_bin, proba_concat[:, pos_idx]))
+                    elif proba_concat.shape[1] > 2:
+                        y_true_bin = label_binarize(y_true, classes=classes)
+                        aucm = _finite(
+                            roc_auc_score(y_true_bin, proba_concat[:, :classes.size],
+                                          average="macro", multi_class="ovr")
+                        )
+                    else:
+                        aucm = None
                 else:
                     aucm = None
             except Exception:
@@ -2351,20 +2433,59 @@ def _r2x_r2y(pls: PLSRegression, X: np.ndarray, y: np.ndarray):
     return r2x_cum, r2y_cum
 
 
-def _optimize_class_thresholds(y_true: np.ndarray, proba: np.ndarray, classes_: np.ndarray,
-                               grid: List[float] = [0.3, 0.4, 0.5, 0.6, 0.7]) -> Dict[Any, float]:
+def _optimize_binary_threshold(y_true: np.ndarray, scores: np.ndarray, default: float = 0.5) -> float:
+    """Retorna o limiar que maximiza Youden/BA para um problema binário."""
+    try:
+        y_true = np.asarray(y_true).astype(int)
+        scores = np.asarray(scores, dtype=float).ravel()
+        if y_true.size == 0 or scores.size == 0:
+            return float(default)
+        fpr, tpr, thresholds = roc_curve(y_true, scores)
+        if thresholds.size == 0:
+            return float(default)
+        youden = tpr - fpr
+        idx = int(np.nanargmax(youden)) if np.all(np.isfinite(youden)) else int(np.argmax(youden))
+        best_thr = thresholds[idx]
+        if not np.isfinite(best_thr):
+            return float(default)
+        return float(best_thr)
+    except Exception:
+        return float(default)
+
+
+def _optimize_class_thresholds(y_true: np.ndarray, proba: np.ndarray, classes_: Optional[List[Any]]) -> Dict[Any, float]:
     """One-vs-rest thresholds que maximizam balanced_accuracy."""
-    thr = {}
-    y_true_ovr = {c: (y_true == c).astype(int) for c in classes_}
-    for j, c in enumerate(classes_):
-        best, best_t = -1.0, 0.5
-        pj = proba[:, j]
-        for t in grid:
-            yhat = (pj >= t).astype(int)
-            ba = balanced_accuracy_score(y_true_ovr[c], yhat)
-            if ba > best:
-                best, best_t = ba, t
-        thr[c] = float(best_t)
+    if proba is None:
+        return {}
+
+    y_true = np.asarray(y_true).astype(int)
+    proba = np.asarray(proba, dtype=float)
+    n_samples, n_classes = proba.shape if proba.ndim == 2 else (proba.size, 1)
+    if n_samples == 0 or n_classes == 0:
+        return {}
+
+    thr: Dict[Any, float] = {}
+    for j in range(n_classes):
+        y_true_bin = (y_true == j).astype(int)
+        if y_true_bin.sum() == 0:
+            continue
+        scores = proba[:, j]
+        unique_scores = np.unique(scores)
+        if unique_scores.size > 128:
+            percentiles = np.linspace(0, 100, 129)
+            unique_scores = np.unique(np.percentile(scores, percentiles))
+        candidates = np.unique(np.concatenate([unique_scores, [0.5]]))
+        best_score, best_thr = -np.inf, 0.5
+        for t in candidates:
+            yhat = (scores >= t).astype(int)
+            ba = balanced_accuracy_score(y_true_bin, yhat)
+            if not np.isfinite(ba):
+                continue
+            if ba > best_score:
+                best_score, best_thr = ba, float(t)
+        thr[j] = float(best_thr)
+        if classes_ is not None and len(classes_) > j:
+            thr[classes_[j]] = float(best_thr)
     return thr
 
 
@@ -3113,7 +3234,7 @@ def optimize_grid(req: OptimizeGridRequest):
     try:
         proba_full = cv_best.get("proba_oof")
         if proba_full is not None:
-            thr_map = _optimize_class_thresholds(y, proba_full, classes_)
+            thr_map = _optimize_class_thresholds(y, np.asarray(proba_full, dtype=float), classes_)
         else:
             thr_map = {c: 0.5 for c in classes_} if classes_ is not None else {}
     except Exception:
