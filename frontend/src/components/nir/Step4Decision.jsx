@@ -26,6 +26,7 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
   const [goalInfo, setGoalInfo] = useState(null);
   const [goalWarning, setGoalWarning] = useState(null);
   const optStartRef = useRef(null);
+  const lastStatusRef = useRef({ current: 0, total: 0 });
 
   useEffect(() => {
     setTrainRes(baseTrainRes);
@@ -428,39 +429,90 @@ export default function Step4Decision({ step2, result, dataId, onBack, onContinu
   }
 
   useEffect(() => {
-    let timer;
+    let timeoutId;
     let cancelled = false;
-    if (optLoading) {
-      const poll = async () => {
-        try {
-          const status = await getOptimizeStatus();
-          if (cancelled) return;
-          setOptStatus((prev) => {
-            const current = Number(status.current) || 0;
-            const total = Number(status.total) || 0;
-            if (prev.current === current && prev.total === total) {
-              return prev;
-            }
-            return { current, total };
-          });
-          setStatusSamples((prev) => {
-            const sample = { time: Date.now(), current: Number(status.current) || 0 };
-            const next = [...prev, sample];
-            return next.slice(-10);
-          });
-        } catch (err) {
-          console.warn("Não foi possível consultar o status da otimização", err);
+    let controller;
+    let delay = 1000;
+
+    const run = async () => {
+      if (cancelled || !optLoading) {
+        return;
+      }
+
+      if (controller) {
+        controller.abort();
+      }
+      controller = new AbortController();
+
+      let nextDelay = Math.min(delay * 1.5, 5000);
+      let aborted = false;
+
+      try {
+        const status = await getOptimizeStatus({ signal: controller.signal });
+        if (cancelled || !optLoading) {
+          return;
         }
-      };
-      poll();
-      timer = setInterval(poll, 1000);
+
+        const current = Number(status.current) || 0;
+        const total = Number(status.total) || 0;
+        const prevStatus = lastStatusRef.current;
+        const changed = prevStatus.current !== current || prevStatus.total !== total;
+
+        if (changed) {
+          lastStatusRef.current = { current, total };
+        }
+
+        setOptStatus((prev) => {
+          if (prev.current === current && prev.total === total) {
+            return prev;
+          }
+          return { current, total };
+        });
+
+        setStatusSamples((prev) => {
+          const sample = { time: Date.now(), current };
+          const next = [...prev, sample];
+          return next.slice(-10);
+        });
+
+        if (changed) {
+          nextDelay = 1000;
+        }
+      } catch (err) {
+        if (err?.name === "AbortError") {
+          aborted = true;
+        } else if (!cancelled) {
+          console.warn("Não foi possível consultar o status da otimização", err);
+          nextDelay = Math.min(delay * 1.5, 10000);
+        }
+      } finally {
+        const shouldSchedule = !cancelled && optLoading && !aborted;
+        if (shouldSchedule) {
+          delay = nextDelay;
+          timeoutId = setTimeout(run, delay);
+        }
+      }
+    };
+
+    if (optLoading) {
+      delay = 1000;
+      run();
     } else {
+      if (controller) {
+        controller.abort();
+      }
+      lastStatusRef.current = { current: 0, total: 0 };
+      setOptStatus({ current: 0, total: 0 });
       setStatusSamples([]);
     }
+
     return () => {
       cancelled = true;
-      if (timer) {
-        clearInterval(timer);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      if (controller) {
+        controller.abort();
       }
     };
   }, [optLoading]);

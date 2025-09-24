@@ -69,8 +69,8 @@ export async function postOptimize(payload = {}) {
   return postJSON(`${API_BASE}/optimize`, cleaned);
 }
 
-export async function getOptimizeStatus() {
-  const res = await fetch(`${API_BASE}/optimize/status`);
+export async function getOptimizeStatus({ signal } = {}) {
+  const res = await fetch(`${API_BASE}/optimize/status`, { signal });
   if (!res.ok) {
     let msg;
     try { const j = await res.json(); msg = j.detail || JSON.stringify(j); }
